@@ -1,0 +1,356 @@
+import concurrent.futures
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from engine import Engine, digest
+
+
+class EngineTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.now = 1_800_000_000
+        self.engine = Engine(self.directory.name, lambda: self.now)
+        self.addCleanup(self.engine.close)
+        self.db = self.engine.db
+        self.conn = self.connection("A")
+
+    def connection(self, project):
+        self.engine.add_project(project, "")
+        conn = dict(
+            id="source" + project,
+            kind="slack",
+            label=project,
+            config={},
+            status="Connected",
+        )
+        self.db.put("connections", conn)
+        return conn
+
+    def raw(self, key="1", when=None, **extra):
+        return dict(
+            key=key,
+            timestamp=self.now if when is None else when,
+            title="Status requested",
+            body="Please provide a status update.",
+            destination="channel/thread",
+            account="my account",
+            authored=False,
+            owned=False,
+            context={},
+            **extra,
+        )
+
+    def event(self, raw=None, conn=None):
+        c = conn or self.conn
+        r = raw or self.raw()
+        self.engine.ingest(c, r)
+        return digest(c["id"], r["key"])
+
+    def draft(self, **extra):
+        key = self.event()
+        task = self.engine.new_task(
+            "Reply",
+            "A",
+            id=key,
+            event=key,
+            source="slack",
+            account="my account",
+            destination="channel/thread",
+            status="review",
+            draft="Ready",
+            kind="status",
+            **extra,
+        )
+        return task
+
+    def test_connection_history_groups_child_sources_and_keeps_accounts_separate(self):
+        a = self.conn
+        b = self.connection("B")
+        child = dict(a, id="channel-one", slack_parent=a["id"])
+        github = dict(
+            b, id="repo-one", kind="github", config={"repository": "org/repo"}, github_parent=b["id"]
+        )
+        for source in (child, github):
+            self.db.put("connections", source)
+            self.event(conn=source)
+        self.db.log("Legacy discovery", "channel task", task=digest(child["id"], "1"))
+        self.db.log("General", "unscoped")
+        self.engine.connection_result(github, "Needs attention: offline")
+        history = self.engine.state()["activity"]
+
+        def kinds(source):
+            return [row["kind"] for row in history if row["connection"] == source]
+
+        self.assertCountEqual(kinds(a["id"]), ["Activity read", "Legacy discovery"])
+        self.assertCountEqual(kinds(b["id"]), ["Activity read", "Connection"])
+        self.assertIn("General", kinds(""))
+
+    def test_dashboard_uses_triggering_event_for_task_origin(self):
+        github = dict(self.conn, id="repo", kind="github", config={"repository": "org/client"})
+        slack = dict(self.conn, id="channel", label="#release", slack_parent=self.conn["id"])
+        email = dict(self.conn, id="mail", kind="email")
+        cases = [
+            (github, {"repository": "org/client"}, {"repository": "org/client", "source": "github"}),
+            (slack, {"channel": "C123"}, {"channel": "#release", "workspace": "A", "source": "slack"}),
+            (email, {"google_service": "Gmail"}, {"source": "Gmail"}),
+        ]
+        for connection, context, expected in cases:
+            with self.subTest(kind=connection["kind"]):
+                self.db.put("connections", connection)
+                raw = dict(self.raw(), context=context, account="original-account")
+                event = self.event(raw, connection)
+                task = self.engine.new_task("Follow up", "A", event=event, account="sending-account")
+                shown = next(t for t in self.engine.state()["tasks"] if t["id"] == task["id"])
+                self.assertEqual(shown["account"], "sending-account")
+                self.assertEqual(shown["origin"]["account"], "original-account")
+                for field, value in expected.items():
+                    self.assertEqual(shown["origin"][field], value)
+                self.assertNotIn("origin", self.db.get("tasks", task["id"]))
+
+    def test_provider_upgrade_preserves_review_and_delivery_mode(self):
+        draft = self.draft()
+        self.db.put("config", {"id": "settings", "dry": False, "model": "previous-local-model"})
+        with patch("engine.worker.default_provider", return_value="codex"):
+            upgraded = Engine(self.directory.name)
+        self.addCleanup(upgraded.close)
+        self.assertEqual(upgraded.settings(), {"id": "settings", "dry": False, "provider": "codex"})
+        self.assertEqual(upgraded.db.get("tasks", draft["id"]), draft)
+
+    def test_general_tasks_and_reports_default_to_global(self):
+        self.engine.action(dict(op="task", title="Plan the week"))
+        self.engine.action(dict(op="report", text="Review missed messages"))
+        self.assertEqual({t["project"] for t in self.db.rows("tasks")}, {"Global"})
+        task = next(t for t in self.db.rows("tasks") if t["title"] == "Plan the week")
+        with (
+            patch("engine.worker.prepare_worktree") as worktree,
+            patch(
+                "engine.worker.run_agent",
+                return_value=dict(outcome="done", kind="planning", text="Schedule prepared"),
+            ),
+        ):
+            self.engine.process(task["id"])
+        worktree.assert_not_called()
+        self.assertEqual(self.db.get("tasks", task["id"])["status"], "done")
+
+    def test_legacy_global_name_and_single_checkout_upgrade(self):
+        legacy = {"id": "Global", "name": "Global", "repo": "/missing/old/repo"}
+        self.db.put("projects", legacy)
+        self.engine.action(dict(op="rule", project="Global", kind="reply", mode="auto"))
+        upgraded = Engine(self.directory.name)
+        self.addCleanup(upgraded.close)
+        self.assertNotEqual(upgraded.global_project, "Global")
+        self.assertEqual(upgraded.state()["projects"][0]["name"], upgraded.global_project)
+        self.assertEqual(upgraded.repositories("Global"), [legacy["repo"]])
+        self.assertEqual(upgraded.rule(upgraded.global_project, "reply"), "review")
+        self.assertEqual(upgraded.rule("Global", "reply"), "auto")
+
+    def test_upgrade_keeps_connection_ids_checkpoints_and_pending_reviews(self):
+        draft = self.draft()
+        legacy = dict(self.conn, project="A", cursor=self.now - 50, revision="previous")
+        self.db.put("connections", legacy)
+        with patch("engine.connectors.store_secret") as keychain:
+            upgraded = Engine(self.directory.name)
+        self.addCleanup(upgraded.close)
+        keychain.assert_not_called()
+        expected = {k: v for k, v in legacy.items() if k != "project"}
+        self.assertEqual(upgraded.db.get("connections", legacy["id"]), expected)
+        self.assertEqual(upgraded.db.get("tasks", draft["id"]), draft)
+        self.assertEqual(upgraded.db.get("events", draft["event"])["connection"], legacy["id"])
+
+    def test_tasks_from_one_account_use_distinct_projects(self):
+        self.engine.add_project("B", "")
+        for suggested, expected in [("A", "A"), ("B", "B"), ("unknown", "Global")]:
+            key = self.event(self.raw(key=suggested))
+            response = dict(relevant=True, owned=False, kind="reply", project=suggested)
+            with patch("engine.worker.run_agent", return_value=response) as run:
+                self.engine.discover(key)
+            self.assertCountEqual(run.call_args.args[1]["projects"], ["A", "B", "Global"])
+            self.assertEqual(self.db.get("tasks", key)["project"], expected)
+            self.assertEqual(self.db.get("events", key)["connection"], self.conn["id"])
+
+    def test_manual_connection_has_workspace_scope(self):
+        form = dict(op="connect", kind="github", label="Platform", config={"repository": "org/platform"})
+        with patch("engine.connectors.store_secret") as keychain:
+            self.engine.action(dict(form, secret="test-token"))
+            connection = next(c for c in self.engine.state()["connections"] if c["kind"] == "github")
+            self.engine.action(dict(form, id=connection["id"], label="Renamed"))
+            keychain.assert_called_once_with(connection["id"], "test-token")
+        self.assertNotIn("project", connection)
+
+    def test_provider_selection_applies_to_next_run(self):
+        for provider in ("codex", "claude"):
+            self.engine.action({"op": "settings", "provider": provider})
+            with patch("engine.worker.run_agent", return_value={"body": "Be concise."}) as run:
+                self.engine.infer("style", {"feedback": "Be concise."}, "A")
+            self.assertEqual(run.call_args.args[2], provider)
+        self.assertTrue(self.engine.settings()["dry"])
+        with self.assertRaises(ValueError):
+            self.engine.action({"op": "settings", "provider": "unknown", "dry": False})
+        self.assertEqual(self.engine.settings()["provider"], "claude")
+        self.assertTrue(self.engine.settings()["dry"])
+
+    def test_exact_version_race_delivers_and_creates_one_followup(self):
+        task = self.draft(commitments=[dict(title="Send figures", due=self.now + 3600)])
+
+        def approve():
+            try:
+                self.engine.action(dict(op="approve", id=task["id"], version=task["version"]))
+                return True
+            except ValueError:
+                return False
+
+        with (
+            patch("engine.connectors.send", return_value="receipt") as send,
+            concurrent.futures.ThreadPoolExecutor(2) as pool,
+        ):
+            self.assertEqual(sorted(pool.map(lambda _: approve(), range(2))), [False, True])
+            send.assert_called_once()
+        rows = self.db.rows("tasks")
+        self.assertEqual(
+            [(t["title"], t["status"]) for t in rows], [("Reply", "done"), ("Send figures", "scheduled")]
+        )
+
+    def test_dry_mode_and_all_decision_categories(self):
+        t = self.draft(categories=["reply"], commitments=[dict(title="Send figures", due=self.now)])
+        for kind in ("status", "reply"):
+            self.engine.action(dict(op="rule", project="A", kind=kind, mode="auto"))
+        self.engine.action(dict(op="settings", dry=False))
+        self.assertFalse(self.engine.auto(t))
+        self.engine.action(dict(op="rule", project="A", kind="commitment", mode="auto"))
+        self.assertTrue(self.engine.auto(t))
+        self.engine.action(dict(op="settings", dry=True))
+        with patch("engine.connectors.send") as send:
+            self.engine.autosend((t["id"], t["version"]))
+            send.assert_not_called()
+
+    def test_slack_request_reads_linked_project_issue_before_drafting(self):
+        source = dict(
+            id="repo",
+            kind="github",
+            label="Project repo",
+            config={"repository": "owner/project"},
+        )
+        self.db.put("connections", source)
+        raw = self.raw()
+        raw["body"] = "Could you summarize https://github.com/owner/project/issues/17?"
+        key = self.event(raw)
+        self.engine.new_task("Provide status", "A", raw["body"], id=key, event=key, kind="reply")
+
+        def agent(role, payload, model):
+            self.assertEqual(payload["linked_activity"][-1]["title"], "Export fix")
+            return dict(outcome="draft", text="The fix is in review.", kind="reply", complete_after_send=True)
+
+        with (
+            patch(
+                "engine.connectors.github_request", return_value={"title": "Export fix", "state": "open"}
+            ) as read,
+            patch("engine.worker.run_agent", side_effect=agent),
+            patch("engine.connectors.send") as send,
+        ):
+            self.engine.process(key)
+            read.assert_called_once_with(source, "GET", "issues/17")
+            send.assert_not_called()
+        self.assertEqual(self.db.get("tasks", key)["status"], "review")
+
+    def test_feedback_retires_preview(self):
+        t = self.draft()
+        self.engine.action(dict(op="feedback", id=t["id"], text="Use the short version"))
+        with self.assertRaisesRegex(ValueError, "preview changed"):
+            self.engine.deliver(t["id"], t["version"])
+
+    def test_ownership_retires_pending_action(self):
+        t = self.draft()
+        raw = self.raw()
+        raw["owned"] = True
+        self.engine.ingest(self.conn, raw)
+        self.assertEqual(self.db.get("tasks", t["id"])["status"], "skipped")
+        with self.assertRaises(ValueError):
+            self.engine.deliver(t["id"], t["version"])
+
+    def test_crash_and_uncertain_write_need_reconciliation(self):
+        t = self.draft()
+        with (
+            patch("engine.connectors.send", side_effect=TimeoutError("unknown")),
+            self.assertRaises(ValueError),
+        ):
+            self.engine.deliver(t["id"], t["version"])
+        row = self.db.get("tasks", t["id"])
+        self.assertEqual(row["status"], "uncertain")
+        with self.assertRaises(ValueError):
+            self.engine.action(dict(op="retry", id=t["id"]))
+        self.engine.action(dict(op="reconcile", id=t["id"], version=row["version"], delivered=False))
+        self.assertEqual(self.db.get("tasks", t["id"])["status"], "review")
+        row["status"] = "sending"
+        self.db.put("tasks", row)
+        restarted = Engine(self.directory.name, lambda: self.now)
+        self.addCleanup(restarted.close)
+        self.assertEqual(restarted.db.get("tasks", t["id"])["status"], "uncertain")
+
+    def test_agent_questions_and_independent_work(self):
+        def model(role, payload, model):
+            if role == "task":
+                if payload["task"]["title"] == "Blocked":
+                    return dict(
+                        outcome="question",
+                        kind="task",
+                        text="What date?",
+                        independent_steps=[dict(title="Summarize notes", body="Prepare a local summary")],
+                    )
+                return dict(outcome="done", kind="task", text="Summary complete")
+            return dict(question="What date should I use?")
+
+        with patch("engine.worker.run_agent", side_effect=model):
+            a = self.engine.new_task("Blocked", "A")
+            b = self.engine.new_task("Blocked", "A")
+            for task in (a, b):
+                self.engine.process(task["id"])
+                self.assertEqual(self.db.get("tasks", task["id"])["status"], "question")
+            child = self.db.get("tasks", digest(a["id"], "Summarize notes"))
+            self.engine.process(child["id"])
+            self.assertEqual(self.db.get("tasks", child["id"])["status"], "done")
+            self.engine.action(dict(op="answer", id=a["id"], text="Friday"))
+            self.assertEqual(self.db.get("tasks", b["id"])["status"], "queued")
+
+    def test_recovery_is_bounded_cross_project_applied_and_reversible(self):
+        self.connection("B")
+        end = self.now
+        report = self.engine.new_task("Missed work", "Global", "Check indirect asks", special="report")
+        self.now += 3600
+        seen = []
+
+        def poll(c, start, stop):
+            seen.append((c["label"], start, stop))
+            return [self.raw(c["id"], start), self.raw("older", start - 1), self.raw("later", stop + 1)]
+
+        def infer(role, payload, model):
+            if role == "improvement":
+                return dict(body="Remember indirect requests.", reason="A report supplied an example.")
+            return dict(
+                title="Follow up", relevant=True, owned=False, kind="reply", reason="Indirect request"
+            )
+
+        with (
+            patch("engine.connectors.poll", side_effect=poll),
+            patch("engine.worker.run_agent", side_effect=infer),
+        ):
+            self.engine.process(report["id"])
+        self.assertEqual(seen, [("A", end - 10800, end), ("B", end - 10800, end)])
+        self.assertEqual(len(self.db.rows("events")), 2)
+        self.assertEqual(self.db.get("tasks", report["id"])["status"], "done")
+        skill = next(x for x in self.db.rows("skills") if x["active"])
+        self.assertEqual((self.db.root / "skills/workflow.md").read_text(), skill["body"])
+        self.engine.action(dict(op="revert_skill", id=skill["id"]))
+        self.assertNotEqual((self.db.root / "skills/workflow.md").read_text(), skill["body"])
+
+    def test_style_requires_review(self):
+        self.engine.action(dict(op="style", text="Lead with the answer"))
+        task = self.db.rows("tasks")[0]
+        with patch("engine.worker.run_agent", return_value=dict(body="Lead with the answer")):
+            self.engine.process(task["id"])
+        rev = next(s for s in self.db.rows("skills") if s["kind"] == "style")
+        file = self.db.root / "skills/style.md"
+        self.assertEqual(file.read_text(), "")
+        self.engine.action(dict(op="accept_skill", id=rev["id"]))
+        self.assertEqual(file.read_text(), "Lead with the answer")

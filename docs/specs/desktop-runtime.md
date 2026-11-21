@@ -1,0 +1,19 @@
+# Local desktop runtime
+
+The first desktop release targets macOS. An AppKit window hosts the dashboard in WebKit and starts a Python standard-library service on a random loopback port. A per-launch secret establishes a local browser session. State reads require that session, and mutations also require a request token. Closing the window keeps the scheduler alive. Quitting stops it. One process owns a data directory at a time.
+
+SQLite holds projects, source events, tasks, delivery state, project rules, questions, and an activity history in the user's Application Support directory. Active workflow and style instructions are also available as Markdown. Secrets belong in Keychain. The app starts empty in dry mode. An explicit sample workspace uses synthetic activity and a local-only delivery sink, so the review flow can be exercised before connecting accounts.
+
+Each connected source is polled once per minute while the app is running. On first connection, scan the last three hours. Normal sync resumes at the last successful cursor, in bounded time slices; reporting a miss always uses the fixed three-hour interval from the recovery spec. Periodically revisit stored, unclaimed activity for proactive follow-up. Store event identities and receipts so retries cannot silently duplicate deliveries. Uncertain writes require reconciliation before another attempt.
+
+Users can create tasks, link projects to Git repositories, inspect worktree edits, answer questions, review a versioned draft, revise instructions, choose an AI CLI and configure connections, set per-project decision rules, and report misses. Every inference role starts the selected Claude Code or Codex CLI locally. The CLI uses its configured AI service to process the supplied task context. If the selected executable or its login is unavailable, retain the work and expose the error and retry action. External messages always use the account and destination bound to the source event.
+
+Verify using isolated temporary data, deterministic model fixtures, and local delivery adapters. Exercise concurrent approval, restart recovery, ownership, question resumption, Markdown revision, and cross-project catch-up without sending messages to live accounts.
+
+For bug tasks, the executor previews issue creation, publishing a branch with its exact file replacements, opening the linked PR, and notifying the reporter as separate authorized operations. It checks the open issue, reviewed revision, repository, branch and mergeability before notification. Coding agents can prepare bounded text-file edits. Executing project-supplied build scripts and tests inside task worktrees is outside this implementation.
+
+Settings shows whether each supported CLI is installed. On first launch or upgrade from a model-based workspace, prefer an installed Claude Code, then Codex. If neither is installed, suggest Claude Code. Migrate the saved setting in place, preserving the delivery mode, tasks, drafts and history. Once the user selects a provider, every subsequent run uses it until the user changes it. Users can reject a style suggestion or revert an active revision. Recovered tasks are linked from the investigation.
+
+When a source thread references a GitHub issue or PR, the task worker can read that item and recent comments through a workspace GitHub connection for the exact linked repository. Record the read or coverage gap in the activity log. These explicit context lookups do not expand a recovery scan's time window.
+
+The macOS build bundles the published Google Workspace extension v0.0.8 and a checksum-verified Node.js runtime. The Python service starts the connector over stdio and calls specific tools for the connected account. Each profile keeps its encrypted credentials in an app-private directory. Its encryption key is held in Keychain between sessions. [Connector release](https://github.com/gemini-cli-extensions/workspace/releases/tag/v0.0.8)

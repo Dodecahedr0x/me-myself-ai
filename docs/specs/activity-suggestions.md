@@ -1,0 +1,17 @@
+# Suggestions from activity
+
+**Status** — Implementation contract for [US-03 and US-18](../user-stories.md).
+
+Every five minutes while the service runs, a fresh discovery agent can consider recent email, Slack, GitHub and local computer activity together. Use the last three hours across all projects. Supply a bounded sample from each available source, recent and outstanding tasks, and previously proposed work. Skip inference when substantive evidence has not changed. A suggestion describes a concrete next action, its reason, project and supporting observations. The agent may return no suggestions.
+
+Local sources are configured in Connections. Users can choose ordinary work folders in the native picker and separately enable sampling of the frontmost macOS app name. Folder collection reads relative filenames and modification times. For a selected Git checkout, include recent commit subjects on HEAD whose author email matches the checkout's configured user. Skip commits made by other people. Skip hidden paths, dependency and build folders, symlinks and the agent's own data directory. Show coverage or permission errors in the dashboard. App names provide context and cannot independently justify a suggestion. The configured Claude or Codex CLI receives the selected evidence for inference.
+
+Home and Tasks show pending suggestions with evidence and actions to start or dismiss. Connected observations include the conversation destination and whether the account holder wrote the item, so the agent can distinguish the user's commitments from requests by other people. Starting a suggestion queues a task for the existing worker. A connected source used as its primary evidence binds the task to the observed account and destination. A local file can support a Global task without any connected account. Review and dry-mode delivery rules continue to apply. Existing direct requests still proceed through automatic discovery.
+
+Verify mixed-source evidence, local-only work, no actionable evidence, ownership checks, three-hour bounds, invalid model references, retries, dismissal, double starts and source removal during a scan. Persist suggestions and decisions across restarts.
+
+## Claude and ChatGPT on macOS
+
+Each desktop chat source has its own Connect action and opt-in. The five-minute scan reads local Claude Desktop Code sessions and ChatGPT desktop work sessions identifiable as desktop-originated. For ordinary chat history, the same connection can watch an extracted provider export folder selected in Finder. Scan the active branch of ChatGPT exports and the human/assistant messages in Claude exports. Account exports are snapshots. New cloud-only chats require a refreshed export.
+
+Use recent user requests and their assistant replies to identify unfinished follow-ups. A completed work-session exchange or a dated exported exchange can support a suggestion. Use actual message timestamps within the three-hour window. Exclude CLI runs, subagents, tools, reasoning, app instructions, attachments and drafts. Bound the text sent to the selected CLI. Show the app name, evidence and source coverage in the dashboard. Repeated scans and restarts deduplicate the same exchange. A scan gap in one source leaves other sources available. Disconnecting stops subsequent collection and retires pending suggestions that rely on that source. Started tasks retain their review history. Chat sources grant read access only.
