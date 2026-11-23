@@ -1,6 +1,6 @@
 # Desktop workspace
 
-**Status** — Implementation contract. Covers [US-01 through US-16](../user-stories.md) at the dashboard boundary.
+**Status** — Implementation contract. Covers [US-01 through US-16](../user-stories.md) at the dashboard boundary. The draft [inbox, focus card and board](inbox-experience.md) will replace the Home and Tasks layout described here. Until it ships, this spec describes the implemented app.
 
 Home summarizes the task queue, pending suggestions, recent activity, projects and style reviews. Tasks needing attention appear first. The status counts open the corresponding filtered queue. Home offers task creation and shows the current agent provider and delivery mode. Its Connections section contains a single **Manage connections** button that opens the Connections page, where the user can choose providers and inspect accounts. Tasks also offers suggestions and the full searchable queue. Activity contains the full timeline.
 

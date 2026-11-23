@@ -21,11 +21,24 @@
 | US-17 | Delegate general computer work in Global and group related repositories under a named project. | One release includes the client and service repositories. An unrelated email stays in Global. [Task execution](specs/task-execution.md) |
 | US-18 | See suggested work grounded in my connected apps and activity on my Mac. | A follow-up from a Claude or ChatGPT conversation appears with its supporting exchange. A changed budget sheet and a Slack request can also support a suggestion. [Activity suggestions](specs/activity-suggestions.md) |
 | US-19 | Use MeMyselfAI to improve itself. | I run the app's workflow checks or report something I observed. I can follow a finding from its test evidence through its GitHub issue, fix and pull request review in Tasks. [Self-improvement](specs/self-improvement.md) |
+| US-20 | Clear what agents need from me like an email inbox, from the keyboard. | I open the app, press J and K through five rows, press 1 or E on each, and every agent continues. Working agents stay out of my way. [Inbox and focus card](specs/inbox-experience.md) |
+| US-21 | See all work at a glance by stage. | Press B and the board shows what was found, is queued, is working, needs me, is waiting, or is done, and where each agent runs. [Board](specs/inbox-experience.md#board) |
+| US-22 | Approve a send quickly but safely. | I press E on a reply whose full text, account and destination are on screen, and it is sent at once. [Sending](specs/inbox-experience.md#sending) |
+| US-23 | Have the agent find whole projects, not only single tasks. | A "New project?" row groups a trip discussed across mail, chat and my calendar, and I accept it with one key. [Proactive discovery](specs/proactive-discovery.md) |
+| US-24 | Connect more of the apps where my obligations live, including socials and messaging. | After connecting Bluesky and Telegram, mentions and DMs that need an answer appear as found rows. [Connector catalog](specs/proactive-discovery.md#connector-catalog) |
+| US-25 | Run the agent on a VPS I own. | I install it on my server and open its dashboard through my desktop app or an SSH tunnel. [Instances](specs/instances-and-sync.md) |
+| US-26 | Run on my laptop and VPS at the same time, as one workspace. | A task I create on the laptop shows on the VPS within seconds. When my laptop is full, new tasks run on the VPS. [Dividing work](specs/instances-and-sync.md#dividing-work) |
+| US-27 | Keep discovery and work going while my laptop sleeps. | Overnight, the VPS reads my mail, prepares replies and leaves them in my inbox for the morning. |
+| US-28 | Approve from any instance without risking a double send or double work. | I approve on the laptop. Whichever instance holds the task's lock sends it, exactly once. [Locks](specs/instances-and-sync.md#locks) |
+| US-29 | Connect an account once and have every instance use it. | I connect Gmail on the laptop. The VPS polls it overnight without me signing in again there. Logins travel only between my paired instances. [What syncs](specs/instances-and-sync.md#what-syncs) |
+| US-30 | Talk to the agent that runs discovery, and get updates from it. | I ask the orchestrator what is on my plate this week, and each morning it posts what it found, what finished and what needs me. [Hermes orchestrator](specs/hermes-orchestrator.md) |
 
 Workspace-wide Slack and Google account connections extend US-01 and US-03. [Workspace accounts](specs/account-wide-connections.md)
 
 US-01 through US-05 are covered by the [task workflow](specs/task-workflow.md), US-07 through US-09 by [task agents and completion](specs/task-execution.md), and US-06 and US-10 through US-12 by [decision rules, writing style, and trust](specs/delegation-and-style.md).
 
 US-13 extends the [task workflow](specs/task-workflow.md). US-14 extends [decision handling](specs/delegation-and-style.md). US-15 and US-16 are specified in [reviewing activity and learning from missed work](specs/activity-and-improvement.md).
+
+US-20 through US-22 are specified in the draft [inbox, focus card and board](specs/inbox-experience.md). US-23 and US-24 are specified in the draft [proactive discovery and connector catalog](specs/proactive-discovery.md). US-25 through US-29 are specified in the draft [instances, sync and sharing work](specs/instances-and-sync.md). US-30 is specified in the draft [Hermes orchestrator](specs/hermes-orchestrator.md).
 
 The [desktop dashboard spec](specs/dashboard.md) maps these workflows to their user-facing controls.

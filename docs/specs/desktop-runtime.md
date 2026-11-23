@@ -1,6 +1,6 @@
 # Local desktop runtime
 
-The first desktop release targets macOS. An AppKit window hosts the dashboard in WebKit and starts a Python standard-library service on a random loopback port. A per-launch secret establishes a local browser session. State reads require that session, and mutations also require a request token. Closing the window keeps the scheduler alive. Quitting stops it. One process owns a data directory at a time.
+The first desktop release targets macOS. An AppKit window hosts the dashboard in WebKit and starts a Python standard-library service on a random loopback port. A per-launch secret establishes a local browser session. State reads require that session, and mutations also require a request token. Closing the window keeps the scheduler alive. Quitting stops it. One process owns a data directory at a time. The draft [instances spec](instances-and-sync.md) plans a headless Linux build and lets several such instances share one workspace.
 
 SQLite holds projects, source events, tasks, delivery state, project rules, questions, and an activity history in the user's Application Support directory. Active workflow and style instructions are also available as Markdown. Secrets belong in Keychain. The app starts empty in dry mode. An explicit sample workspace uses synthetic activity and a local-only delivery sink, so the review flow can be exercised before connecting accounts.
 
