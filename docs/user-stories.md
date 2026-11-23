@@ -29,9 +29,10 @@
 | US-25 | Run the agent on a VPS I own. | I install it on my server and open its dashboard through my desktop app or an SSH tunnel. [Instances](specs/instances-and-sync.md) |
 | US-26 | Run on my laptop and VPS at the same time, as one workspace. | A task I create on the laptop shows on the VPS within seconds. When my laptop is full, new tasks run on the VPS. [Dividing work](specs/instances-and-sync.md#dividing-work) |
 | US-27 | Keep discovery and work going while my laptop sleeps. | Overnight, the VPS reads my mail, prepares replies and leaves them in my inbox for the morning. |
-| US-28 | Approve from any instance without risking a double send or double work. | I approve on the laptop. Whichever instance holds the task's lock sends it, exactly once. [Locks](specs/instances-and-sync.md#locks) |
+| US-28 | Approve from any instance without risking a double send or double work, even when my VPS is down. | I approve on the laptop. The task's one owner instance sends it, at most once. With the VPS offline, the laptop keeps working and sending for its own tasks. [Ownership protocol](specs/instances-and-sync.md#ownership-protocol) |
 | US-29 | Connect an account once and have every instance use it. | I connect Gmail on the laptop. The VPS polls it overnight without me signing in again there. Logins travel only between my paired instances. [What syncs](specs/instances-and-sync.md#what-syncs) |
 | US-30 | Talk to the agent that runs discovery, and get updates from it. | I ask the orchestrator what is on my plate this week, and each morning it posts what it found, what finished and what needs me. [Hermes orchestrator](specs/hermes-orchestrator.md) |
+| US-31 | Set up agents and accounts once, and have every kind of work flow the same way. | I sign into Claude once and connect Google once. The orchestrator reads my mail, hands an email that needs a reply to a new agent, and that agent writes and sends it through the app. A Slack mention or a meeting invite goes the same way. [Agents and the app MCP server](specs/agents-and-app-mcp.md) |
 
 Workspace-wide Slack and Google account connections extend US-01 and US-03. [Workspace accounts](specs/account-wide-connections.md)
 
@@ -39,6 +40,6 @@ US-01 through US-05 are covered by the [task workflow](specs/task-workflow.md), 
 
 US-13 extends the [task workflow](specs/task-workflow.md). US-14 extends [decision handling](specs/delegation-and-style.md). US-15 and US-16 are specified in [reviewing activity and learning from missed work](specs/activity-and-improvement.md).
 
-US-20 through US-22 are specified in the draft [inbox, focus card and board](specs/inbox-experience.md). US-23 and US-24 are specified in the draft [proactive discovery and connector catalog](specs/proactive-discovery.md). US-25 through US-29 are specified in the draft [instances, sync and sharing work](specs/instances-and-sync.md). US-30 is specified in the draft [Hermes orchestrator](specs/hermes-orchestrator.md).
+US-20 through US-22 are specified in the draft [inbox, focus card and board](specs/inbox-experience.md). US-23 and US-24 are specified in the draft [proactive discovery and connector catalog](specs/proactive-discovery.md). US-25 through US-29 are specified in the draft [instances, sync and sharing work](specs/instances-and-sync.md). US-30 is specified in the draft [Hermes orchestrator](specs/hermes-orchestrator.md). US-31 is specified in the draft [agents, capabilities and the app MCP server](specs/agents-and-app-mcp.md).
 
 The [desktop dashboard spec](specs/dashboard.md) maps these workflows to their user-facing controls.

@@ -38,7 +38,7 @@ flowchart LR
 - **Sweep** runs every 15 minutes over stored activity from the last 14 days. It looks for unanswered threads, unfulfilled promises, approaching deadlines and stalled tasks. It skips inference when evidence has not changed since its last run. The existing five-minute, three-hour suggestion scan becomes the sweep's short window.
 - **Project pass** runs once a day over the last 30 days. It clusters activity by people, topics, repositories and places. A cluster becomes a proposed project only if it spans at least two sources or five items and does not match an existing project.
 
-Each pass is a prompt to the managed [Hermes orchestrator](hermes-orchestrator.md), sent by the app on its schedule and under that pass's lock. Hermes reads activity and proposes findings only through the app's MCP tools. Its memory and skills let it carry context between passes. The app enforces deduplication and the budget in those tools. When Hermes is unavailable, each pass falls back to a fresh CLI run with bounded input, as in the [local agent contract](local-agent.md). The project pass returns the cluster's name, a one-line description, member evidence, suggested sources, people and repositories, and a confidence.
+Each pass is a prompt to the managed [Hermes orchestrator](hermes-orchestrator.md), sent by the app on its schedule to the instance that owns the orchestrator. Hermes reads activity, proposes findings and dispatches tasks only through the [app MCP server](agents-and-app-mcp.md). Its memory and skills let it carry context between passes. The app enforces deduplication and the budget in those tools. When Hermes is unavailable, each pass falls back to a fresh CLI run with bounded input, as in the [local agent contract](local-agent.md). The project pass returns the cluster's name, a one-line description, member evidence, suggested sources, people and repositories, and a confidence.
 
 ## Budget and learning
 
@@ -60,7 +60,8 @@ Every connector implements the same contract. This makes adding a source a conta
 | `history` | How far back it can scan, and its known gaps |
 | `rate` | Polling interval floor and provider limits |
 | `runs_on` | `any`, or `desktop` for connectors that need local files or apps. Only a macOS instance polls a `desktop` connector. See [instances and sync](instances-and-sync.md). |
-| `token_rotation` | Whether a refresh invalidates the previous token. Rotating connectors refresh only under the connection's lock. |
+| `token_rotation` | Whether a refresh invalidates the previous token. Rotating connectors are refreshed only by the connection's owner instance. |
+| `task_types` | The [task types](agents-and-app-mcp.md#task-types) its records can trigger and the action kinds it can deliver for them |
 
 Scan and delivery keep the guarantees in [connected accounts](connectors.md). These include stable record keys, inclusive UTC windows, failing the whole scan on a failed page, zero writes while polling, verification of identity and target before sending, and no retried writes.
 

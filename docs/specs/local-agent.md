@@ -1,6 +1,6 @@
 # Local agent execution
 
-**Status** — Implementation contract for [US-04, US-05, US-07, US-09, US-11, US-14 and US-16](../user-stories.md). The [task execution](task-execution.md), [decision](delegation-and-style.md) and [discovery learning](activity-and-improvement.md) specs define the product outcomes.
+**Status** — Implementation contract for [US-04, US-05, US-07, US-09, US-11, US-14 and US-16](../user-stories.md). The draft [agents, capabilities and the app MCP server](agents-and-app-mcp.md) plans to give each run the app's own MCP server, scoped to its task. Until that ships, this spec describes the implemented app. The [task execution](task-execution.md), [decision](delegation-and-style.md) and [discovery learning](activity-and-improvement.md) specs define the product outcomes.
 
 Each discovery, preparation, decision, style or improvement request starts a fresh process using the selected Claude Code (`claude`) or OpenAI Codex (`codex`) CLI. Settings lists both providers and whether their executables are installed. First-run selection prefers Claude Code when available, then Codex, and suggests Claude Code when neither is installed. The user signs into the chosen CLI outside the app. Task context goes to that provider for inference. Changing the selection affects subsequent requests. A failure never sends the request to the other provider.
 

@@ -53,7 +53,7 @@ Agents produce options as data, not as prose the app parses. The [local agent co
 
 ## Sending
 
-Approving a write dispatches it immediately, with no delay, through the [connector contract](connectors.md). The card moves to Working, then shows the receipt or the failure. A send cannot be undone, so **E** and the option number act on an approval only when its full proposal is on screen. With several instances, the instance holding the task's lock sends, as described in [instances and sync](instances-and-sync.md#locks).
+Approving a write dispatches it immediately, with no delay, through the [connector contract](connectors.md). The card moves to Working, then shows the receipt or the failure. A send cannot be undone, so **E** and the option number act on an approval only when its full proposal is on screen. With several instances, the task's owner sends, as described in the [ownership protocol](instances-and-sync.md#ownership-protocol). An approval made on another instance syncs to the owner.
 
 ## Board
 
@@ -110,7 +110,7 @@ When a row enters Urgent or Needs you and the dashboard window is not focused, t
 ## First run
 
 1. The app checks for Claude Code and Codex CLI, as today.
-2. It installs the [orchestrator](hermes-orchestrator.md) and asks for its model provider.
+2. It installs the [orchestrator](hermes-orchestrator.md) and has it use the same Claude or ChatGPT subscription, asking the user to complete any sign-in step. See [shared agent setup](agents-and-app-mcp.md#shared-agent-setup).
 3. It offers to connect a first source, starting with mail. Skipping is allowed.
 4. It asks where agents should run: **This computer**, **This computer and a VPS**, or **A VPS only**. See [instances and sync](instances-and-sync.md).
 5. After the first connection, the orchestrator runs a first sweep. It posts the outcome in its thread: what it read, what it found, and options to accept the found tasks.

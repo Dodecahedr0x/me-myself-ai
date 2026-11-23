@@ -10,19 +10,20 @@ The user owns where the agent runs. The supported setups are:
 | --- | --- |
 | **Laptop** | One instance on the Mac. This is today's app. |
 | **VPS** | One headless instance on a Linux server the user controls. The user reaches its dashboard from the desktop app or through an SSH tunnel. |
-| **Laptop and VPS** | Two or more paired instances sharing one workspace. They sync everything, including logins, and divide work by capacity. The VPS keeps discovering and working while the laptop sleeps. |
+| **Laptop and VPS** | Two or more paired instances sharing one workspace. They sync everything, including logins, and divide work by capacity. Each keeps working when the other is unreachable. |
 
 Instances talk to each other directly. Only instances the user has paired are trusted. No relay, broker or service run by the publisher sits between them. An organisation gateway that brokers connections for many users is out of scope. It is recorded under [future work](#future-work-organisation-gateway).
 
-The one hard guarantee: **no instance works on a task, polls a connection or sends anything unless it holds that item's lock**. Locks are granted by the user's own instances, as described in [locks](#locks).
+The one hard guarantee: **every task, connection and the orchestrator has exactly one owner instance at a time, and only the owner may work on it, poll it or send for it.** Ownership changes only through the [ownership protocol](#ownership-protocol). No instance, including the VPS, is needed to grant it.
 
 ## Terms
 
 - **Workspace** — the user's tasks, projects, rules, skills, style, activity, connections and logins. One workspace can span several instances.
 - **Instance** — one running service with its own data directory, identity key, capacity and local resources.
 - **Pairing** — mutual trust between two instances of the same workspace.
-- **Lock** — a time-limited, exclusive claim on one task, one connection's polling, or one discovery pass. It carries a fencing token.
-- **Voter** — an instance that grants locks. The user chooses the voters.
+- **Item** — anything that must be worked on by one instance at a time: a task, a connection's polling and token refresh, or the orchestrator.
+- **Owner** — the one instance allowed to act on an item.
+- **Ownership epoch** — a counter per item that rises by one at every change of owner. It doubles as a fencing token.
 
 ## Architecture
 
@@ -30,8 +31,8 @@ The one hard guarantee: **no instance works on a task, polls a connection or sen
 flowchart LR
     subgraph Laptop["Laptop instance (macOS)"]
         LUI[Desktop app and dashboard]
-        LSvc[Service]
-        LDB[(SQLite)]
+        LSvc[Service and app MCP server]
+        LDB[(SQLite with ownership records)]
         LKC[Keychain]
         LAg[Task agents and Hermes]
         LSvc --- LDB
@@ -39,24 +40,22 @@ flowchart LR
         LSvc --> LAg
         LUI --> LSvc
     end
-    subgraph VPS["VPS instance (Linux, headless, voter)"]
-        VSvc[Service]
-        VDB[(SQLite)]
+    subgraph VPS["VPS instance (Linux, headless)"]
+        VSvc[Service and app MCP server]
+        VDB[(SQLite with ownership records)]
         VKS[Encrypted credential store]
         VAg[Task agents and Hermes]
-        Locks[Lock table]
         VSvc --- VDB
         VSvc --- VKS
         VSvc --> VAg
-        VSvc --- Locks
     end
-    LSvc <-->|Direct mutual TLS: sync log, encrypted logins, lock requests| VSvc
-    LSvc -->|Holds lock| SrcA[Connections it is polling or sending for]
-    VSvc -->|Holds lock| SrcB[Connections it is polling or sending for]
+    LSvc <-->|Direct mutual TLS: sync log, encrypted logins, handoffs| VSvc
+    LSvc -->|Owns| SrcA[Its connections and tasks]
+    VSvc -->|Owns| SrcB[Its connections and tasks]
     LUI -.->|View and act on all instances| VSvc
 ```
 
-Each instance runs the same service. The macOS build adds the desktop window, Keychain and local-only sources. The Linux build is headless. It stores secrets in a file encrypted with a key from the OS credential service (systemd credentials) or, if that is unavailable, a passphrase entered at start. It runs under systemd or Docker. Each instance also runs its own managed [Hermes orchestrator](hermes-orchestrator.md), and only the lock holder's copy is active.
+Each instance runs the same service, including the [app MCP server](agents-and-app-mcp.md#the-app-mcp-server). The macOS build adds the desktop window, Keychain and local-only sources. The Linux build is headless. It stores secrets in a file encrypted with a key from the OS credential service (systemd credentials) or, if that is unavailable, a passphrase entered at start. It runs under systemd or Docker. Each instance has the managed [Hermes orchestrator](hermes-orchestrator.md) installed. Only the orchestrator's owner runs it.
 
 ## Pairing
 
@@ -70,131 +69,133 @@ Instances sync only when one can reach the other directly. A laptop and a VPS al
 
 A VPS dashboard listens on loopback only. The desktop app reaches it through the paired channel. A user without the desktop app uses `ssh -L`. The app never opens a public web port on its own.
 
-**Instances → Remove** revokes the peer's key on every reachable instance and rotates the workspace key. A removed instance keeps the logins it already had, and the app cannot erase them remotely. So removal also shows each connection with a **Reconnect to revoke old login** action. That action signs in again through the provider and revokes the earlier grant where the provider allows it.
+**Instances → Remove** revokes the peer's key on every reachable instance and rotates the workspace key. Items the removed instance owned need a [takeover](#takeover-when-an-owner-is-gone). A removed instance keeps the logins it already had, and the app cannot erase them remotely. So removal also shows each connection with a **Reconnect to revoke old login** action. That action signs in again through the provider and revokes the earlier grant where the provider allows it.
 
 ## What syncs
 
 | Data | Synced | Notes |
 | --- | --- | --- |
 | Tasks, threads, options, decisions, questions, answers | Yes | Field-level versions, see [conflicts](#conflicts) |
-| Projects, rules, skills, style, Markdown revisions, Hermes memory files | Yes | Same |
+| Ownership records and handoffs | Yes | Signed by the instance that wrote them |
+| Projects, rules, skills, style, Markdown revisions, Hermes memory files | Yes | |
 | Activity metadata and content | Yes | |
 | Proposed actions, approvals, delivery records and receipts | Yes | |
 | **Logins**: connector tokens, app passwords, refresh tokens | Yes, encrypted end to end with the workspace key | Each instance decrypts into its own Keychain or encrypted store. Logs never contain them. |
-| AI CLI and model-provider sign-ins | No | Each instance signs into Claude Code, Codex or Hermes' model provider itself. These belong to the CLI, not the workspace. |
-| Worktrees | On request, as a Git bundle | When a task moves between instances |
+| AI subscription sign-ins for Claude Code, Codex and Hermes | No | Each instance signs in itself. See [shared agent setup](agents-and-app-mcp.md#shared-agent-setup). |
+| Worktrees | With a handoff, as a Git bundle | |
 | Repository checkouts | No | Projects link repositories by origin URL. Each instance maps that URL to its own local path, if it has one. |
 
 Sync is an append-only log of changes per instance, ordered by hybrid logical clocks. Instances exchange logs over the paired channel. Each instance applies changes it has not seen. Data rests in each instance's data directory. That directory should sit on an encrypted disk, and the VPS install guide says so.
 
-## Locks
+## Ownership protocol
 
-### Who grants them
+Two instances can be cut off from each other at any time, and neither can tell whether the other is asleep or only unreachable. So no rule based on timeouts or majorities can let both keep working safely without a third machine. This protocol instead gives each item to one owner and lets ownership move only when the owner hands it over. Each instance keeps working on what it owns, with or without its peers.
 
-Locks are granted by a **majority of voters**. The user picks the voters in Instances. Defaults:
+### Rules
 
-| Instances | Default voters | Effect |
-| --- | --- | --- |
-| One | Itself | Works offline, as today |
-| Laptop and VPS | The VPS alone | The laptop asks the VPS for every lock. The VPS is always on, so this rarely blocks. |
-| Three or more | Every always-on instance, kept to an odd number | Survives the loss of a minority of voters |
+1. **Creation.** The instance that creates an item owns it at epoch 1. A task that comes from connected evidence is created only by the owner of that evidence's connection, deduplicated by evidence key. When the orchestrator calls `dispatch_task` on another instance, the call is forwarded to that connection's owner. If the owner is unreachable, the dispatch waits. A task the user types is created by the instance they typed it on. In every case, if another instance is better placed by capacity, the creator then hands the task over (rule 3).
+2. **Acting.** An instance acts on an item only while its own records say it is the owner at the item's latest epoch. Acting means running an agent, writing to the task's thread or worktree, polling, refreshing a token or dispatching a write.
+3. **Handoff.** Ownership moves only when the current owner hands it over:
+   1. The receiver asks, or the owner offers.
+   2. The owner stops acting. It waits for any running agent to stop and any send in progress to settle, then records the delivery state.
+   3. The owner writes a signed handoff record: item, new epoch, new owner, and for a task the worktree bundle. It sends the record directly to the receiver.
+   4. The receiver stores the record and confirms. Only then does it act.
+   5. If the receiver does not confirm, the owner retries. The receiver ignores a duplicate handoff for an epoch it already holds. Until the receiver confirms, the owner does not act, so at most one side acts. If the handoff cannot complete within 10 minutes, the owner writes a cancellation for the same epoch, which the receiver must also accept before acting. Then the owner may act again.
+4. **Fencing.** Every synced change to an item carries the writer's epoch. Peers reject changes from an older epoch. An instance that receives a record with a higher epoch than its own stops acting on that item at once.
+5. **Sends.** Before an external write, the owner records a *send intent* with the action version and epoch in its own durable log. A send intent survives a crash. After a restart, the owner reconciles any intent without a receipt before it does anything else. A send intent and its outcome travel with every handoff. A new owner never sends an action version that already has an intent, unless reconciliation shows it was not delivered.
 
-A voter grants a lock only if it has not granted an unexpired lock on the same item to anyone else. A lock is valid when a majority of voters granted it. Voters persist grants before answering, so a restarted voter keeps its promises.
+Because only the owner can create the next epoch, two instances can never both believe they own an item at the same epoch. This needs no shared clock, no quorum and no third instance.
 
-When an instance cannot reach a majority of voters, it does not take new locks. Work it already holds continues until its locks expire. Rows it would have started show "Waiting for VPS to lock this task". This is the price of the guarantee. If a voter is gone for good, the user can choose **Make this instance the voter** on a surviving instance. That step asks for typed confirmation and starts a new **epoch**. When an old voter returns, it sees the higher epoch and stops granting locks.
+### Planned absence
 
-### Lock lifetime
+Most absences are known in advance. Before it sleeps, quits, shuts down or loses power on battery, an instance hands its items to a reachable peer that is eligible and has capacity. A macOS instance uses the system's will-sleep and will-power-off notifications, and a headless instance uses its service stop signal. Items no peer can take stay with their owner. Each item is handed over as described in rule 3. Running agents get up to 20 seconds to stop. An agent that cannot stop in time is stopped, and its partial work goes with the handoff as an interrupted attempt.
 
-- Every lock has a fencing token made of the epoch and a counter that only increases. Each new grant on the same item gets a higher token.
-- A lock lasts 2 minutes. The holder renews it every 30 seconds. The holder measures time with its own monotonic clock and treats the lock as lost 20 seconds before expiry if it has not renewed.
-- When a lock is lost, the holder stops the task's agent at once and records what it had produced as an interrupted attempt in the thread.
-- A holder releases the lock when its run ends. The next run takes a fresh lock.
+When the instance comes back, it can ask for items back under the normal capacity preferences.
 
-### What needs a lock
+### Takeover when an owner is gone
 
-| Action | Lock | Extra check |
-| --- | --- | --- |
-| Starting or resuming a task agent, including a reply or option | The task's lock | None |
-| Writing to the task's worktree or thread | The task's lock | The token travels with every synced change. Peers reject changes carrying a token older than the newest they have seen for that task. |
-| Polling a connection or refreshing its token | The connection's lock | Refreshed tokens sync immediately. A provider that rotates refresh tokens is never refreshed by two instances at once. |
-| Running a discovery pass or the active Hermes orchestrator | That pass's lock, or the orchestrator lock | None |
-| **Dispatching an external write** | The task's lock | Before dispatch, the holder records a *send intent* with the action version and fencing token, and a majority of voters must accept it. Voters accept one send intent per action version. Then the holder dispatches. A second intent for the same version is refused, so the write happens at most once. |
+A crash, a dead disk or a lost laptop leaves items with an owner that cannot hand them over. Their rows show "Owned by Laptop, last seen 3 hours ago". The other instances never take them over on their own.
 
-Approvals can be made on any instance. An approval syncs to every instance. The instance that holds the task's lock, or takes it next, performs the dispatch. Sends happen as soon as the approval and lock allow. There is no delay window, consistent with the [inbox spec](inbox-experience.md).
+The user can choose **Take over from Laptop** in Instances, for all of its items or for a single row. The app warns that if that instance is still running somewhere, both may act on those items. It asks for typed confirmation. The takeover writes ownership at a higher epoch. When the old instance reconnects, it sees the higher epoch and stops. Its unsynced work is kept on the affected tasks as discarded attempts. Any send intent without a receipt is reconciled, through the connector's verification read, before the new owner sends that action.
+
+This is the only path where duplicate work is possible, and only when the user takes over from an instance that is in fact still running. To narrow it, connectors that support it send with an identifier derived from the action version, such as an email Message-ID, and check for an earlier delivery before sending.
 
 ## Conflicts
 
-Locks remove conflicts over task work. Conflicts remain only for things a user edits by hand on two instances during a partition:
+Ownership removes conflicts over task work. Conflicts remain only for things a user edits by hand on two instances while they are cut off:
 
 - Editable fields such as titles, rules, project membership and snooze time use last writer wins per field by hybrid logical clock. Ties break by instance ID.
 - A task's state is derived from its event log, merged from every instance, never overwritten.
 - Two answers to the same question from different instances: the earlier one by clock applies. The later one is kept and shown on the card as "also answered on VPS: …" so the user can reply again.
-- Two approvals of the same action version are one approval. An approval of an older version never authorizes a newer one.
-- Skills, style and Hermes memory Markdown keep both versions when edited on two instances during a partition. The card shows a merge question. Until it is answered, the earlier version stays active.
+- Two approvals of the same action version are one approval. An approval of an older version never authorizes a newer one. An approval made on a non-owner syncs to the owner, which sends.
+- Skills, style and Hermes memory Markdown keep both versions when edited on two instances while cut off. The card shows a merge question. Until it is answered, the earlier version stays active.
+- Two instances cut off from each other may each propose the same found row from the same evidence. Proposals have no effects outside the app and merge by evidence key. Tasks are created from evidence only by the owner of the evidence's connection, so the same email never becomes two tasks.
 
 ## Dividing work
 
 Each instance advertises its capacity on every heartbeat, every 15 seconds:
 
 - free and total agent slots. The default is 2 on a laptop and the CPU count minus one on a VPS. The user can change it.
-- installed and signed-in CLIs
+- readiness of Claude Code, Codex and Hermes
 - repository origins it has checkouts for
-- state: active, on battery, asleep or shutting down
+- state: active, on battery, about to sleep, or shutting down
 - user preference: **Run here first**, **Overflow only** or **Never run agents**
 
-A task is **eligible** on an instance when that instance has a signed-in CLI matching the workspace setting, any required checkout, and any desktop-only source the task needs. Among eligible instances, each instance computes the same preference:
+A task is **eligible** on an instance when that instance has a ready task harness, any required checkout, and any desktop-only source the task needs. When the owner of a new or queued task has no free slot or is not eligible, it chooses the best eligible peer and offers a handoff:
 
-1. the instance already holding the task's worktree,
-2. **Run here first** instances over **Overflow only** ones,
-3. an instance that is not on battery,
-4. the most free slots,
-5. the lowest instance ID, as a deterministic tie-break.
+1. **Run here first** instances over **Overflow only** ones,
+2. an instance that is not on battery,
+3. the most free slots,
+4. the lowest instance ID, as a deterministic tie-break.
 
-Only the preferred instance asks for the lock. If it has not taken the lock within 30 seconds, any eligible instance may ask. The lock still guarantees that only one runs. The preference only avoids wasted requests.
+If no peer is reachable, the task stays queued with its owner until a slot frees up or a peer appears. While idle with free slots, an instance may ask peers to hand over queued tasks it is eligible for.
 
-Connection polling follows the same idea. Always-on instances are preferred. Desktop-only sources, such as local folders, desktop chats and the frontmost app, are polled only by a macOS instance.
+Connections prefer an always-on owner. When a VPS is paired, the laptop offers it its connections, except desktop-only sources such as local folders, desktop chats and the frontmost app. Those are always owned by a macOS instance. A task needing a token for a connection its instance does not own uses the synced token. If that token has expired, it asks the connection's owner to refresh it. A rotating refresh token is refreshed only by its owner.
 
-When a lock expires because its holder went offline, the next eligible instance takes it. A coding task whose worktree is on the lost instance waits up to 30 minutes for it to return. After that the task restarts from the project's base branch on another instance. The card says the earlier edits are on the offline instance.
+The orchestrator also prefers an always-on owner. With no VPS reachable, the laptop keeps its own orchestrator only if it already owns it. Otherwise discovery on the laptop falls back to the fresh-CLI passes, which only propose found rows from the connections the laptop owns.
 
-A user can move a task with **Run on…** in the command palette. The source instance stops its agent, sends the worktree as a Git bundle over the paired channel, and then releases the lock. Nothing is pushed to a hosting provider.
+A user can move a task with **Run on…** in the command palette. This performs a handoff, including the worktree bundle. Nothing is pushed to a hosting provider.
 
 ## Instances view
 
-**Instances** lists every paired instance with name, platform, state, voter role, last seen, slots in use, CLIs, connections it is polling and preference. It offers Add instance, Remove, Rename, voter choice and the preference. Each row in the inbox and board shows the instance where its agent last ran.
+**Instances** lists every paired instance with name, platform, state, last seen, slots in use, agent readiness, items owned and preference. It offers Add instance, Remove, Rename, the preference and **Take over**. Each row in the inbox and board shows its owner.
 
 ## Failures
 
 | Situation | Behavior |
 | --- | --- |
-| Laptop asleep | The VPS keeps polling, running discovery and working tasks. Desktop-only sources pause and catch up on wake, as today. |
-| VPS (sole voter) unreachable | The laptop finishes runs whose locks are still valid, then takes no new locks. Cards and Instances say why. The user can make the laptop the voter if the VPS is gone for good. |
-| Partition with both online | Only the side with a voter majority takes locks. The other side stops at expiry. No task runs twice and no write is sent twice. |
-| Lock holder freezes and resumes after expiry | Its next synced change or send intent carries an old fencing token and is refused. It sees the refusal and stops. |
-| Clock skew over 30 seconds between peers | Sync is refused until it is fixed, and Instances shows the skew. Lock expiry uses each instance's monotonic clock, so skew never extends a lock. |
+| Laptop sleeps | Before sleeping it hands its tasks and connections to the VPS. The VPS keeps polling, discovering and working. Desktop-only sources pause and catch up on wake, as today. |
+| VPS unreachable | The laptop keeps working on everything it owns, including sending. Items the VPS owns wait for it. Their rows say so. New tasks created on the laptop run there. |
+| Cut off with both online | Each instance continues on what it owns. No item is worked or sent by both. When they reconnect, proposals merge by evidence key and queued work rebalances. |
+| Laptop crashes without handing over | Its items wait. The user can **Take over** after typed confirmation. |
+| Instance pauses and resumes after a takeover | Its next synced change carries an old epoch and is refused. It learns of the higher epoch and stops. |
+| Handoff interrupted | The owner still owns the item and does not act until the receiver confirms or the handoff is cancelled. No item is left with two owners or with none. |
+| Clock skew between peers | Ownership does not depend on clocks. Large skew only affects the ordering of hand-edited fields. Instances shows skew over 30 seconds. |
 | Peer on a different app version | The sync protocol carries a version. Instances sync if both support the lower version. Otherwise Instances asks the user to update one of them. |
-| Data directory restored from backup | The instance detects that its log is behind its own previous position at peers, takes a new instance ID and resyncs. A restored voter adopts the voters' latest epoch before granting. |
+| Data directory restored from backup | The instance detects that its log is behind its own previous position at peers. It takes a new instance ID, gives up every item it owned at an older epoch, and resyncs. |
 
 ## Security boundaries
 
 - Paired instances trust each other fully, including with logins, so pair only machines the user controls.
 - Logins never leave the paired channel. They are encrypted with the workspace key in the sync log and at rest in each instance's secret store.
-- Agents on every instance keep the [local agent](local-agent.md) sandbox: no connector credentials, no tool access to connected accounts, and no ability to approve. The same applies to [Hermes](hermes-orchestrator.md).
+- Handoff and ownership records are signed with the instance key. A peer cannot forge another instance's handoff.
+- Agents on every instance reach the workspace only through the [app MCP server](agents-and-app-mcp.md), with capabilities limited to their task. They never see connector credentials.
 - The headless instance has no unauthenticated endpoint. Its loopback dashboard needs the same per-launch session as the desktop.
 
 ## Implementation phases
 
 1. **Headless service on Linux.** Separate the service from AppKit, add the encrypted credential store, and ship an install script and Docker image. Setups *Laptop* and *VPS* work.
-2. **Pairing, sync and the lock service.** Sync workspace state and logins. Every agent run, poll and send takes a lock, even with one instance. Add the Instances view.
-3. **Capacity scheduling** and failover, then worktree bundles and **Run on…**.
+2. **Pairing, sync and ownership.** Sync workspace state and logins. Every agent run, poll and send checks ownership, even with one instance. Add handoff, fencing, send intents and the Instances view.
+3. **Capacity scheduling**, planned-absence handoffs, worktree bundles, **Run on…** and **Take over**.
 
 Each phase ships with its acceptance criteria below passing.
 
 ## Acceptance criteria
 
 - **Phase 1.** On a fresh Linux VM, the install command starts a headless instance under systemd. Its loopback dashboard opens through `ssh -L` with the session secret. Restarting the VM preserves tasks and connections. Credentials on disk are encrypted and never appear in logs.
-- **Phase 2, pairing and sync.** Pairing with a valid code succeeds and shows matching fingerprints on both sides. An expired, reused or wrong code fails. A task created on the laptop appears on the VPS within 30 seconds, and the reverse. A connection made on the laptop polls from the VPS without signing in again there. Captured sync traffic contains no plaintext credential. Editing a title on both during a partition converges to the later edit on both. Removing an instance rotates the workspace key and offers reconnection for every connection.
-- **Phase 2, locks.** With a fault-injecting test harness on two and three instances: under random partitions, pauses and restarts, no task agent ever runs on two instances at once, and every fixture write is dispatched at most once. A holder paused beyond expiry has its later changes and send intent refused. With the sole voter stopped, the other instance takes no new lock. **Make this instance the voter** raises the epoch, and the old voter stops granting when it returns. Two instances refreshing one rotating token never both refresh it.
-- **Phase 3.** With the laptop's slots full, a new task runs on the VPS. With the preference *Overflow only* on the VPS and laptop slots free, it runs on the laptop. A task needing a desktop-only source never runs on the VPS. Killing the lock holder lets another instance take the task within 3 minutes. Moving a coding task transfers its worktree edits intact. Each discovery pass runs once per interval across two instances.
+- **Phase 2, pairing and sync.** Pairing with a valid code succeeds and shows matching fingerprints on both sides. An expired, reused or wrong code fails. A task created on the laptop appears on the VPS within 30 seconds, and the reverse. A connection made on the laptop polls from the VPS after a handoff, without signing in again there. Captured sync traffic contains no plaintext credential. Editing a title on both while cut off converges to the later edit on both. Removing an instance rotates the workspace key and offers reconnection for every connection.
+- **Phase 2, ownership.** A fault-injecting harness runs two and three instances under random disconnections, pauses, crashes and restarts, including during handoffs. With no takeover, no item is ever acted on by two instances, every fixture write is dispatched at most once, and no item ends with no owner. With the VPS stopped, the laptop keeps running and sending for its own tasks. A crash between send intent and receipt leads to reconciliation, not a blind resend. A change carrying an old epoch is refused.
+- **Phase 3.** With the laptop's slots full, a new task is handed to the VPS and runs there. With the preference *Overflow only* on the VPS and laptop slots free, it runs on the laptop. A task needing a desktop-only source never runs on the VPS. Putting the laptop to sleep hands its tasks and connections to the VPS, and a moved coding task keeps its worktree edits. A forced takeover after typed confirmation stops the old instance when it reconnects, and its unsent intents are reconciled before any resend.
 
 ## Future work: organisation gateway
 
@@ -204,4 +205,4 @@ A gateway would hold OAuth app registrations for many users. It would give simpl
 
 - Is Docker acceptable as the primary VPS install, or should the first target be a single binary plus systemd unit?
 - Default slots on a VPS: CPU count minus one assumes about 2 GB of memory per agent. Confirm with a measurement once phase 1 runs.
-- Two instances with no always-on machine cannot both be voters without one blocking when the other sleeps. Is "one laptop is the voter" acceptable for that setup?
+- Should a takeover ever happen automatically, for example after the owner has been silent for several days? This draft says never, because it cannot be made safe.

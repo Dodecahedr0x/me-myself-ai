@@ -52,28 +52,30 @@ The executor applies dry mode and the user's rules for each project and decision
 
 These are drafts. Nothing in this section is implemented yet.
 
-The dashboard becomes an inbox. Each task is one row with one agent. A row appears only when its agent needs the user, and the user answers with a numbered option from the keyboard. A board shows every task by stage. Unlike inboxes for coding agents, most rows come from discovery across mail, chat, social, calendar and code accounts, including proposed projects. A managed Hermes agent runs that discovery as a standing orchestrator. The user can prompt it and get updates from it. The app installs, configures, updates and monitors Hermes, and limits it to reading and proposing. Dry mode is unchanged. Every external write still needs approval of its exact version, and an approved write is sent immediately.
+The dashboard becomes an inbox. Each task is one row with one agent. A row appears only when its agent needs the user, and the user answers with a numbered option from the keyboard. A board shows every task by stage. Unlike inboxes for coding agents, most rows come from discovery across mail, chat, social, calendar and code accounts, including proposed projects. A managed Hermes agent runs that discovery as a standing orchestrator. The user can prompt it and get updates from it. Hermes reads connected accounts, and for each item that needs action it dispatches a fresh Claude Code or Codex task agent that writes and sends the reply. Every kind of task follows that same flow. All agents share one setup: the user signs into a Claude or ChatGPT subscription once, and connects each account once. Agents act only through the app's own MCP server, which gives each one the capabilities of its role and task. Dry mode is unchanged. Every external write still needs approval of its exact version, and an approved write is sent immediately.
 
-The app can run on the laptop, on a VPS the user controls, or on both as one workspace. Paired instances sync directly with each other, including logins, with no middleman. They split agent work by capacity. Before any instance runs a task, polls a connection or sends a write, it must hold that item's lock. Locks are granted by a majority of the voting instances the user chose.
+The app can run on the laptop, on a VPS the user controls, or on both as one workspace. Paired instances sync directly with each other, including logins, with no middleman. Every task, connection and the orchestrator has exactly one owner instance, and only the owner acts on it. Ownership moves only by a signed handoff from the current owner, so each instance keeps working on what it owns without the others. They split work by capacity through handoffs.
 
 ```mermaid
 flowchart LR
-    Sources["Mail, chat, social, calendar, code"] -->|Poll under connection lock| Activity[(Synced activity)]
-    Activity --> Hermes[Hermes orchestrator]
+    Sources["Mail, chat, social, calendar, code"] -->|Polled by the connection's owner| Activity[(Synced activity)]
+    Activity -->|App MCP: read| Hermes[Hermes orchestrator]
     User[User prompts] --> Hermes
     Hermes -->|Updates| User
-    Hermes -->|Propose| Found[Found for you]
-    Found -->|Accept| Queue[Shared task queue]
-    Queue -->|Take task lock| Laptop[Laptop agents]
-    Queue -->|Take task lock| VPS[VPS agents]
-    Laptop --> Inbox[Inbox: needs you]
-    VPS --> Inbox
-    Inbox -->|Option or reply| Queue
-    Inbox -->|Approved version| Executor[Lock holder's executor]
-    Executor -->|Send intent accepted by voters, single dispatch| Sources
+    Hermes -->|App MCP: dispatch_task| Tasks[Tasks, one owner each]
+    Hermes -->|App MCP: propose| Found[Found for you]
+    Found -->|Accept| Tasks
+    Tasks -->|Handoff by capacity| Laptop[Laptop task agents]
+    Tasks -->|Handoff by capacity| VPS[VPS task agents]
+    Laptop -->|App MCP: action tools| Executor[Owner's executor]
+    VPS -->|App MCP: action tools| Executor
+    Executor -->|Dry mode| Inbox[Inbox: needs you]
+    Inbox -->|Approved version| Executor
+    Executor -->|Send intent, single dispatch| Sources
 ```
 
 - [Inbox, focus card and board](specs/inbox-experience.md)
+- [Agents, capabilities and the app MCP server](specs/agents-and-app-mcp.md)
 - [Hermes orchestrator](specs/hermes-orchestrator.md)
 - [Proactive discovery and the connector catalog](specs/proactive-discovery.md)
 - [Instances, sync and sharing work](specs/instances-and-sync.md)
