@@ -130,16 +130,10 @@ class OrchestratorTests(Fixture):
         self.assertTrue(error)
         self.assertEqual(self.db.rows("tasks"), [])
 
-    def test_propose_creates_one_suggestion(self):
-        session = self.orchestrator()
-        out, error = self.call(session, "propose_task", title="Send the invoice", body="Reply with it.",
-                               reason="Client asked", evidence=[self.email], project="A")
-        self.assertFalse(error, out)
-        self.assertEqual(out["status"], "proposed")
-        out, _ = self.call(session, "propose_task", title="Send the invoice again", body="b", reason="r",
-                           evidence=[self.email])
-        self.assertEqual(out["status"], "duplicate")
-        self.assertEqual(len(self.db.rows("suggestions")), 1)
+    def test_orchestrator_cannot_ask_the_user_to_decide(self):
+        names = {t["name"] for t in app_mcp.handle(self.tools, self.orchestrator(),
+                 {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]}
+        self.assertFalse(names & {"propose_task", "ask_user"})
 
     def test_orchestrator_cannot_send(self):
         out, error = self.call(self.orchestrator(), "send_email", text="hi")

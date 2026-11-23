@@ -84,7 +84,7 @@ Tools, grouped by what they need:
 | Group | Tools | Available to |
 | --- | --- | --- |
 | Workspace read | `search_activity`, `read_item`, `read_thread`, `list_tasks`, `read_task`, `list_projects`, `read_rules`, `read_style` | Orchestrator: all. Task agent: its task and the evidence it links to. |
-| Discovery | `propose_task`, `propose_project`, `propose_follow_up`, `dispatch_task` | Orchestrator |
+| Discovery | `dispatch_task`, `create_project` | Orchestrator. There is no tool for asking the user whether to act. |
 | Conversation | `post_update`, `ask_user` (raises the thread with line one and options) | Orchestrator, and task agents for their own task |
 | Task progress | `record_progress`, `add_option`, `complete_task`, `skip_task` | Task agent, for its own task |
 | Actions | `send_email`, `send_message`, `respond_event`, `create_event`, `comment`, `create_issue`, `publish_branch`, `open_pr` | Task agent, within its write capability |
@@ -119,7 +119,7 @@ Implemented and tested with fixtures (`tests/test_app_mcp.py`, `tests/test_worke
 
 - **Settings → Agents** shows Claude Code, Codex CLI and Hermes with Ready, Sign in needed, Not installed or Unsupported version. **Sign in** opens the interactive login in Terminal on macOS, or shows the command to run elsewhere. Settings stores which subscription Hermes uses.
 - Session tokens per role and task, with capabilities, expiry and revocation. Task runs get a session only while the service is running, and it is revoked when the run ends.
-- Tools: `list_tasks`, `read_task`, `search_activity`, `read_item`, `read_thread`, `list_projects`, `read_rules`, `propose_task`, `dispatch_task`, `post_update`, `record_progress`, `ask_user`, `complete_task`, `skip_task`, `send_email`, `send_message`, `comment`.
+- Tools: `list_tasks`, `read_task`, `search_activity`, `read_item`, `read_thread`, `list_projects`, `read_rules`, `dispatch_task`, `post_update`, `record_progress`, `ask_user`, `complete_task`, `skip_task`, `send_email`, `send_message`, `comment`.
 - Task types: `email_reply`, `chat_reply`, `github_comment`, `github_bug`, `follow_up`, `general`. Without a declared type, a task gets the send tool matching its source.
 - Action tools hand the exact text to the existing executor. In dry mode they return `pending_review` with the version the user approves. Under an authorizing rule they deliver once and return `sent`. An unknown outcome blocks resends.
 
@@ -134,4 +134,4 @@ Findings that shaped the implementation:
 - Codex asks for approval on each MCP tool call and refuses when approvals are off. The app sets `default_tools_approval_mode="approve"` for its own server only, because the app enforces each call.
 - Claude Code finds a macOS Keychain login by the user's account name. Task runs failed with "Not logged in" until `USER` and `LOGNAME` were passed. This affected every Claude Code task run on such Macs, before this change too.
 
-Not implemented yet: `propose_project`, `add_option`, `schedule_check`, the learning tools, calendar and bug-fix action tools through MCP, and Hermes runs driven by the app. See the [Hermes orchestrator](hermes-orchestrator.md).
+Not implemented yet: `create_project`, `add_option`, `schedule_check`, the learning tools, calendar and bug-fix action tools through MCP, and Hermes runs driven by the app. See the [Hermes orchestrator](hermes-orchestrator.md).

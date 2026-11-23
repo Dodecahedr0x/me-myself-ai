@@ -63,8 +63,6 @@ flowchart LR
     User[User prompts] --> Hermes
     Hermes -->|Updates| User
     Hermes -->|App MCP: dispatch_task| Tasks[Tasks, one owner each]
-    Hermes -->|App MCP: propose| Found[Found for you]
-    Found -->|Accept| Tasks
     Tasks -->|Handoff by capacity| Laptop[Laptop task agents]
     Tasks -->|Handoff by capacity| VPS[VPS task agents]
     Laptop -->|App MCP: action tools| Executor[Owner's executor]

@@ -14,7 +14,6 @@ flowchart LR
     Thread --> Hermes[Hermes via ACP]
     Hermes -->|App MCP: read| Store[(Activity, tasks, projects, rules)]
     Hermes -->|App MCP: dispatch_task| App[App]
-    Hermes -->|App MCP: propose| Found[Found for you rows]
     App -->|Spawn with scoped session| Workers[Claude Code or Codex task agents]
     Workers -->|App MCP: action tools| Executor[Action executor]
     Executor -->|Dry mode| Inbox[Review in inbox]
@@ -40,7 +39,7 @@ flowchart LR
 
 Hermes reaches the workspace only through the [app MCP server](agents-and-app-mcp.md#the-app-mcp-server), with the orchestrator's capabilities. The app writes Hermes' private `config.yaml` with that server as its only MCP server and `approvals.mode: manual`. Each run names its toolsets explicitly.
 
-- **Can** read every connection through the app, propose tasks and projects, dispatch tasks of any declared type, post updates, ask the user, and schedule its own checks.
+- **Can** read every connection through the app, dispatch tasks of any declared type, post updates and schedule its own checks. It works autonomously and has no tool that asks the user whether to act.
 - **Cannot** call any action tool, so it cannot send, post, comment or change anything outside the app. It cannot approve, change rules, connect accounts or see credentials.
 - Its own terminal, file, browser, web, code-execution, messaging, cron and delegation toolsets are not enabled. The app never starts its gateway or HTTP API server. Its approval setting is `manual`, with unattended and cron modes set to `deny`.
 - Connected content is data. Text in an email asking Hermes to send, approve or connect something has no authority.
@@ -49,10 +48,9 @@ Hermes reaches the workspace only through the [app MCP server](agents-and-app-mc
 
 When Hermes decides that an item needs action, it calls `dispatch_task` with a task type, project, evidence and the account and destination the work is bound to. The app then:
 
-1. checks that a project rule allows starting this type and decision kind without triage. If not, it creates a found row instead, for the user to accept.
-2. creates the task and assigns an owner instance by capacity, as in [dividing work](instances-and-sync.md#dividing-work).
-3. spawns a fresh task agent on the owner, with a session token scoped to that task's evidence and write capability.
-4. reports the outcome back to Hermes when the task finishes, waits for the user, or fails.
+1. creates the task and assigns an owner instance by capacity, as in [dividing work](instances-and-sync.md#dividing-work).
+2. spawns a fresh task agent on the owner, with a session token scoped to that task's evidence and write capability.
+3. reports the outcome back to Hermes when the task finishes, waits for the user, or fails.
 
 This is the same for every task type: email replies, chat replies, calendar responses, bug fixes and follow-ups. Each type's details live in its [declaration](agents-and-app-mcp.md#task-types).
 
@@ -60,13 +58,13 @@ This is the same for every task type: email replies, chat replies, calendar resp
 
 - The orchestrator has one permanent thread, pinned at the top of the inbox list as **Orchestrator**. It counts as Needs you only when Hermes raises something.
 - **⌘K → Ask the orchestrator**, or **R** on its row, sends a prompt. Examples: "What's on my plate this week?", "Pull everything about the Lisbon trip into a project", "Why is the invoice task stuck?", "Stop suggesting newsletter follow-ups."
-- Hermes replies in the thread. A reply that proposes work ends with numbered options, as on any card. Picking an option calls the matching tool.
+- Hermes replies in the thread. When the user asks for work, Hermes dispatches it instead of offering choices.
 - **Updates.** Each morning at a time the user sets (default 08:30), Hermes posts a digest: what it found and dispatched, what finished, what is stuck, and what needs the user. It also posts when a task it dispatched finishes or fails. The user can mute digests or change their time.
 - Instructions the user gives become entries in Hermes' memory or skills. Both are shown with their revision history and can be reverted.
 
 ## Discovery passes
 
-The reactive pass, the 15-minute sweep and the daily project pass in [proactive discovery](proactive-discovery.md) run as prompts to Hermes. The app sends them on its own schedule. Budget, deduplication and dismissal learning are enforced by the app's tools, not left to Hermes. When Hermes is unavailable, the app falls back to the existing fresh-CLI discovery, which only proposes found rows. The orchestrator row says it is in fallback.
+The sweep and the daily project pass in [proactive discovery](proactive-discovery.md) run as prompts to Hermes. The app sends them on its own schedule. The safety limit, deduplication and dismissal learning are enforced by the app's tools, not left to Hermes. When Hermes is unavailable, the existing fresh-CLI discovery continues, and the orchestrator section says why Hermes is waiting.
 
 ## Acceptance criteria
 
@@ -75,9 +73,9 @@ The reactive pass, the 15-minute sweep and the daily project pass in [proactive 
 - Killing the Hermes process restarts it with backoff. Three crashes in 10 minutes show an error on the orchestrator row.
 - Every Hermes run names only the memory, todo, session_search and app MCP toolsets. Its config lists the app server as its only MCP server. `hermes mcp test memyselfai` lists only orchestrator tools. A Hermes call to `send_email` is refused.
 - With fixture mail, Hermes dispatches an `email_reply` task. A new task agent drafts and sends it through the app, ending in a review card in dry mode. With a rule allowing it, the fixture records one write.
-- Budget and deduplication hold even when a fixture Hermes proposes or dispatches 30 items for the same evidence.
+- The safety limit and deduplication hold even when a fixture Hermes dispatches 30 items for the same evidence.
 - A fixture email telling the orchestrator to send a reply produces at most a dispatched task whose send goes through review. The connector records zero writes before approval.
-- Asking "What's on my plate this week?" returns an answer grounded in fixture tasks, with references. Picking a proposed option creates the task.
+- Asking "What's on my plate this week?" returns an answer grounded in fixture tasks, with references. Asking for work dispatches it.
 - The morning digest posts once a day at the set time on whichever instance owns the orchestrator, including after ownership moves.
 - Editing Hermes' memory on one instance appears on the other. Reverting a revision restores the earlier text.
 - Updating to a broken fixture Hermes version rolls back automatically.
@@ -98,8 +96,9 @@ Implemented in `orchestrator.py` and tested in `tests/test_orchestrator.py`. The
   - A sweep runs when activity or tasks have changed since the last sweep. That happens 60 seconds after the newest activity settles, at most every 2 minutes, and otherwise at least every 15 minutes.
   - Nothing runs when nothing has changed.
 - **Each run** gets a fresh orchestrator session token, written to a private file that is deleted afterwards. The app rewrites Hermes' config and runs `hermes -z` with the `memory`, `todo`, `session_search` and `memyselfai` toolsets. In one-shot mode, an MCP server's toolset is named after the server itself. Runs time out after 10 minutes. Failures retry after 1, 5, 30 and then 60 minutes.
-- **Daily budget.** `dispatch_task` and `propose_task` stop at the daily budget (default 10), counted from tasks and suggestions the orchestrator created since local midnight. Returning an existing task costs nothing.
-- **Conversation.** Home shows an Orchestrator section with status, the budget used, the latest messages, and **Ask**, **Sweep now** and **Pause**. Sweep summaries go to the activity log. Digests and replies go to the thread.
+- **Autonomy.** The orchestrator never asks the user to decide whether to act. It has no tool to propose or ask. Its prompt tells it to dispatch anything that plausibly needs action and to let the task agent skip what does not.
+- **Safety limit.** `dispatch_task` stops at a daily limit of new tasks (default 50, adjustable up to 500). It counts tasks the orchestrator created since local midnight. Returning an existing task costs nothing.
+- **Conversation.** Home shows an Orchestrator section with status, new tasks today against the limit, the latest messages, and **Ask**, **Sweep now** and **Pause**. Sweep summaries go to the activity log. Digests and replies go to the thread.
 - When Hermes is not ready, runs wait and a prompt gets an answer explaining what to fix.
 
 Not implemented yet:

@@ -24,7 +24,7 @@ The inbox lists rows that need the user, newest-needed first. The [orchestrator]
 
 1. **Urgent.** A row is urgent when a project rule marks its decision kind urgent, a stated deadline is within 24 hours, or the delivery outcome is uncertain. Urgent rows sit under their own heading.
 2. **Needs you.** Proposals waiting for approval, questions, failures that need a decision, and finished results the user has not read.
-3. **Found for you.** Discovered work and proposed projects that wait for triage. See [proactive discovery](proactive-discovery.md). This section is capped at the daily discovery budget so discovery cannot flood the inbox.
+Discovered work never waits for triage. The orchestrator dispatches it to task agents, as described in [proactive discovery](proactive-discovery.md). A row reaches the inbox only when its agent needs the user.
 
 Each row shows two lines. Line one is what the agent needs from the user, in bold, in under 110 characters. Line two is the project, the source with its account (for example "Gmail · work@"), and the instance where the agent ran. Rows with the same title stay distinguishable by these labels, as required today.
 
@@ -61,7 +61,6 @@ Approving a write dispatches it immediately, with no delay, through the [connect
 
 | Column | Task states |
 | --- | --- |
-| Found | Proposed (discovered, not triaged) |
 | Queued | Proposed and accepted, waiting for agent capacity |
 | Working | Preparing, Checking, Sending |
 | Needs you | Review, NeedsInput, Uncertain, failed with a retry decision |
@@ -119,14 +118,14 @@ An explicit sample workspace still demonstrates the whole flow without accounts.
 
 ## Acceptance criteria
 
-- With fixture tasks in every state, the inbox lists exactly the Review, NeedsInput, Uncertain, decision-needing failure, unread result and untriaged found rows. Urgent rows come first under their heading. Working and snoozed rows appear only on the board.
+- With fixture tasks in every state, the inbox lists exactly the Review, NeedsInput, Uncertain, decision-needing failure and unread result rows. Urgent rows come first under their heading. Working and snoozed rows appear only on the board.
 - Each row shows line one, project, source with account, and instance. Two rows with the same title are distinguishable.
 - Opening a review card shows the account, destination, full content and version. Pressing **E** on it confirms exactly that version, and the fixture connector records one write at once. **Z** afterwards does not affect the send.
 - A task result whose approve option names a stale version is rejected and shown as a failure. A revised proposal needs a fresh approval.
 - **1–9**, **R**, **L**, **N**, **S**, **B** and **⌘K** perform their actions. Letter keys are inert while typing in a field. Every action is also reachable by pointer.
 - Pasting a three-line list into compose creates three rows with independent agents.
 - A row snoozed until a time reappears in Needs you at that time after an app restart. A snoozed row whose deadline falls within 24 hours becomes urgent.
-- The board places each fixture state in the mapped column. Dragging a row to Done closes it. Dragging a found row to Queued starts it. No drag dispatches a write.
-- The found section never shows more rows than the daily discovery budget.
+- The board places each fixture state in the mapped column. Dragging a row to Done closes it. No drag dispatches a write.
+- No row asks the user whether discovered work should be done.
 - A notification contains only line one and is not repeated for the same row within five minutes.
 - A narrow window keeps the inbox, card, board and rail usable.

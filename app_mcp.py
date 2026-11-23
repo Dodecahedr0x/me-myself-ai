@@ -113,11 +113,9 @@ TOOLS = {
     "read_thread": ({TASK}, "Read this task's source message and the earlier messages in its thread.", _schema()),
     "list_projects": ({ORCHESTRATOR, TASK}, "List projects.", _schema()),
     "read_rules": ({ORCHESTRATOR}, "Read the decision rules of a project.", _schema(["project"], project=_S)),
-    "propose_task": ({ORCHESTRATOR}, "Suggest a task for the user to accept, grounded in activity items.",
-                     _schema(["title", "body", "reason", "evidence"], title=_S, body=_S, reason=_S,
-                             project=_S, evidence=_IDS)),
     "dispatch_task": ({ORCHESTRATOR},
-                      "Start a fresh task agent on one activity item. Types: " + ", ".join(TASK_TYPES) + ".",
+                      "Start a fresh task agent on one activity item. The agent investigates, does the work "
+                      "or skips it if nothing is needed. Types: " + ", ".join(TASK_TYPES) + ".",
                       _schema(["type", "title", "evidence"], type={"type": "string", "enum": list(TASK_TYPES)},
                               title=_S, body=_S, project=_S, evidence=_S)),
     "post_update": ({ORCHESTRATOR}, "Post an update for the user in the activity log.", _schema(["text"], text=_S)),
@@ -276,41 +274,11 @@ class Tools:
         return e, c
 
     def spend(self, session):
-        """The orchestrator's daily budget for new work. Duplicates cost nothing."""
+        """A runaway guard on new tasks per day. Returning an existing task costs nothing."""
         orchestrator = getattr(self.engine, "orchestrator", None)
         if session.role == ORCHESTRATOR and orchestrator and orchestrator.remaining() <= 0:
-            raise Refused("Today's budget for new work is used up. Mention remaining items in your answer.")
-
-    def propose_task(self, session, args):
-        self.spend(session)
-        evidence = args.get("evidence")
-        if not isinstance(evidence, list) or not evidence or len(evidence) > 12:
-            raise Refused("Give one to twelve activity item IDs as evidence.")
-        rows = []
-        for key in dict.fromkeys(evidence):
-            e, c = self._event(key)
-            raw = e["raw"]
-            rows.append(dict(
-                id=e["id"], source=raw.get("context", {}).get("google_service") or c["kind"],
-                title=raw["title"][:300], detail=raw["body"][:600], authored_by_user=bool(raw.get("authored")),
-                destination=raw["destination"], at=raw["timestamp"], url=raw.get("url", ""),
-                project=e["project"], connection=c["id"], generation=e["generation"],
-            ))
-        before = {s["id"] for s in self.db.rows("suggestions")}
-        proposal = dict(title=_text(args, "title", 300), body=_text(args, "body"), reason=_text(args, "reason", 2000),
-                        project=self._project(args), anchor=rows[0]["id"], evidence=[r["id"] for r in rows])
-        with self.db.atomic():
-            self.engine.suggestions.record(
-                [proposal], {r["id"]: r for r in rows}, {p["name"] for p in self.db.rows("projects")}
-            )
-        created = [s for s in self.db.rows("suggestions") if s["id"] not in before]
-        if not created:
-            return {"status": "duplicate", "detail": "This evidence already has a suggestion or task."}
-        with self.db.atomic():
-            row = self.db.get("suggestions", created[0]["id"])
-            row["origin"] = session.role
-            self.db.put("suggestions", row)
-        return {"status": "proposed", "suggestion": created[0]["id"]}
+            raise Refused("Today's safety limit on new tasks is reached. Stop dispatching; the next "
+                          "sweep after midnight picks up what remains.")
 
     def dispatch_task(self, session, args):
         kind = args.get("type")

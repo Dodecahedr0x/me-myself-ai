@@ -8,44 +8,44 @@ Coding-agent inboxes wait for the user to type work in. MeMyselfAI should find t
 
 ## What discovery produces
 
-| Output | Example | Inbox treatment |
-| --- | --- | --- |
-| Task from a request | A client asks for an invoice by email. | Needs you once prepared. If a rule allows starting without triage, it is never shown untriaged. |
-| Follow-up | An email thread is unanswered after five days, or the user promised figures for Friday. | Found for you, with evidence. |
-| Deadline | A calendar event called "Tax filing" is in three days with no related activity. | Found for you. Urgent within 24 hours. |
-| Proposed project | Twelve threads over two weeks mention "the Lisbon trip", across mail, WhatsApp and a calendar. | One "New project?" row. Options: create it with the listed sources and people, merge into an existing project, or ignore the topic. |
-| Opportunity | A GitHub issue in a watched repo matches work the user often does. A DM asks for a collaboration. | Found for you, ranked below obligations. |
+Discovery is autonomous. It never asks the user whether something should be done. Reading and dispatching have no effect outside the app, and every external write still follows the user's delivery rules. So the orchestrator acts on everything that plausibly needs action. A task agent that finds nothing to do skips the item and records why.
 
-Every output records its evidence: source, account, item references, quoted excerpts and the reason. Discovery never acts on an output. Accepting it creates a task. That task follows the [task workflow](task-workflow.md).
+| Output | Example | What happens |
+| --- | --- | --- |
+| Task from a request | A client asks for an invoice by email. | Dispatched to a task agent. It reaches the inbox only if the agent needs the user, for example to approve the reply in dry mode. |
+| Follow-up | An email thread is unanswered after five days, or the user promised figures for Friday. | Dispatched as `follow_up`. |
+| Deadline | A calendar event called "Tax filing" is in three days with no related activity. | Dispatched as `follow_up`. Urgent within 24 hours. |
+| Project | Twelve threads over two weeks mention "the Lisbon trip", across mail, WhatsApp and a calendar. | The orchestrator creates the project and assigns its tasks. The user can rename, merge or delete it later. |
+| Opportunity | A GitHub issue in a watched repo matches work the user often does. A DM asks for a collaboration. | Dispatched after obligations, so it waits behind them. |
+
+Every task records its evidence: source, account, item references, quoted excerpts and the reason it was dispatched.
 
 ## Discovery passes
 
 ```mermaid
 flowchart LR
-    Events[New source events] --> Reactive[Reactive pass, per event]
-    Store[(Stored activity)] --> Sweep[Sweep, every 15 min]
+    Events[New source events] --> Sweep[Sweep: soon after activity settles, at least every 15 min]
+    Store[(Stored activity)] --> Sweep
     Store --> Projects[Project pass, daily]
     Calendar[Calendar and deadlines] --> Sweep
-    Reactive --> Dedupe[Deduplicate by evidence]
-    Sweep --> Dedupe
-    Projects --> Dedupe
-    Dedupe --> Budget[Rank and apply daily budget]
-    Budget --> Inbox[Found for you]
-    Budget -->|Rule allows auto-start| Queue[Task queue]
+    Sweep --> Dispatch[dispatch_task, deduplicated by evidence]
+    Projects --> Dispatch
+    Dispatch --> Limit[Daily safety limit]
+    Limit --> Queue[Task queue: a fresh agent per task]
+    Queue -->|Only when an agent needs the user| Inbox[Inbox]
 ```
 
-- **Reactive** runs for each new event, as today.
-- **Sweep** runs every 15 minutes over stored activity from the last 14 days. It looks for unanswered threads, unfulfilled promises, approaching deadlines and stalled tasks. It skips inference when evidence has not changed since its last run. The existing five-minute, three-hour suggestion scan becomes the sweep's short window.
-- **Project pass** runs once a day over the last 30 days. It clusters activity by people, topics, repositories and places. A cluster becomes a proposed project only if it spans at least two sources or five items and does not match an existing project.
+- **Sweep** runs soon after new activity settles, and at least every 15 minutes while anything has changed. It covers new requests, unanswered threads, unfulfilled promises, approaching deadlines and stalled tasks. It skips inference when nothing has changed.
+- **Project pass** runs once a day over the last 30 days. It clusters activity by people, topics, repositories and places. A cluster spanning at least two sources or five items that matches no existing project becomes a new project.
+- The existing per-event discovery also runs. Both paths create tasks keyed by the activity item, so they never duplicate each other.
 
-Each pass is a prompt to the managed [Hermes orchestrator](hermes-orchestrator.md), sent by the app on its schedule to the instance that owns the orchestrator. Hermes reads activity, proposes findings and dispatches tasks only through the [app MCP server](agents-and-app-mcp.md). Its memory and skills let it carry context between passes. The app enforces deduplication and the budget in those tools. When Hermes is unavailable, each pass falls back to a fresh CLI run with bounded input, as in the [local agent contract](local-agent.md). The project pass returns the cluster's name, a one-line description, member evidence, suggested sources, people and repositories, and a confidence.
+Each pass is a prompt to the managed [Hermes orchestrator](hermes-orchestrator.md), sent by the app on its schedule to the instance that owns the orchestrator. Hermes reads activity and dispatches tasks only through the [app MCP server](agents-and-app-mcp.md). Its memory lets it carry context between passes. The app enforces deduplication and the safety limit in those tools. When Hermes is unavailable, the existing fresh-CLI discovery continues.
 
-## Budget and learning
+## Safety limit and learning
 
-- The user sets a daily budget for untriaged found rows. The default is 10. Obligations rank above opportunities. Within a rank, earlier deadlines come first. Rows over budget wait. They are never dropped silently, and the Activity view lists them.
-- Dismissing a found row asks for an optional reason with one keypress: **not mine**, **not important**, **already done**, **wrong project**. The reason feeds the discovery skill through the existing [improvement flow](activity-and-improvement.md).
-- Ignoring a topic suppresses project proposals for that cluster until new activity changes its membership by more than half.
-- A project rule can let a decision kind start without triage, for example "requests from my team in Slack". Discovery then queues those tasks directly. Delivery rules are unchanged.
+- A daily limit on new tasks (default 50) guards against a runaway orchestrator. It is a cost guard, not a triage queue. Items beyond it are dispatched by the first sweep after midnight, earliest deadline first.
+- Dismissing a task records an optional reason: **not mine**, **not important**, **already done** or **wrong project**. The reason feeds the discovery skill through the existing [improvement flow](activity-and-improvement.md). So the orchestrator learns what not to dispatch without asking first.
+- Task agents skip items that need nothing, and those skips also feed the discovery skill.
 
 ## Connector catalog
 
@@ -84,24 +84,23 @@ Planned connectors, in order of priority:
 
 Connectors use official APIs or user-supplied exports. Do not scrape a site or automate its web interface without a separate spec and the user's explicit opt-in. That would breach many providers' terms and risk the user's account.
 
-## Connecting from the inbox
+## Connecting missing sources
 
-Connections keeps its page. Discovery also asks for missing sources from the inbox. When evidence references a source that is not connected, discovery can produce one row such as "Three emails mention a Discord thread. Connect Discord?" Its options are **Connect**, **Not now** and **Never for this source**. That row does not count toward the budget more than once a week.
+When evidence references a source that is not connected, the orchestrator mentions it in its next digest, for example "Three emails mention a Discord thread; connecting Discord would let me follow it." It never creates an inbox row for this.
 
 ## Acceptance criteria
 
-- With fixture activity, a 14-day-old unanswered email thread and a dated promise each produce one found row with evidence. Running the sweep again produces no duplicates. Dismissing a row keeps it dismissed across sweeps.
-- With fixture activity across mail, chat and calendar sharing one topic, the project pass proposes one project with its members. Accepting it creates the project and assigns its existing tasks there. Ignoring the topic suppresses it until membership changes by more than half.
-- With 15 fixture findings and a budget of 10, the inbox shows 10, ranked by kind and deadline. Activity lists the other five.
-- A dismissal reason reaches the discovery skill's improvement input.
-- A rule allowing auto-start queues a matching task without a found row. Its proposed write still waits for review in dry mode.
+- With fixture activity, a 14-day-old unanswered email thread and a dated promise each lead to one dispatched task with evidence. Running the sweep again creates no duplicates. A dismissed task stays dismissed across sweeps.
+- No discovery output asks the user to decide whether to act. The orchestrator has no tool that creates a suggestion or a question.
+- With fixture activity across mail, chat and calendar sharing one topic, the project pass creates one project and assigns its tasks there.
+- With 60 fixture findings and a limit of 50, 50 tasks are created that day, by deadline. The rest are created after midnight.
+- A dismissal reason and an agent's skip reason reach the discovery skill's improvement input.
+- A dispatched task's proposed write still waits for review in dry mode.
 - A new connector passes the shared contract suite with fixtures: stable keys, window bounds, failure on a failed page, zero writes while polling, target verification and no retry after an uncertain write.
 - A connector marked `runs_on: desktop` is never polled by a VPS instance.
-- With Hermes stopped, each pass still runs through the CLI fallback and produces the same found rows for the same fixtures.
-- Source text that tells the agent to accept, send or connect something has no effect on authorization.
+- Source text that tells the agent to send or connect something has no effect on authorization.
 
 ## Open questions
 
 - Discord: is a bot in the user's own servers acceptable, given that it cannot see the user's DMs?
 - Social posting: should original posts, as opposed to replies, ever be allowed outside review? The current answer is no.
-- Should the daily budget be per project as well as per workspace?

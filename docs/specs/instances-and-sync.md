@@ -129,7 +129,7 @@ Ownership removes conflicts over task work. Conflicts remain only for things a u
 - Two answers to the same question from different instances: the earlier one by clock applies. The later one is kept and shown on the card as "also answered on VPS: …" so the user can reply again.
 - Two approvals of the same action version are one approval. An approval of an older version never authorizes a newer one. An approval made on a non-owner syncs to the owner, which sends.
 - Skills, style and Hermes memory Markdown keep both versions when edited on two instances while cut off. The card shows a merge question. Until it is answered, the earlier version stays active.
-- Two instances cut off from each other may each propose the same found row from the same evidence. Proposals have no effects outside the app and merge by evidence key. Tasks are created from evidence only by the owner of the evidence's connection, so the same email never becomes two tasks.
+- Two instances cut off from each other may each discover the same item. Tasks are created from evidence only by the owner of the evidence's connection, so the same email never becomes two tasks.
 
 ## Dividing work
 
@@ -152,7 +152,7 @@ If no peer is reachable, the task stays queued with its owner until a slot frees
 
 Connections prefer an always-on owner. When a VPS is paired, the laptop offers it its connections, except desktop-only sources such as local folders, desktop chats and the frontmost app. Those are always owned by a macOS instance. A task needing a token for a connection its instance does not own uses the synced token. If that token has expired, it asks the connection's owner to refresh it. A rotating refresh token is refreshed only by its owner.
 
-The orchestrator also prefers an always-on owner. With no VPS reachable, the laptop keeps its own orchestrator only if it already owns it. Otherwise discovery on the laptop falls back to the fresh-CLI passes, which only propose found rows from the connections the laptop owns.
+The orchestrator also prefers an always-on owner. With no VPS reachable, the laptop keeps its own orchestrator only if it already owns it. Otherwise discovery on the laptop falls back to the fresh-CLI passes, over the connections the laptop owns.
 
 A user can move a task with **Run on…** in the command palette. This performs a handoff, including the worktree bundle. Nothing is pushed to a hosting provider.
 
