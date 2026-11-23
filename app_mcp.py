@@ -275,7 +275,14 @@ class Tools:
             raise Refused("Someone else owns this work.")
         return e, c
 
+    def spend(self, session):
+        """The orchestrator's daily budget for new work. Duplicates cost nothing."""
+        orchestrator = getattr(self.engine, "orchestrator", None)
+        if session.role == ORCHESTRATOR and orchestrator and orchestrator.remaining() <= 0:
+            raise Refused("Today's budget for new work is used up. Mention remaining items in your answer.")
+
     def propose_task(self, session, args):
+        self.spend(session)
         evidence = args.get("evidence")
         if not isinstance(evidence, list) or not evidence or len(evidence) > 12:
             raise Refused("Give one to twelve activity item IDs as evidence.")
@@ -299,6 +306,10 @@ class Tools:
         created = [s for s in self.db.rows("suggestions") if s["id"] not in before]
         if not created:
             return {"status": "duplicate", "detail": "This evidence already has a suggestion or task."}
+        with self.db.atomic():
+            row = self.db.get("suggestions", created[0]["id"])
+            row["origin"] = session.role
+            self.db.put("suggestions", row)
         return {"status": "proposed", "suggestion": created[0]["id"]}
 
     def dispatch_task(self, session, args):
@@ -313,10 +324,12 @@ class Tools:
             existing = self.db.get("tasks", e["id"])
             if existing:
                 return {"status": "exists", "task": existing["id"], "task_status": existing["status"]}
+            self.spend(session)
             raw = e["raw"]
             self.engine.new_task(
                 title, project, body, id=e["id"], event=e["id"], source=c["kind"],
                 kind=TASK_TYPES[kind]["kind"], task_type=kind, reason="Dispatched by the orchestrator",
+                origin=session.role,
                 account=raw["account"], destination=raw["destination"], url=raw.get("url", ""),
             )
         self.engine.wake.set()

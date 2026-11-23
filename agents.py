@@ -25,7 +25,7 @@ HERMES_PROVIDER = {"claude": "anthropic", "codex": "openai-codex"}
 HERMES_MIN_VERSION = (0, 13, 0)
 # Hermes toolsets the orchestrator may use. Terminal, file, browser, web, code execution,
 # messaging, cron and delegation stay off. The app MCP server is the only way to act.
-HERMES_TOOLSETS = ("memory", "todo", "session_search", "mcp-memyselfai")
+HERMES_TOOLSETS = ("memory", "todo", "session_search", "memyselfai")
 CHECK_TIMEOUT = 20
 CACHE_SECONDS = 30
 

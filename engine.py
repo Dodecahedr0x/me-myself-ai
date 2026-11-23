@@ -12,6 +12,7 @@ from pathlib import Path
 import agents
 import app_mcp
 import bugflow
+import orchestrator
 import selfcheck
 import github_signin
 import connectors
@@ -57,6 +58,7 @@ class Engine:
         self.mcp_tools = app_mcp.Tools(self)
         self.mcp_url = None
         self.agents = agents.Agents(root, self.settings)
+        self.orchestrator = orchestrator.Orchestrator(self)
         with self.db.atomic():
             settings = self.db.get("config", "settings")
             if not settings:
@@ -224,6 +226,7 @@ class Engine:
                 settings=self.settings(),
                 skills=self.db.rows("skills")[::-1],
                 suggestions=self.suggestions.state(),
+                orchestrator=self.orchestrator.state(),
                 projects=sorted(self.db.rows("projects"), key=lambda p: not p.get("global")),
             )
 
@@ -307,6 +310,7 @@ class Engine:
         self.thread.start()
 
     def close(self):
+        self.orchestrator.close()
         self.signins.close()
         self.stop.set()
         self.wake.set()
@@ -339,6 +343,9 @@ class Engine:
             if key not in self.jobs:
                 self.jobs[key] = pool.submit(fn, arg)
 
+        purpose = self.orchestrator.due(now)
+        if purpose:
+            submit("orchestrator", self.orchestrator.run, purpose, self.sync_pool)
         if self.suggestions.next_scan <= now:
             submit("activity-suggestions", self.suggestions.run, None, self.pool)
         for c in self.db.rows("connections"):
@@ -1381,6 +1388,10 @@ class Engine:
         key = d.get("id", "")
         if op.startswith("auth_"):
             return self.signins.action(d)
+        if op == "orchestrator_prompt":
+            return self.orchestrator.ask(d.get("text"))
+        if op == "orchestrator_settings":
+            return self.orchestrator.configure(d)
         if op == "agent_sign_in":
             return self.agents.open_sign_in(required(d, "agent", 16))
         if op == "connect_app_repo":

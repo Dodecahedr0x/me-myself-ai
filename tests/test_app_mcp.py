@@ -354,7 +354,7 @@ class AgentSetupTests(unittest.TestCase):
         toolsets = command[command.index("-t") + 1].split(",")
         self.assertNotIn("terminal", toolsets)
         self.assertNotIn("file", toolsets)
-        self.assertIn("mcp-memyselfai", toolsets)
+        self.assertIn("memyselfai", toolsets)
         self.assertEqual(env["HERMES_HOME"], str(self.root / "hermes"))
 
 

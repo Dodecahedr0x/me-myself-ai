@@ -224,3 +224,6 @@ details .facts {margin-top:8px}
 .suggested-task details {margin:4px 0 0;font-size:12px}
 .suggested-task .entry-actions {flex-shrink:0}
 .suggestion-evidence {padding-left:16px;font-size:12px}
+
+.message-text { white-space: pre-wrap; }
+.section-note { margin: 0 0 8px; color: var(--muted, #6b6b66); font-size: 13px; }

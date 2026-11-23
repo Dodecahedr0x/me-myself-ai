@@ -1,6 +1,6 @@
 # Hermes orchestrator
 
-**Status** — Draft. Setup, configuration and the app server connection are implemented. App-driven orchestrator runs are not. Covers [US-23, US-24 and US-30](../user-stories.md). Runs the passes in [proactive discovery](proactive-discovery.md). Shares setup, capabilities and the app MCP server with every other agent, as described in [agents, capabilities and the app MCP server](agents-and-app-mcp.md).
+**Status** — Partly implemented. See [implementation status](#implementation-status). Covers [US-23, US-24 and US-30](../user-stories.md). Runs the passes in [proactive discovery](proactive-discovery.md). Shares setup, capabilities and the app MCP server with every other agent, as described in [agents, capabilities and the app MCP server](agents-and-app-mcp.md).
 
 ## Intent
 
@@ -87,3 +87,25 @@ The reactive pass, the 15-minute sweep and the daily project pass in [proactive 
 - Anthropic's and OpenAI's terms may limit using a consumer subscription login inside a third-party agent such as Hermes. Check both before shipping subscription sign-in for Hermes. Keep the API key path available.
 - Hermes' macOS desktop app supports Apple Silicon only. This spec uses only the command-line install. Intel Mac support needs testing.
 - Should the orchestrator also be reachable from the user's own Telegram or Signal through Hermes' gateway? That would be a message sent by a third-party service, so it is off in this draft.
+
+## Implementation status
+
+Implemented in `orchestrator.py` and tested in `tests/test_orchestrator.py`. The tests use a stand-in `hermes` executable that connects to the real app MCP server through the bridge.
+
+- **Schedule.** The scheduler checks every second and runs at most one Hermes run at a time:
+  - A user prompt runs first.
+  - The digest runs once a day after 08:30 local time.
+  - A sweep runs when activity or tasks have changed since the last sweep. That happens 60 seconds after the newest activity settles, at most every 2 minutes, and otherwise at least every 15 minutes.
+  - Nothing runs when nothing has changed.
+- **Each run** gets a fresh orchestrator session token, written to a private file that is deleted afterwards. The app rewrites Hermes' config and runs `hermes -z` with the `memory`, `todo`, `session_search` and `memyselfai` toolsets. In one-shot mode, an MCP server's toolset is named after the server itself. Runs time out after 10 minutes. Failures retry after 1, 5, 30 and then 60 minutes.
+- **Daily budget.** `dispatch_task` and `propose_task` stop at the daily budget (default 10), counted from tasks and suggestions the orchestrator created since local midnight. Returning an existing task costs nothing.
+- **Conversation.** Home shows an Orchestrator section with status, the budget used, the latest messages, and **Ask**, **Sweep now** and **Pause**. Sweep summaries go to the activity log. Digests and replies go to the thread.
+- When Hermes is not ready, runs wait and a prompt gets an answer explaining what to fix.
+
+Not implemented yet:
+
+- **Reactive pass.** The per-event pass still uses the existing fresh-CLI discovery. Both paths create tasks keyed by the activity item, so they never duplicate each other.
+- The project pass, a configurable digest time, resuming one Hermes session across runs, and a notification when a dispatched task finishes.
+- Running on whichever instance owns the orchestrator. Today it runs on the single local instance.
+
+A live run with a real model has not been verified. With the Claude subscription, the first run reads Claude Code's Keychain login, which can show a macOS prompt.

@@ -138,6 +138,18 @@ function taskSuggestions(showSources = true) {
   return section("Suggested tasks",button("Check activity","suggestion_scan","sync","quiet"),items+gaps||
     empty(data.scan.at?"No new suggestions · "+relativeDate(data.scan.at):"No suggestions yet.",showSources?link("Activity sources","connections"):""));
 }
+function orchestratorSection() {
+  const o = state.orchestrator;
+  if (!o) return "";
+  const names = {user:"You",hermes:"Orchestrator",app:"MeMyselfAI"};
+  const status = !o.enabled ? "Paused" : o.error ? o.error : o.pending ? "Answering…" : titleCase(o.status||"idle");
+  const detail = status+" · "+o.used_today+" of "+o.budget+" new tasks today";
+  const thread = (o.messages||[]).slice(-6).map(m=>'<div class="entry"><div class="entry-text"><strong>'+esc(names[m.role]||m.role)+'</strong><p class="message-text">'+esc(m.text)+'</p></div></div>').join("");
+  const controls = button("Ask","orchestrator-ask","add","secondary")+
+    button("Sweep now","orchestrator-run","sync","quiet")+
+    button(o.enabled?"Pause":"Resume","orchestrator-toggle",null,"quiet");
+  return section("Orchestrator",controls,'<p class="section-note">'+esc(detail)+'</p>'+(thread||empty("Ask what is on your plate, or wait for the next sweep.")));
+}
 function overview() {
   const ordered = recent(state.tasks,"created");
   const attention = ordered.filter(t=>groups.attention.includes(t.status));
@@ -154,7 +166,7 @@ function overview() {
   const styleReviews = state.skills.filter(s=>s.kind==="style" && !s.active && s.status==="pending")
     .map(s=>'<button class="skill-row" data-action="skill" data-id="'+esc(s.id)+'"><span class="row-title"><strong>'+esc(s.body)+'</strong></span>'+icon("chevron",14)+'</button>').join("");
   const manage = '<a class="btn secondary" href="#connections">Manage connections</a>';
-  return '<section class="home-queue"><div class="queue-heading"><h2>Task queue</h2><div class="counters">'+summary+'</div>'+link("All tasks","tasks")+'</div>'+queue+'</section>'+taskSuggestions(false)+
+  return '<section class="home-queue"><div class="queue-heading"><h2>Task queue</h2><div class="counters">'+summary+'</div>'+link("All tasks","tasks")+'</div>'+queue+'</section>'+orchestratorSection()+taskSuggestions(false)+
     '<div class="overview-grid">'+section("Recent activity",link("View log","activity"),events.length?timeline(events):empty("No activity yet."))+
     '<div>'+section("Connections",manage,"")+
     (projects?section("Projects",link("View all","projects"),projects):"")+
@@ -731,6 +743,9 @@ function handleAction(el) {
     }
     case "providers": void loadProviders(true); return;
     case "agents": void loadAgents(true); return;
+    case "orchestrator-ask": openForm("orchestrator_prompt","Ask the orchestrator",input("text","Message",{type:"textarea",required:true,placeholder:"What's on my plate this week?"}),"Send",{},"The orchestrator reads your connected accounts through MeMyselfAI and can start tasks. Anything it prepares to send still needs your approval in dry mode."); return;
+    case "orchestrator-run": void mutate({op:"orchestrator_settings",run_now:true},"Sweep requested."); return;
+    case "orchestrator-toggle": void mutate({op:"orchestrator_settings",enabled:!state.orchestrator.enabled},state.orchestrator.enabled?"Orchestrator paused.":"Orchestrator resumed."); return;
     case "agent-sign-in": void signInAgent(el.dataset.agent); return;
     case "settings": void loadProviders(); openForm("settings","Agent settings",selectField("dry","Delivery mode",[["true","Dry mode — review every external write"],["false","Live mode — follow project rules"]],String(!!state.settings.dry))+providerField()+selectField("orchestrator_subscription","Orchestrator subscription",Object.entries(subscriptionNames),state.settings.orchestrator_subscription||(state.settings.provider==="codex"?"codex":"claude")),"Save settings",{},"In live mode the agent may deliver work without asking when all applicable rules allow it."); return;
     case "connect": {
@@ -792,7 +807,7 @@ function handleAction(el) {
     case "sync": void mutate({op:action},"Source sync requested."); return;
   }
 }
-const messages={app_finding:"Finding tracked.",chat_source_config:"Chat source saved.",suggestion_config:"Activity sources saved.",task:"Task created.",project:"Project saved.",report:"Investigation requested.",style:"Style preference submitted for review.",rule:"Decision rule saved.",settings:"Agent settings saved.",connect:"Connection saved.",feedback:"Feedback recorded.",answer:"Answer submitted.",reconcile:"Delivery outcome recorded.",dismiss:"Task dismissed.",disconnect:"Account disconnected.",demo:"Sample workspace loaded.",revert_skill:"Revision reverted."};
+const messages={orchestrator_prompt:"Message sent to the orchestrator.",app_finding:"Finding tracked.",chat_source_config:"Chat source saved.",suggestion_config:"Activity sources saved.",task:"Task created.",project:"Project saved.",report:"Investigation requested.",style:"Style preference submitted for review.",rule:"Decision rule saved.",settings:"Agent settings saved.",connect:"Connection saved.",feedback:"Feedback recorded.",answer:"Answer submitted.",reconcile:"Delivery outcome recorded.",dismiss:"Task dismissed.",disconnect:"Account disconnected.",demo:"Sample workspace loaded.",revert_skill:"Revision reverted."};
 async function signInAgent(agent) {
   try {
     const result=await request("/api/action",{op:"agent_sign_in",agent});
