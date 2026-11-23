@@ -1,6 +1,6 @@
 # Hermes orchestrator
 
-**Status** — Draft, not implemented. Covers [US-23, US-24 and US-30](../user-stories.md). Runs the passes in [proactive discovery](proactive-discovery.md). Shares setup, capabilities and the app MCP server with every other agent, as described in [agents, capabilities and the app MCP server](agents-and-app-mcp.md).
+**Status** — Draft. Setup, configuration and the app server connection are implemented. App-driven orchestrator runs are not. Covers [US-23, US-24 and US-30](../user-stories.md). Runs the passes in [proactive discovery](proactive-discovery.md). Shares setup, capabilities and the app MCP server with every other agent, as described in [agents, capabilities and the app MCP server](agents-and-app-mcp.md).
 
 ## Intent
 
@@ -29,20 +29,20 @@ flowchart LR
 | --- | --- |
 | Install | On first run and on each new instance, the app installs a Hermes version it pins, into its own data directory. It verifies the download's checksum and uses a private home (`HERMES_HOME`), so it never touches a `~/.hermes` the user already has. Progress and failures appear in Settings → Agents, with a retry. |
 | Configuration | The app writes Hermes' `config.yaml` from workspace settings. It overwrites any drift on start. |
-| Model | Hermes uses the user's Claude or ChatGPT subscription, the same one the task agents use. Connecting it may need the user to complete an interactive sign-in. The app opens it from Settings → Agents. An API key is an alternative. Sign-ins belong to each instance and do not sync. See [shared agent setup](agents-and-app-mcp.md#shared-agent-setup). |
-| Process | The app starts `hermes acp` over stdio and acts as its ACP client. It restarts Hermes after a crash with backoff: 1, 5, 30 seconds, then every 5 minutes. After three crashes in 10 minutes it shows the error on the orchestrator row. |
-| Health | On start and hourly, the app runs Hermes' own checks (`hermes acp --check`, `hermes doctor`). It also sends a short test prompt. Failures appear in Settings → Agents and the Instances view. An expired subscription sign-in shows **Sign in again**. |
+| Model | Hermes uses the user's Claude or ChatGPT subscription, the same one the task agents use. With the Claude subscription, Hermes (provider `anthropic`) reuses Claude Code's own login. On macOS it reads the Keychain item `Claude Code-credentials`, which can show a one-time macOS access prompt. It writes refreshed tokens back to Claude Code. With the ChatGPT subscription, Hermes needs its own one-time device sign-in into the app's private home (`hermes auth add openai-codex`). It does not reuse `~/.codex/auth.json` automatically. The app offers both from Settings → Agents. An API key is an alternative. Sign-ins belong to each instance and do not sync. See [shared agent setup](agents-and-app-mcp.md#shared-agent-setup). |
+| Process | The app runs Hermes one prompt at a time: `hermes -z <prompt> -t memory,todo,session_search,mcp-memyselfai`, resuming the orchestrator's session. In Hermes 0.13, ACP mode always enables its coding toolset (terminal, file writing, browser, code execution), and configuration cannot remove it. ACP is therefore not used until it can be limited. After three failed runs in 10 minutes, the app shows the error on the orchestrator row and retries with backoff: 1, 5, 30 seconds, then every 5 minutes. |
+| Health | On start and hourly, the app checks `hermes --version` against the minimum supported version (0.13.0) and runs `hermes mcp test memyselfai` to confirm that Hermes reaches the app server. Failures appear in Settings → Agents and the Instances view. An expired subscription sign-in shows **Sign in again**. |
 | Updates | The app updates Hermes only to a version a MemyselfAI release has tested. It never runs `hermes update`. A failed update rolls back to the previous version. |
 | Memory and skills | Hermes' `MEMORY.md`, `USER.md`, `SOUL.md` and skills live in the workspace Markdown store. They have revision history and sync between instances. Skill changes Hermes makes follow the existing [improvement review](activity-and-improvement.md). |
 | One active copy | Every instance has Hermes installed. Only the instance that owns the orchestrator runs it, under the [ownership protocol](instances-and-sync.md#ownership-protocol). |
 
 ## What Hermes can and cannot do
 
-Hermes reaches the workspace only through the [app MCP server](agents-and-app-mcp.md#the-app-mcp-server), with the orchestrator's capabilities:
+Hermes reaches the workspace only through the [app MCP server](agents-and-app-mcp.md#the-app-mcp-server), with the orchestrator's capabilities. The app writes Hermes' private `config.yaml` with that server as its only MCP server and `approvals.mode: manual`. Each run names its toolsets explicitly.
 
 - **Can** read every connection through the app, propose tasks and projects, dispatch tasks of any declared type, post updates, ask the user, and schedule its own checks.
 - **Cannot** call any action tool, so it cannot send, post, comment or change anything outside the app. It cannot approve, change rules, connect accounts or see credentials.
-- Its own terminal, file-write, browser and code-execution tools are off. Its messaging gateway, cron delivery to platforms and HTTP API server are disabled. Its approval setting is `manual`, with unattended mode set to `deny`. Any permission request it sends over ACP is denied by the app and logged.
+- Its own terminal, file, browser, web, code-execution, messaging, cron and delegation toolsets are not enabled. The app never starts its gateway or HTTP API server. Its approval setting is `manual`, with unattended and cron modes set to `deny`.
 - Connected content is data. Text in an email asking Hermes to send, approve or connect something has no authority.
 
 ## Dispatching work
@@ -73,7 +73,7 @@ The reactive pass, the 15-minute sweep and the daily project pass in [proactive 
 - On a clean macOS and a clean Linux instance, first run installs the pinned Hermes into the app's data directory. After the user signs into Claude Code or Codex, Hermes passes its health checks with that subscription, with no API key. An existing `~/.hermes` is unchanged.
 - A failed download, bad checksum, failed health check or expired sign-in shows in Settings → Agents with the fixing action. Discovery continues through the fallback.
 - Killing the Hermes process restarts it with backoff. Three crashes in 10 minutes show an error on the orchestrator row.
-- Hermes' effective configuration has terminal, file, browser, code execution, gateway, cron delivery and the HTTP server disabled. A fixture permission request over ACP is denied and logged. A Hermes call to `send_email` is refused.
+- Every Hermes run names only the memory, todo, session_search and app MCP toolsets. Its config lists the app server as its only MCP server. `hermes mcp test memyselfai` lists only orchestrator tools. A Hermes call to `send_email` is refused.
 - With fixture mail, Hermes dispatches an `email_reply` task. A new task agent drafts and sends it through the app, ending in a review card in dry mode. With a rule allowing it, the fixture records one write.
 - Budget and deduplication hold even when a fixture Hermes proposes or dispatches 30 items for the same evidence.
 - A fixture email telling the orchestrator to send a reply produces at most a dispatched task whose send goes through review. The connector records zero writes before approval.
@@ -84,6 +84,6 @@ The reactive pass, the 15-minute sweep and the daily project pass in [proactive 
 
 ## Open questions
 
-- Which exact sign-in path does Hermes use for each subscription: its Codex app-server runtime for ChatGPT, and which route for Claude? Verify both against the pinned version before implementation, and record any step that needs the user.
+- Anthropic's and OpenAI's terms may limit using a consumer subscription login inside a third-party agent such as Hermes. Check both before shipping subscription sign-in for Hermes. Keep the API key path available.
 - Hermes' macOS desktop app supports Apple Silicon only. This spec uses only the command-line install. Intel Mac support needs testing.
 - Should the orchestrator also be reachable from the user's own Telegram or Signal through Hermes' gateway? That would be a message sent by a third-party service, so it is off in this draft.

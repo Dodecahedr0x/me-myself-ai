@@ -31,6 +31,8 @@ In **Connections → Local activity**, connect **Claude** or **ChatGPT** to find
 
 Tasks, drafts, history, worktrees, and Markdown skills live under `~/Library/Application Support/MeMyselfAI/`. Connector credentials are stored in macOS Keychain. The workflow and style files reflect active revisions. Review style suggestions and revert workflow revisions through **Skills & style**.
 
+**Settings → Agents** shows whether Claude Code, Codex CLI and the Hermes orchestrator are installed and signed in. **Sign in** opens each one's own login in Terminal. Task agents and Hermes act in the app only through its MCP server, scoped to their role and task. [Agents and the app MCP server](docs/specs/agents-and-app-mcp.md)
+
 Claude Code uses its existing CLI sign-in. The isolated Codex worker supports Codex's file-backed sign-in or a provider API key available to the app process. A Codex login stored exclusively in Keychain currently requires another supported authentication method. The adapters have been tested with Claude Code 2.1.328 and Codex CLI 0.166.0.
 
 ## Development

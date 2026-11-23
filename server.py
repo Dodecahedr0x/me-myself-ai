@@ -14,6 +14,7 @@ import sys
 import threading
 from urllib.parse import urlsplit
 
+import app_mcp
 import worker
 from engine import Engine
 from connectors import SCHEMAS
@@ -60,6 +61,7 @@ class HTTP(ThreadingHTTPServer):
         self.ticket = secrets.token_urlsafe(32)
         self.origin = f"http://127.0.0.1:{self.server_port}"
         self.launch_url = self.origin + "/launch/" + self.ticket
+        engine.mcp_url = self.origin + "/mcp"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -113,6 +115,9 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/"):
             if path == "/api/providers":
                 return self.output(200, json.dumps(worker.cli_inventory()).encode())
+            if path == "/api/agents":
+                refresh = urlsplit(self.path).query == "refresh=1"
+                return self.output(200, json.dumps(s.engine.agents.inventory(refresh)).encode())
             if path not in {"/api/state", "/api/connectors"}:
                 return self.output(404)
             data = s.engine.state() if path == "/api/state" else SCHEMAS
@@ -125,8 +130,33 @@ class Handler(BaseHTTPRequestHandler):
             data = data.replace(b"__APP_TOKEN__", s.csrf.encode())
         return self.output(200, data, mimetypes.guess_type(name)[0] or "application/octet-stream")
 
+    def mcp(self):
+        """MCP JSON-RPC for agent sessions. Only a session token authorizes, never a browser cookie."""
+        s = self.server
+        auth = self.headers.get("Authorization", "")
+        session = s.engine.mcp_sessions.get(auth[7:]) if auth.startswith("Bearer ") else None
+        if not session or self.headers.get("Origin") or self.headers.get("Cookie"):
+            return self.output(403)
+        try:
+            size = int(self.headers.get("Content-Length", 0))
+            if not 0 < size <= 1_000_000:
+                raise ValueError
+            message = json.loads(self.rfile.read(size))
+        except ValueError:
+            return self.output(400, b'{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}')
+        try:
+            reply = app_mcp.handle(s.engine.mcp_tools, session, message)
+        except Exception:
+            reply = {"jsonrpc": "2.0", "id": message.get("id") if isinstance(message, dict) else None,
+                     "error": {"code": -32603, "message": "The tool failed. Inspect the activity history."}}
+        if reply is None:
+            return self.output(202)
+        return self.output(200, json.dumps(reply, ensure_ascii=False).encode())
+
     def do_POST(self):
         s = self.server
+        if self.valid_host() and self.path == "/mcp":
+            return self.mcp()
         if (
             not self.valid_host()
             or not self.session_ok()

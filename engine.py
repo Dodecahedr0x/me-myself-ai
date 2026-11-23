@@ -9,6 +9,8 @@ import threading
 import time
 from pathlib import Path
 
+import agents
+import app_mcp
 import bugflow
 import selfcheck
 import github_signin
@@ -50,6 +52,11 @@ class Engine:
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=6, thread_name_prefix="task")
         self.sync_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="source")
         self.dispatch_lock = threading.RLock()
+        # The app MCP server. The HTTP service sets mcp_url once it listens.
+        self.mcp_sessions = app_mcp.Sessions()
+        self.mcp_tools = app_mcp.Tools(self)
+        self.mcp_url = None
+        self.agents = agents.Agents(root, self.settings)
         with self.db.atomic():
             settings = self.db.get("config", "settings")
             if not settings:
@@ -270,11 +277,30 @@ class Engine:
             rules = [r for r in self.db.rows("rules") if r["project"] == project]
         provider = self.settings()["provider"]
         self.db.log("Agent started", f"{role} · {provider} · skills {', '.join(revisions)}", project, task)
-        answer = worker.run_agent(
-            role, {**payload, "instructions": instructions, "project": project, "rules": rules}, provider
-        )
+        context = {**payload, "instructions": instructions, "project": project, "rules": rules}
+        if role == "task" and task and self.mcp_url:
+            token = self.mcp_sessions.issue(app_mcp.TASK, task, self.task_actions(task))
+            try:
+                answer = worker.run_agent(role, context, provider, mcp=dict(url=self.mcp_url, token=token))
+            finally:
+                self.mcp_sessions.revoke(token)
+        else:
+            answer = worker.run_agent(role, context, provider)
         self.db.log("Agent result", json.dumps(answer, ensure_ascii=False), project, task)
         return answer
+
+    def task_actions(self, key):
+        """Action tools a task agent may call: its declared type, or the kind of its source."""
+        t = self.db.get("tasks", key) or {}
+        declared = app_mcp.TASK_TYPES.get(t.get("task_type", ""))
+        if declared:
+            return declared["actions"]
+        e = self.db.get("events", t.get("event", ""))
+        c = self.db.get("connections", e["connection"]) if e else None
+        if not c or t.get("kind") in {"bug", "bugfix", "coding", "code"} or t.get("special"):
+            return ()
+        source = e["raw"].get("context", {}).get("google_service") or c["kind"]
+        return tuple(a for a, kinds in app_mcp.ACTION_SOURCES.items() if c["kind"] in kinds or source in kinds)
 
     def start(self):
         self.thread = threading.Thread(target=self.loop, daemon=True, name="scheduler")
@@ -1355,6 +1381,8 @@ class Engine:
         key = d.get("id", "")
         if op.startswith("auth_"):
             return self.signins.action(d)
+        if op == "agent_sign_in":
+            return self.agents.open_sign_in(required(d, "agent", 16))
         if op == "connect_app_repo":
             login = github_signin.active_login()
             account = digest("github.com account", login.casefold())
@@ -1477,8 +1505,13 @@ class Engine:
                     if provider not in worker.PROVIDERS:
                         raise ValueError("Choose Claude Code or Codex CLI.")
                     s["provider"] = provider
+                if "orchestrator_subscription" in d:
+                    if d["orchestrator_subscription"] not in agents.SUBSCRIPTIONS:
+                        raise ValueError("Choose the Claude or ChatGPT subscription for the orchestrator.")
+                    s["orchestrator_subscription"] = d["orchestrator_subscription"]
                 s["dry"] = d.get("dry", s["dry"])
                 self.db.put("config", s)
+                self.agents.cache = None
                 self.db.log("Settings", f"Dry mode {'on' if s['dry'] else 'off'} · {s['provider']}")
             elif op == "sync":
                 for c in self.db.rows("connections"):

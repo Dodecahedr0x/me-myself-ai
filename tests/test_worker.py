@@ -86,6 +86,42 @@ else:
                     self.assertFalse(Path(results[0]["text"]).exists())
                     self.assertNotIn("files", results[0])
 
+    def test_app_mcp_server_reaches_both_clis_without_exposing_its_token(self):
+        script = """
+import json, os, stat, sys
+from pathlib import Path
+args = sys.argv[1:]
+assert 'secret-token' not in ' '.join(args) and 'secret-token' not in str(dict(os.environ))
+assert 'memyselfai tools' in sys.stdin.read()
+result = {'outcome': 'done', 'text': 'ok', 'kind': 'summary', 'commitments': []}
+if Path(sys.argv[0]).name == 'claude':
+    assert '--safe-mode' not in args and '--restricted' in args and '--strict-mcp-config' in args
+    assert args[args.index('--tools') + 1] == ''
+    assert args[args.index('--allowedTools') + 1] == 'mcp__memyselfai'
+    server = json.loads(Path(args[args.index('--mcp-config') + 1]).read_text())['mcpServers']['memyselfai']
+    token_file = Path(server['env']['MEMYSELFAI_MCP_TOKEN_FILE'])
+    assert server['env']['MEMYSELFAI_MCP_URL'] == 'http://127.0.0.1:9/mcp'
+    print(json.dumps({'type':'result', 'subtype':'success', 'is_error':False, 'structured_output':result}))
+else:
+    options = [args[i+1] for i in range(len(args)) if args[i] == '-c']
+    env = next(o for o in options if o.startswith('mcp_servers.memyselfai.env='))
+    assert any(o.startswith('mcp_servers.memyselfai.command=') for o in options)
+    token_file = Path(env.split('MEMYSELFAI_MCP_TOKEN_FILE = ')[1].split('"')[1])
+    out = Path(args[args.index('--output-last-message') + 1])
+    schema = json.loads(Path(args[args.index('--output-schema') + 1]).read_text())
+    result.update({key: None for key in schema['required'] if key not in result})
+    out.write_text(json.dumps(result))
+assert token_file.read_text() == 'secret-token'
+assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+"""
+        with patch.dict(os.environ, {"CODEX_API_KEY": "test"}):
+            for provider in worker.PROVIDERS:
+                self.cli_code(provider, script)
+                with self.subTest(provider=provider):
+                    result = worker.run_agent("task", {"source": "fixture"}, provider,
+                                              mcp={"url": "http://127.0.0.1:9/mcp", "token": "secret-token"})
+                    self.assertEqual(result["text"], "ok")
+
     def test_retryable_failures(self):
         for provider in worker.PROVIDERS:
             for script in ("raise SystemExit(2)", "print('invalid')", "print('[]')"):

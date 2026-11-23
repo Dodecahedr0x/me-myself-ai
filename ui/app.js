@@ -46,6 +46,9 @@ let filter = "all", projectFilter = "", query = "", activeView = "";
 let activityProject = "", activityQuery = "", activityConnection = "";
 const providerNames = {claude:"Claude Code", codex:"Codex CLI"};
 let providers = null, providersPending = false, providersChecked = 0;
+let agentSetup = null, agentsPending = false, agentsChecked = 0;
+const agentStates = {ready:"Ready",sign_in:"Sign in needed",not_installed:"Not installed",unsupported_version:"Unsupported version",unknown:"Status unavailable"};
+const subscriptionNames = {claude:"Claude subscription",codex:"ChatGPT subscription"};
 const button = (label, action, glyph, style = "secondary", attrs = "") => '<button type="button" class="btn '+style+'" data-action="'+action+'" '+attrs+'>'+ (glyph ? icon(glyph,16) : "") +esc(label)+'</button>';
 const link = (label, view) => '<a class="text-link" href="#'+view+'">'+esc(label)+icon("arrow",15)+'</a>';
 const status = value => '<span class="status '+(groups.attention.includes(value)?"attention":groups.progress.includes(value)?"progress":value==="done"?"complete":"neutral")+'"><i></i>'+esc(statusNames[value] || titleCase(value))+'</span>';
@@ -321,9 +324,28 @@ function providerField() {
     selectOptions(choices,selected)+'</select></label><div class="provider-help"><p id="provider-help">Install your chosen CLI and sign in from your terminal. The CLI may send task context to its configured AI service, including connected activity and code supplied for the task.</p>'+
     button("Check again","providers","sync","quiet")+'</div>';
 }
+async function loadAgents(force=false) {
+  if (agentsPending || (!force && Date.now()-agentsChecked<30000)) return;
+  agentsPending=true; agentsChecked=Date.now();
+  try { agentSetup=await request("/api/agents"+(force?"?refresh=1":"")); }
+  catch { agentSetup={harnesses:[]}; }
+  finally { agentsPending=false; }
+  if (activeView==="settings") render();
+}
+function agentsSection() {
+  if (agentSetup===null) return section("Agents","",empty("Checking agents…"));
+  const rows=(agentSetup.harnesses||[]).map(a=>{
+    const uses=a.id==="hermes"?" · Uses your "+(subscriptionNames[a.uses]||a.uses):"";
+    const detail=a.role+" · "+(agentStates[a.state]||"Status unavailable")+(a.version?" · "+a.version:"")+uses+(a.state==="sign_in"?" · Run: "+a.sign_in:"")+(a.detail?" · "+a.detail:"");
+    const controls=a.state==="sign_in"?button("Sign in","agent-sign-in",null,"secondary",'data-agent="'+esc(a.id)+'"'):"";
+    return entry(a.id==="hermes"?"stack":"working",a.label,detail,controls);
+  }).join("");
+  return section("Agents",button("Check again","agents","sync","quiet"),rows||empty("Agent status unavailable.",button("Retry","agents","sync")));
+}
 function settingsPage() {
   return section("Agent configuration","", entry("shield","Delivery mode",state.settings.dry?"Dry mode · External writes require your approval.":"Live mode · Project decision rules govern delivery.",button("Configure","settings",null))+
       entry("working","Agent provider",Object.hasOwn(providerNames,state.settings.provider)?providerLabel(state.settings.provider):"Choose a provider to prepare tasks.",button("Choose provider","settings",null)+button("Check again","providers","sync","quiet")))+
+    agentsSection()+
     section("Sample workspace","",entry("stack","Load sample work","Add fixture tasks and activity to explore the workspace.",button("Load sample","demo",null)));
 }
 const pages = {overview,tasks:tasksPage,activity:activityPage,connections:connectionsPage,projects:projectsPage,policies:policiesPage,skills:skillsPage,settings:settingsPage};
@@ -345,7 +367,7 @@ function render() {
     if (view==="activity") { setIfChanged($("#activity-list"),activityList()); return; }
   }
   activeView=view; setIfChanged($("#main"),pages[view]());
-  if (view==="settings") void loadProviders();
+  if (view==="settings") { void loadProviders(); void loadAgents(); }
   document.title=viewNames[view]+" · MeMyselfAI";
   if (switched) { closeMenu(); $("#main").scrollTop=0; window.scrollTo(0,0); }
 }
@@ -708,7 +730,9 @@ function handleAction(el) {
       return;
     }
     case "providers": void loadProviders(true); return;
-    case "settings": void loadProviders(); openForm("settings","Agent settings",selectField("dry","Delivery mode",[["true","Dry mode — review every external write"],["false","Live mode — follow project rules"]],String(!!state.settings.dry))+providerField(),"Save settings",{},"In live mode the agent may deliver work without asking when all applicable rules allow it."); return;
+    case "agents": void loadAgents(true); return;
+    case "agent-sign-in": void signInAgent(el.dataset.agent); return;
+    case "settings": void loadProviders(); openForm("settings","Agent settings",selectField("dry","Delivery mode",[["true","Dry mode — review every external write"],["false","Live mode — follow project rules"]],String(!!state.settings.dry))+providerField()+selectField("orchestrator_subscription","Orchestrator subscription",Object.entries(subscriptionNames),state.settings.orchestrator_subscription||(state.settings.provider==="codex"?"codex":"claude")),"Save settings",{},"In live mode the agent may deliver work without asking when all applicable rules allow it."); return;
     case "connect": {
       const c=state.connections.find(k=>String(k.id)===id), provider=c?.kind||kind, schema=schemas[provider];
       if (!schema) { showError("Connector setup is unavailable. Reload connection details and try again."); return; }
@@ -769,6 +793,12 @@ function handleAction(el) {
   }
 }
 const messages={app_finding:"Finding tracked.",chat_source_config:"Chat source saved.",suggestion_config:"Activity sources saved.",task:"Task created.",project:"Project saved.",report:"Investigation requested.",style:"Style preference submitted for review.",rule:"Decision rule saved.",settings:"Agent settings saved.",connect:"Connection saved.",feedback:"Feedback recorded.",answer:"Answer submitted.",reconcile:"Delivery outcome recorded.",dismiss:"Task dismissed.",disconnect:"Account disconnected.",demo:"Sample workspace loaded.",revert_skill:"Revision reverted."};
+async function signInAgent(agent) {
+  try {
+    const result=await request("/api/action",{op:"agent_sign_in",agent});
+    notify(result.opened?"Sign-in opened in Terminal. Finish it there, then choose Check again.":"Run this in a terminal on this machine: "+result.command);
+  } catch(e) { showError(e.message); }
+}
 async function mutate(payload,message) {
   if (running) return;
   running=true;

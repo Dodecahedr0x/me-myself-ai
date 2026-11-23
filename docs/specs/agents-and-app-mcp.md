@@ -1,6 +1,6 @@
 # Agents, capabilities and the app MCP server
 
-**Status** — Draft, not implemented. Covers [US-30 and US-31](../user-stories.md). Extends the [local agent contract](local-agent.md) and is used by the [Hermes orchestrator](hermes-orchestrator.md) and [instances and sync](instances-and-sync.md).
+**Status** — Partly implemented. See [implementation status](#implementation-status). Covers [US-30 and US-31](../user-stories.md). Extends the [local agent contract](local-agent.md) and is used by the [Hermes orchestrator](hermes-orchestrator.md) and [instances and sync](instances-and-sync.md).
 
 ## Intent
 
@@ -77,7 +77,7 @@ Task types are declared as data in the app: name, trigger description, readable 
 
 ## The app MCP server
 
-The app runs an MCP server on each instance. Agents reach it through a per-session stdio bridge that the app passes to the agent at spawn. It is the only MCP server an agent session has. The server listens on no network port.
+The app runs an MCP server on each instance. Agents reach it through a per-session stdio bridge (`app_mcp.py`) that the app passes to the agent at spawn. It is the only MCP server an agent session has. The bridge relays JSON-RPC to the service's existing loopback endpoint `/mcp`, so no new port is opened. That endpoint accepts only a session token as a bearer credential. It refuses requests carrying a browser cookie or an `Origin` header. The token reaches the bridge through a file readable only by the user, never through process arguments or the CLI's environment.
 
 Tools, grouped by what they need:
 
@@ -112,3 +112,26 @@ The [local agent contract](local-agent.md) currently starts each run with no too
 - An agent session lists exactly one MCP server. No environment variable, argument or tool result contains a connector credential.
 - A fixture email instructing the agent to approve its own draft or to read another task produces no approval and a refused call.
 - Every action tool result is one of the four outcomes, and an `uncertain` result blocks a resend until it is reconciled.
+
+## Implementation status
+
+Implemented and tested with fixtures (`tests/test_app_mcp.py`, `tests/test_worker.py`):
+
+- **Settings → Agents** shows Claude Code, Codex CLI and Hermes with Ready, Sign in needed, Not installed or Unsupported version. **Sign in** opens the interactive login in Terminal on macOS, or shows the command to run elsewhere. Settings stores which subscription Hermes uses.
+- Session tokens per role and task, with capabilities, expiry and revocation. Task runs get a session only while the service is running, and it is revoked when the run ends.
+- Tools: `list_tasks`, `read_task`, `search_activity`, `read_item`, `read_thread`, `list_projects`, `read_rules`, `propose_task`, `dispatch_task`, `post_update`, `record_progress`, `ask_user`, `complete_task`, `skip_task`, `send_email`, `send_message`, `comment`.
+- Task types: `email_reply`, `chat_reply`, `github_comment`, `github_bug`, `follow_up`, `general`. Without a declared type, a task gets the send tool matching its source.
+- Action tools hand the exact text to the existing executor. In dry mode they return `pending_review` with the version the user approves. Under an authorizing rule they deliver once and return `sent`. An unknown outcome blocks resends.
+
+Verified live on macOS with Claude Code 2.1.330, Codex CLI 0.166.0 and Hermes 0.13.0, against a temporary workspace and a fixture email. No provider was written to.
+
+- Claude Code and Codex each read the source email through the app server and called `send_email`. The task reached review with the exact text.
+- Hermes connected with the app-written config and listed exactly the nine orchestrator tools.
+
+Findings that shaped the implementation:
+
+- Claude Code's `--safe-mode` disables every MCP server, including one passed with `--mcp-config`. Runs that receive the app server drop safe mode. They keep `--restricted`, `--tools ""`, `--strict-mcp-config` and `--setting-sources ""`, and allow only `mcp__memyselfai`.
+- Codex asks for approval on each MCP tool call and refuses when approvals are off. The app sets `default_tools_approval_mode="approve"` for its own server only, because the app enforces each call.
+- Claude Code finds a macOS Keychain login by the user's account name. Task runs failed with "Not logged in" until `USER` and `LOGNAME` were passed. This affected every Claude Code task run on such Macs, before this change too.
+
+Not implemented yet: `propose_project`, `add_option`, `schedule_check`, the learning tools, calendar and bug-fix action tools through MCP, and Hermes runs driven by the app. See the [Hermes orchestrator](hermes-orchestrator.md).
