@@ -101,6 +101,7 @@ class Engine:
         self.absence = None
         self.recent_offers = {}
         self.origin_cache = {}
+        self.clone_lock = threading.Lock()  # One clone at a time; a waiting caller then reuses the finished one.
         self.next_balance = 0
         # The app MCP server. The HTTP service sets mcp_url once it listens.
         self.mcp_sessions = app_mcp.Sessions()
@@ -786,6 +787,14 @@ class Engine:
             return path
         if not remote:
             raise ValueError(f"No checkout of {origin} here and no address to clone it from.")
+        with self.clone_lock:
+            return self.clone_for(origin, remote)
+
+    def clone_for(self, origin, remote):
+        self.origin_cache.clear()
+        path = self.find_checkout(origin)
+        if path:
+            return path
         target = self.db.root / "checkouts" / re.sub(r"[^\w.-]+", "_", origin).strip("_")
         path = str(worker.clone_checkout(remote, target))
         if worker.checkout_origin(path) != origin:

@@ -964,18 +964,28 @@ def checkout_remote(path):
 
 
 def clone_checkout(remote, target):
-    """Clone with the user's own Git setup, so private repositories use their credentials. Reads only."""
+    """Clone with the user's own Git setup, so private repositories use their credentials. Reads only.
+
+    The clone is made beside the target and renamed into place when complete, so a concurrent caller never
+    takes a half-made clone, and a failed one leaves nothing behind."""
     target = Path(target)
     if (target / ".git").exists():
         return target.resolve()
     target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    proc = subprocess.run(["git", "clone", "--quiet", "--", remote, str(target)], capture_output=True, text=True,
-                          timeout=600, stdin=subprocess.DEVNULL,
-                          # No ext:: or other command transports, whatever the remote says.
-                          env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ALLOW_PROTOCOL": "file:git:http:https:ssh"})
-    if proc.returncode:
-        shutil.rmtree(target, ignore_errors=True)
-        raise WorkerError("Could not clone " + remote + ": " + (proc.stderr.strip().splitlines() or ["error"])[-1][:200])
+    with tempfile.TemporaryDirectory(dir=target.parent, prefix=".clone-") as stage:
+        staged = Path(stage) / "checkout"
+        proc = subprocess.run(["git", "clone", "--quiet", "--", remote, str(staged)], capture_output=True,
+                              text=True, timeout=600, stdin=subprocess.DEVNULL,
+                              # No ext:: or other command transports, whatever the remote says.
+                              env={**os.environ, **_NETWORK_ENV})
+        if proc.returncode:
+            raise WorkerError("Could not clone " + remote + ": "
+                              + (proc.stderr.strip().splitlines() or ["error"])[-1][:200])
+        try:
+            staged.rename(target)
+        except OSError as exc:
+            if exc.errno not in (errno.EEXIST, errno.ENOTEMPTY) or not (target / ".git").exists():
+                raise
     return target.resolve()
 
 

@@ -460,3 +460,39 @@ class TaskStartPointTests(unittest.TestCase):
     def test_without_a_base_it_keeps_the_folders_head(self):
         tree = worker.prepare_worktree(self.checkout, self.storage, "d")
         self.assertEqual(self.head(tree), self.head(self.checkout))
+
+
+class CloneCheckoutTests(unittest.TestCase):
+    """A clone appears at its target only once complete, so a concurrent caller never takes a half-made one."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.origin = self.root / "origin"
+        subprocess.run(["git", "init", "-q", str(self.origin)], check=True)
+        (self.origin / "a.txt").write_text("a")
+        subprocess.run(["git", "-C", str(self.origin), "add", "-A"], check=True)
+        subprocess.run(["git", "-c", "commit.gpgsign=false", "-c", "user.name=F", "-c", "user.email=f@example.invalid", "-C", str(self.origin),
+                        "commit", "-qm", "a"], check=True)
+        self.target = self.root / "checkouts" / "repo"
+
+    def test_target_is_absent_while_cloning(self):
+        real = subprocess.run
+        seen = []
+
+        def run(args, *a, **kw):
+            if args[:2] == ["git", "clone"]:
+                seen.append(Path(args[-1]) == self.target or self.target.exists())
+            return real(args, *a, **kw)
+
+        with patch.object(worker.subprocess, "run", side_effect=run):
+            path = worker.clone_checkout(str(self.origin), self.target)
+        self.assertEqual(seen, [False])
+        self.assertTrue((path / ".git").is_dir())
+        self.assertEqual(sorted(p.name for p in self.target.parent.iterdir()), ["repo"])
+
+    def test_failed_clone_leaves_nothing(self):
+        with self.assertRaises(worker.WorkerError):
+            worker.clone_checkout(str(self.root / "missing"), self.target)
+        self.assertEqual(list(self.target.parent.iterdir()), [])
