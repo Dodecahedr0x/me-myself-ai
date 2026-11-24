@@ -255,6 +255,13 @@ class VpsSetupTest(unittest.TestCase):
         result = setup.sign_in()
         self.assertEqual(result["command"], "ssh -t OVH-VPS 'sudo -u memyselfai -i claude auth login'")
 
+    def test_firewall_opens_the_sync_port_only_where_pairing_needs_it(self):
+        self.assertEqual(vps_setup.firewall_rule("100.127.118.82"),
+                         ("allow in on tailscale0 to any port 8802 proto tcp", "on Tailscale only"))
+        self.assertIn("tailscale0", vps_setup.firewall_rule("vps.tail1234.ts.net")[0])
+        self.assertEqual(vps_setup.firewall_rule("192.168.1.48")[0], "allow from 192.168.0.0/16 to any port 8802 proto tcp")
+        self.assertEqual(vps_setup.firewall_rule("203.0.113.5")[0], "allow 8802/tcp")
+
     def test_archive_holds_the_installer_inputs(self):
         import io
         import tarfile
@@ -321,6 +328,15 @@ class SetupGuideTest(unittest.TestCase):
         self.assertTrue(self.steps()[1]["projects"]["skipped"])
         with self.assertRaises(ValueError):
             self.engine.action({"op": "setup_skip", "step": "accounts"})
+
+    def test_server_step_reads_the_paired_servers_task_agent(self):
+        peer = dict(id="p1", name="vps", platform="linux", address="100.127.118.82:8802", trusted=True,
+                    info={"capacity": {"task_ready": False}})
+        self.engine.instances.peers = lambda: [peer]
+        self.assertFalse(self.steps()[1]["server"]["peers"][0]["agent_ready"])
+        peer["info"]["capacity"]["task_ready"] = True
+        server = self.steps()[1]["server"]
+        self.assertTrue(server["ready"] and server["peers"][0]["agent_ready"])
 
     def test_vps_actions_validate_input(self):
         with self.assertRaises(ValueError):

@@ -9,6 +9,7 @@ reaches sudo only on standard input.
 import glob
 import http.client
 import io
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -152,6 +153,21 @@ def app_archive(source):
                 tar.add(source / folder, arcname=folder,
                         filter=lambda info: None if "/." in "/" + info.name or "__pycache__" in info.name else info)
     return buffer.getvalue()
+
+
+def firewall_rule(hostname):
+    """The narrowest ufw rule that lets this Mac reach the sync port at the address it pairs with."""
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        address = None
+    if (address and address in ipaddress.ip_network("100.64.0.0/10")) or hostname.endswith(".ts.net"):
+        return f"allow in on tailscale0 to any port {SYNC_PORT} proto tcp", "on Tailscale only"
+    lan = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fd00::/8")
+    if address and any(address in ipaddress.ip_network(n) for n in lan if ipaddress.ip_network(n).version == address.version):
+        network = ipaddress.ip_network(f"{address}/{16 if address.version == 4 else 64}", strict=False)
+        return f"allow from {network} to any port {SYNC_PORT} proto tcp", f"from {network} only"
+    return f"allow {SYNC_PORT}/tcp", "from anywhere (paired instances only, mutual TLS)"
 
 
 class Remote:
@@ -439,14 +455,15 @@ class VpsSetup:
     def _install(self, remote, target):
         _, home, _ = remote.run('printf %s "$HOME"', timeout=30)
         folder = shlex.quote(home.strip() + "/" + REMOTE_DIR)
+        rule, scope = firewall_rule(target["hostname"])
         script = (f"cd {folder} && sh deploy/install-vps.sh && "
                   f"if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then "
-                  f"ufw allow {SYNC_PORT}/tcp >/dev/null && echo ufw=opened; fi")
+                  f"ufw {rule} >/dev/null && echo ufw=opened; fi")
         status, out, err = remote.root(script, timeout=1200)
         remote.run(f'rm -rf "$HOME/{REMOTE_DIR}"', timeout=60)
         if status:
             raise SetupError("The installer failed: " + (_tail(err, 4) or _tail(out, 4) or f"exit {status}"))
-        return "Firewall: allowed port 8802" if "ufw=opened" in out else ""
+        return f"Firewall: allowed port {SYNC_PORT} {scope}" if "ufw=opened" in out else ""
 
     def _agent(self, remote, target):
         agent = self.provider()

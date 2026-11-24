@@ -2248,9 +2248,9 @@ class Engine:
         peers = []
         for p in self.instances.peers():
             if p.get("trusted"):
-                agents_there = ((p.get("info") or {}).get("capacity") or {}).get("agents") or {}
+                capacity = (p.get("info") or {}).get("capacity") or {}
                 peers.append(dict(name=p["name"], platform=p.get("platform", ""), address=p.get("address", ""),
-                                  agent_ready=agents_there.get(provider) == "ready"))
+                                  agent_ready=bool(capacity.get("task_ready"))))
         steps = [
             dict(id="agent", required=True, ready=agent.get("state") == "ready", state=agent.get("state", "unknown"),
                  agent=provider, label=agent.get("label", provider), sign_in=agent.get("sign_in", ""),

@@ -34,11 +34,11 @@ Choosing **Set up** on a host runs these steps in the background. The guide show
 1. **Connect.** Open one SSH connection in batch mode, reused by every later step. Check that the server runs Linux with systemd and whether the login is root, has password-free sudo, or needs a sudo password. Detect an existing install.
 2. **Ask for a sudo password, only if needed.** The guide shows a password field for this host. The password stays in memory for this run, goes to `sudo` on standard input, and is never written to disk, logged or synced. Cancelling ends the run.
 3. **Copy the app.** Stream the service files (`*.py`, `ui`, `vendor`, `deploy`) as a tar archive to a temporary folder in the SSH user's home.
-4. **Install.** Run `deploy/install-vps.sh` as root. On a server where it is already installed, this updates the code and keeps the workspace, key and logins. If `ufw` is active, allow the sync port 8802. The app cannot change a provider's cloud firewall.
+4. **Install.** Run `deploy/install-vps.sh` as root. On a server where it is already installed, this updates the code and keeps the workspace, key and logins. If `ufw` is active, allow the sync port 8802 as narrowly as the pairing address allows: on the `tailscale0` interface for a Tailscale address, from the private network for a private address, and from anywhere only for a public address. The sync port accepts only paired instances over mutual TLS either way. The app cannot change a provider's cloud firewall.
 5. **Install the task agent CLI.** Install the CLI selected on the Mac (`@anthropic-ai/claude-code` or `@openai/codex`) for the service user with npm, unless it is already installed.
 6. **Wait for the service** to report active, for up to 60 seconds.
 7. **Pair.** Through the SSH connection (`ssh -W` to the server's loopback dashboard port), request a fresh one-time dashboard link from the service, open a session with it and request a pairing code. Then join from the Mac at `<resolved host>:8802`. If the server is already a paired instance at that address, skip this step.
-8. **Sign in the agent on the server.** This needs the user, because the subscription login is interactive. **Sign in on server** opens Terminal with `ssh -t <host> sudo -u memyselfai -i claude auth login` (or the Codex equivalent). The row turns ready once the paired server reports the agent as ready.
+8. **Sign in the agent on the server.** This needs the user, because the subscription login is interactive. **Sign in on server** opens Terminal with `ssh -t <host> sudo -u memyselfai -i claude auth login` (or the Codex equivalent). The row shows the server's task agent as ready once the paired server reports its selected CLI signed in.
 
 After pairing, connections and the orchestrator move to the server by themselves, as the instances spec describes.
 
@@ -73,4 +73,4 @@ Each failure stops the run, keeps the completed steps' results, and shows what w
 - A non-Linux server, a failed SSH connection and an unreachable sync port each stop the run with the message above. Retry starts again.
 - An already-paired server at the same address skips pairing.
 
-Verified with fixture tests and a fake `ssh` executable. A run against a real VPS is *not verified yet*.
+Verified with fixture tests and a fake `ssh` executable, and once against a real Ubuntu 26.04 VPS reached over Tailscale: every step completed in about a minute and the two instances exchanged a sync round.
