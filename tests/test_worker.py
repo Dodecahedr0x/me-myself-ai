@@ -496,3 +496,24 @@ class CloneCheckoutTests(unittest.TestCase):
         with self.assertRaises(worker.WorkerError):
             worker.clone_checkout(str(self.root / "missing"), self.target)
         self.assertEqual(list(self.target.parent.iterdir()), [])
+
+
+class GitHubTokenEnvTests(unittest.TestCase):
+    def test_token_is_an_https_github_header_only(self):
+        env = worker._network_env("https://github.com/acme/web", "gho_secret")
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "http.https://github.com/.extraheader")
+        self.assertIn("AUTHORIZATION: basic ", env["GIT_CONFIG_VALUE_0"])
+        self.assertNotIn("gho_secret", env["GIT_CONFIG_VALUE_0"])
+        self.assertNotIn("GIT_CONFIG_COUNT", worker._network_env("https://gitlab.com/acme/web", "gho_secret"))
+        self.assertNotIn("GIT_CONFIG_COUNT", worker._network_env("https://github.com/acme/web", None))
+
+    def test_clone_passes_the_token_in_the_environment_not_the_arguments(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(worker.subprocess, "run",
+                             side_effect=lambda args, **kw: calls.append((args, kw)) or subprocess.CompletedProcess(args, 1, "", "no")):
+            with self.assertRaises(worker.WorkerError):
+                worker.clone_checkout("https://github.com/acme/web", Path(tmp) / "web", token="gho_secret")
+        args, kw = calls[0]
+        self.assertNotIn("gho_secret", " ".join(args))
+        self.assertEqual(kw["env"]["GIT_CONFIG_COUNT"], "1")

@@ -1000,3 +1000,46 @@ class PullRequestStartTests(EngineBase):
         parent = self.task("Handle review", event="e1")
         step = self.task("Address the comments", parent=parent["id"], depth=1)
         self.assertEqual(self.laptop.pull_request_number(step), 42)
+
+
+class GitHubLoginSharingTests(EngineBase):
+    """The Mac's GitHub CLI login syncs as a sealed login so peers can clone and fetch private repositories.
+    See "Logins" in instances-and-sync.md."""
+
+    def setUp(self):
+        super().setUp()
+        with self.laptop.db.atomic():
+            self.laptop.db.put("connections", dict(id="acct", kind="github", auth_method="gh_account",
+                                                   identity="Octo", label="@Octo", config={}))
+            self.laptop.db.put("connections", dict(id="repo", kind="github", github_parent="acct",
+                                                   config={"repository": "Acme/Web"}))
+        self.link()
+
+    def test_laptop_shares_the_cli_token_once(self):
+        import github_signin
+        with patch.object(github_signin, "token_for", return_value="gho_secret") as token, \
+                patch.object(connectors, "_secret", return_value=None), \
+                patch.object(engine.SyncedSecrets, "store") as store, \
+                patch.object(self.laptop.instances, "record_secret") as record:
+            self.laptop.share_github_logins()
+        token.assert_called_once_with("Octo")
+        store.assert_called_once_with("github-cli:octo", "gho_secret")
+        record.assert_called_once_with("github-cli:octo", "gho_secret")
+        with patch.object(github_signin, "token_for", return_value="gho_secret"), \
+                patch.object(connectors, "_secret", return_value="gho_secret"), \
+                patch.object(engine.SyncedSecrets, "store") as store:
+            self.laptop.next_github_share = 0
+            self.laptop.share_github_logins()
+        store.assert_not_called()
+
+    def test_shared_login_is_listed_for_sync(self):
+        self.assertIn("github-cli:octo", engine.SyncedSecrets.identities(self.vps.db))
+
+    def test_peer_uses_the_login_of_the_repositorys_account(self):
+        secrets = {"github-cli:octo": "gho_secret"}
+        with patch.object(connectors, "_secret", side_effect=secrets.get):
+            self.assertEqual(self.vps.github_token("github.com/acme/web"), "gho_secret")
+            self.assertEqual(self.vps.github_token("github.com/other/repo"), "gho_secret", "the only account")
+            self.assertIsNone(self.vps.github_token("gitlab.com/acme/web"))
+        with patch.object(connectors, "_secret", return_value=None):
+            self.assertIsNone(self.vps.github_token("github.com/acme/web"))

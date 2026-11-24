@@ -821,27 +821,38 @@ def resume_worktree(path, root, task_id, repository=None):
 _NETWORK_ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_ALLOW_PROTOCOL": "file:git:http:https:ssh"}
 
 
-def _fetch_remote(clone, remote, ref, target):
+def _network_env(remote, token=None):
+    """The user's environment for a network Git command. A synced GitHub login, when given, is sent as an HTTP
+    header for https://github.com only, through the environment so it never appears in arguments or config."""
+    env = {**os.environ, **_NETWORK_ENV}
+    if token and str(remote).startswith("https://github.com/"):
+        basic = base64.b64encode(("x-access-token:" + token).encode()).decode()
+        env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.https://github.com/.extraheader",
+                   GIT_CONFIG_VALUE_0="AUTHORIZATION: basic " + basic)
+    return env
+
+
+def _fetch_remote(clone, remote, ref, target, token=None):
     """Fetch one ref from the user's real remote with their own Git setup and credentials. Reads only."""
     if not remote:
         return False
     try:
         proc = subprocess.run(["git", "-C", str(clone), "fetch", "--quiet", "--no-tags", "--", remote,
                                f"+{ref}:{target}"], capture_output=True, timeout=120, stdin=subprocess.DEVNULL,
-                              env={**os.environ, **_NETWORK_ENV})
+                              env=_network_env(remote, token))
     except (OSError, subprocess.TimeoutExpired):
         return False
     return proc.returncode == 0
 
 
-def _start_point(checkout, source, pull):
+def _start_point(checkout, source, pull, token=None):
     """Where a prepared task starts: the pull request's head, else the remote's default branch, else the folder's
     copy of the default branch, else the folder's HEAD. See "Task start point" in task-execution.md."""
     target = "refs/memyselfai/start"
     remote = checkout_remote(source)
-    if pull and _fetch_remote(checkout, remote, f"refs/pull/{int(pull)}/head", target):
+    if pull and _fetch_remote(checkout, remote, f"refs/pull/{int(pull)}/head", target, token):
         return target, f"pull request #{int(pull)} from {remote}"
-    if _fetch_remote(checkout, remote, "HEAD", target):
+    if _fetch_remote(checkout, remote, "HEAD", target, token):
         return target, f"default branch of {remote}"
     try:
         tracked = os.fsdecode(_git(source, "symbolic-ref", "-q", "refs/remotes/origin/HEAD")).strip()
@@ -856,7 +867,7 @@ def _start_point(checkout, source, pull):
     return "HEAD", "the local folder's current commit"
 
 
-def prepare_worktree(repo, root, task_id, *, base=None, pull=None) -> Path:
+def prepare_worktree(repo, root, task_id, *, base=None, pull=None, token=None) -> Path:
     """Publish a complete private clone atomically. Concurrent callers reuse the winner.
 
     A new clone starts at the folder's HEAD, or with base="remote" at the pull request's head or the remote's
@@ -903,7 +914,7 @@ def prepare_worktree(repo, root, task_id, *, base=None, pull=None) -> Path:
                     patch.write_bytes(staged)
                     _git(checkout, "apply", "--cached", "--binary", str(patch))
             else:
-                start, described = _start_point(checkout, source, pull) if base == "remote" else ("HEAD", "")
+                start, described = _start_point(checkout, source, pull, token) if base == "remote" else ("HEAD", "")
                 _git(checkout, "checkout", "-q", "-B", branch, start)
                 if start != "HEAD":
                     _git(checkout, "update-ref", "-d", start)
@@ -963,7 +974,7 @@ def checkout_remote(path):
         return ""
 
 
-def clone_checkout(remote, target):
+def clone_checkout(remote, target, token=None):
     """Clone with the user's own Git setup, so private repositories use their credentials. Reads only.
 
     The clone is made beside the target and renamed into place when complete, so a concurrent caller never
@@ -977,7 +988,7 @@ def clone_checkout(remote, target):
         proc = subprocess.run(["git", "clone", "--quiet", "--", remote, str(staged)], capture_output=True,
                               text=True, timeout=600, stdin=subprocess.DEVNULL,
                               # No ext:: or other command transports, whatever the remote says.
-                              env={**os.environ, **_NETWORK_ENV})
+                              env=_network_env(remote, token))
         if proc.returncode:
             raise WorkerError("Could not clone " + remote + ": "
                               + (proc.stderr.strip().splitlines() or ["error"])[-1][:200])
@@ -1034,7 +1045,7 @@ def export_worktree(worktree, task_id):
                 **({"pull": int(pull)} if pull.isdigit() else {}))
 
 
-def import_worktree(repo, root, task_id, package):
+def import_worktree(repo, root, task_id, package, token=None):
     """Recreate a handed-over task as this instance's private clone of its checkout, with its uncommitted edits.
 
     Nothing is written to the user's checkout: the clone takes the checkout's history, then the bundle.
@@ -1061,12 +1072,12 @@ def import_worktree(repo, root, task_id, package):
         except WorkerError:
             # The base commit may be missing; fetch it into the checkout with the user's own Git setup, once.
             subprocess.run(["git", "-C", str(repo), "fetch", "--quiet", "origin"], capture_output=True,
-                           timeout=120, stdin=subprocess.DEVNULL, env={**os.environ, **_NETWORK_ENV})
+                           timeout=120, stdin=subprocess.DEVNULL, env=_network_env(checkout_remote(repo), token))
             take_history()
             if str(package.get("pull", "")).isdigit():
                 # A pull request's commits are not on any branch the checkout fetches.
                 _fetch_remote(clone, checkout_remote(repo), f"refs/pull/{int(package['pull'])}/head",
-                              "refs/memyselfai/source/pull")
+                              "refs/memyselfai/source/pull", token)
             try:
                 _git(clone, "bundle", "verify", str(bundle))
             except WorkerError as exc:

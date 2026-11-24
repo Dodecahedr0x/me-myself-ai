@@ -30,6 +30,10 @@ import worker
 from store import Store, uid
 
 
+# The GitHub CLI login of a gh_account connection, copied into the app's store so peers can clone and fetch.
+GITHUB_CLI_LOGIN = "github-cli:"
+
+
 class SyncedSecrets:
     """The app's own credential store, as seen by sync. Logins held by other tools are not listed."""
 
@@ -37,6 +41,9 @@ class SyncedSecrets:
     def identities(db):
         found = []
         for c in db.rows("connections"):
+            if c.get("auth_method") == "gh_account" and c.get("identity"):
+                found.append(GITHUB_CLI_LOGIN + c["identity"].casefold())  # Shared by share_github_logins.
+                continue
             if c.get("workspace_profile") or c.get("auth_method") in {"gh_account", "gh_repository"}:
                 continue
             if c.get("github_parent"):
@@ -101,6 +108,7 @@ class Engine:
         self.absence = None
         self.recent_offers = {}
         self.origin_cache = {}
+        self.next_github_share = 0
         self.clone_lock = threading.Lock()  # One clone at a time; a waiting caller then reuses the finished one.
         self.next_balance = 0
         # The app MCP server. The HTTP service sets mcp_url once it listens.
@@ -790,13 +798,58 @@ class Engine:
         with self.clone_lock:
             return self.clone_for(origin, remote)
 
+    def share_github_logins(self):
+        """Copy each GitHub CLI login that exists here into the synced store, so peers can read the same
+        repositories. Checked every ten minutes. See "Logins" in instances-and-sync.md."""
+        if self.now() < self.next_github_share:
+            return
+        self.next_github_share = self.now() + 600
+        for c in self.db.rows("connections"):
+            if c.get("auth_method") != "gh_account" or not c.get("identity"):
+                continue
+            try:
+                token = github_signin.token_for(c["identity"])
+            except (RuntimeError, OSError):
+                continue  # No GitHub CLI login for this account on this instance.
+            key = GITHUB_CLI_LOGIN + c["identity"].casefold()
+            try:
+                current = connectors._secret(key)
+            except Exception:
+                current = None
+            if current != token:
+                SyncedSecrets.store(key, token)
+                self.instances.record_secret(key, token)
+
+    def github_token(self, origin):
+        """A synced GitHub login for github.com/owner/repo: the account that connected that repository, else
+        the only connected account."""
+        if not origin or not origin.startswith("github.com/"):
+            return None
+        slug = origin.split("/", 1)[1].casefold()
+        connections = self.db.rows("connections")
+        accounts = {c["id"]: c for c in connections if c.get("auth_method") == "gh_account" and c.get("identity")}
+        owner = next((accounts.get(c.get("github_parent")) for c in connections
+                      if c.get("kind") == "github" and c.get("config", {}).get("repository", "").casefold() == slug
+                      and c.get("github_parent") in accounts), None)
+        if not owner and len(accounts) == 1:
+            owner = next(iter(accounts.values()))
+        if not owner:
+            return None
+        try:
+            return connectors._secret(GITHUB_CLI_LOGIN + owner["identity"].casefold()) or None
+        except Exception:
+            return None
+
     def clone_for(self, origin, remote):
         self.origin_cache.clear()
         path = self.find_checkout(origin)
         if path:
             return path
         target = self.db.root / "checkouts" / re.sub(r"[^\w.-]+", "_", origin).strip("_")
-        path = str(worker.clone_checkout(remote, target))
+        token = self.github_token(origin)
+        if token and origin.startswith("github.com/"):
+            remote = "https://" + origin  # The synced login works over HTTPS, whatever protocol the Mac uses.
+        path = str(worker.clone_checkout(remote, target, token=token))
         if worker.checkout_origin(path) != origin:
             raise ValueError(f"The clone of {remote} has a different origin.")
         with self.db.atomic():
@@ -830,7 +883,8 @@ class Engine:
         fields = dict(repository=path, repository_origin=package["origin"],
                       repository_remote=package.get("remote", ""))
         if package.get("bundle"):
-            fields["worktree"] = str(worker.import_worktree(path, self.db.root / "worktrees", key, package))
+            fields["worktree"] = str(worker.import_worktree(path, self.db.root / "worktrees", key, package,
+                                                            token=self.github_token(package["origin"])))
         self.db.log("Task received", f"{key} with {'its worktree' if package.get('bundle') else 'its repository'}"
                     f" in {path}", task=key)
         return fields
@@ -962,6 +1016,7 @@ class Engine:
         peers = self.fresh_peers()
         if not peers:
             return
+        self.share_github_logins()
         now = self.now()
         me = self.capacity()
         free = me["free"] if self.eligible(me) else 0
@@ -1782,7 +1837,8 @@ class Engine:
                 location = str(worker.resume_worktree(location, self.db.root / "worktrees", t["id"]))
             elif location:
                 location = str(worker.prepare_worktree(repository, self.db.root / "worktrees", t["id"],
-                                                       base="remote", pull=self.pull_request_number(t)))
+                                                       base="remote", pull=self.pull_request_number(t),
+                                                       token=self.github_token(self.origin_of(repository))))
             else:
                 if candidates is None:
                     candidates = self.repository_candidates(t, repo_source)
@@ -1818,7 +1874,8 @@ class Engine:
                         return {}
                     self.db.put("tasks", latest)
                 location = str(worker.prepare_worktree(repository, self.db.root / "worktrees", t["id"],
-                                                       base="remote", pull=self.pull_request_number(t)))
+                                                       base="remote", pull=self.pull_request_number(t),
+                                                       token=self.github_token(self.origin_of(repository))))
             t = dict(t, repository=repository, worktree=location,
                      github_repository=bugflow.checkout_repository(location))
             with self.db.atomic():
