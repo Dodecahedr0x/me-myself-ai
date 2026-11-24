@@ -399,11 +399,13 @@ function scheduleState(s) {
 }
 function contextPage() {
   const hermes = state.hermes?.last_call ? "Hermes last worked on context and schedules "+relativeDate(state.hermes.last_call)+"." :
-    "Hermes is not connected. Run scripts/connect-hermes.sh so it can keep context current and manage schedules.";
-  const schedules = (state.schedules||[]).map(s=>entry("clock",s.title,
+    "Hermes hasn't worked on context yet. Once the app's Hermes is installed and signed in (Settings → Agents), it updates context and schedules during its sweeps.";
+  const rank = (active,first) => active ? (first?0:1) : 2;
+  const schedules = [...(state.schedules||[])].sort((a,b)=>rank(a.status==="active")-rank(b.status==="active")).map(s=>entry("clock",s.title,
     [timing(s),s.project,(s.origin==="inferred"?"Inferred: ":"You asked: ")+s.reason,scheduleState(s)].join(" · "),
     s.status==="active"?button("Cancel","schedule_cancel",null,"secondary",'data-id="'+esc(s.id)+'"'):"")).join("");
-  const entries = (state.context||[]).map(e=>entry("context",e.subject,
+  // Stale entries first (Hermes reviews them next), then active, then retired.
+  const entries = [...(state.context||[])].sort((a,b)=>rank(a.status==="active",a.stale)-rank(b.status==="active",b.stale)).map(e=>entry("context",e.subject,
     [titleCase(e.kind),e.project,e.status==="retired"?"Retired: "+(e.retired_reason||""):e.stale?"Stale, withheld from agents until Hermes reviews it":"Review "+compactDate(e.review_at),e.body].join(" · "),
     e.status==="retired"?button("Restore","context_restore",null,"quiet",'data-id="'+esc(e.id)+'"'):button("Retire","context_retire",null,"secondary",'data-id="'+esc(e.id)+'"'))).join("");
   return '<div class="policy-note">'+icon("context")+'<span>'+esc(hermes)+'</span></div>'+
