@@ -213,15 +213,20 @@ class Orchestrator:
                 self.save(pending="")
             return
         token = self.engine.mcp_sessions.issue(app_mcp.ORCHESTRATOR)
-        token_file = self.engine.db.root / "hermes" / ("run-" + uuid.uuid4().hex)
+        # One path for every run: Hermes' gateway may keep the MCP bridge from an earlier run, and the
+        # bridge reads this file on each call. Runs are serial, and the file is removed after each.
+        token_file = self.engine.db.root / "hermes" / "mcp-token"
         try:
             token_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            temporary = token_file.with_name("mcp-token." + uuid.uuid4().hex)
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(token)
+            os.replace(temporary, token_file)
             entry = app_mcp.launch_config(self.engine.mcp_url, token_file)
             self.engine.agents.write_hermes_config([entry["command"], *entry["args"]], entry["env"])
             command, env = self.engine.agents.hermes_command(self.prompt(purpose, c))
+            self.engine.agents.hermes.stop_gateway()  # Left from an earlier run or direct use.
             started = datetime.datetime.now()
             self.db.log("Orchestrator run", purpose)
             with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -250,6 +255,7 @@ class Orchestrator:
                 self.save(pending="")
             return
         finally:
+            self.engine.agents.hermes.stop_gateway()
             self.engine.mcp_sessions.revoke(token)
             try:
                 token_file.unlink()

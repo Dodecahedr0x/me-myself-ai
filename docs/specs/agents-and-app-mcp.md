@@ -56,7 +56,7 @@ A connection gives the app read and write access to an account. The app turns th
 | Orchestrator (Hermes) | Read on every connection. No writes to accounts. Dispatch of tasks. Curation of the local [context and schedules](context-and-schedules.md#mcp-tools). | Search and read mail, calendar and Drive. Dispatch an `email_reply` task. |
 | Task agent | Read on the task's evidence and anything it links to. Write limited to the task's bound account and destination, and to the action kinds of its task type. | Read the thread. Send one reply from the account that received it, to that thread. |
 
-Capabilities are attached to a session token. The token is created when the app spawns the agent and revoked when the run ends or the task's ownership moves. A tool call outside the token's capabilities is refused and logged.
+Capabilities are attached to a session token. The token is created when the app spawns the agent and revoked when the run ends or the task's ownership moves. A tool call outside the token's capabilities is refused and logged. A refusal carries a `refused` field with the reason. Task sessions also get it as an MCP error result. Orchestrator sessions get it as a plain result, because Hermes stops calling a server after three error results in a row.
 
 "Write" means the agent can call the action tool. What happens next is the app's decision. In dry mode every action becomes a review card with its exact version. Under a project rule that authorizes it, the executor sends at once. Either way the executor sends, verifies identity and target, and records the receipt. The agent never calls the provider.
 

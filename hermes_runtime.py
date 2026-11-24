@@ -15,6 +15,7 @@ from pathlib import Path
 import platform
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -24,10 +25,13 @@ import time
 import urllib.request
 
 # Tested with this MeMyselfAI release. Changing a pin needs a new checksum and a test run.
-HERMES_VERSION = "0.13.0"
-HERMES_TAG = "v2026.5.7"
+# 0.23.3 is the first release whose Claude subscription requests count against the plan: earlier ones
+# are classed as a third-party app and drawn from extra usage.
+HERMES_VERSION = "0.23.3"
+HERMES_TAG = "v" + HERMES_VERSION
+HERMES_COMMIT = "caafe5389ae585ef77387a962aee05b1bcf17029"
 HERMES_URL = f"https://github.com/NousResearch/hermes-agent/archive/refs/tags/{HERMES_TAG}.tar.gz"
-HERMES_SHA256 = "75b629e787a68164713b66d1dd163c65f853474c9c775cd6f206797a629aa2c0"
+HERMES_SHA256 = "061442bf28ee1abd47ef7d6884c5fd906ee0f478b4c3813a5b899ba16544f150"
 UV_VERSION = "0.13.9"
 UV_BUILDS = {
     ("darwin", "arm64"): ("aarch64-apple-darwin", "5aeca67f2283f75235de40d0bd9c0a5bbc5fce23b6d48b3bf9fa1b2db08382ca"),
@@ -35,13 +39,18 @@ UV_BUILDS = {
     ("linux", "x86_64"): ("x86_64-unknown-linux-gnu", "a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5"),
     ("linux", "aarch64"): ("aarch64-unknown-linux-gnu", "0797542018e541a9288855df555c8077eed06f7a47d206362030480e8ecc9f3d"),
 }
-PYTHON = "3.11"
-# mcp reaches the app server; web serves `hermes dashboard`.
-EXTRAS = ("mcp", "web")
+PYTHON = "3.14"  # Hermes' lockfile supports only 3.14.
+# anthropic talks to Claude; mcp reaches the app server; web serves `hermes dashboard`.
+EXTRAS = ("anthropic", "mcp", "web")
 MAX_DOWNLOAD = 200 * 1024 * 1024
 STEP_TIMEOUT = 30 * 60
 COMMAND = "memyselfai-hermes"
-DASHBOARD = Path(__file__).resolve().parent / "vendor" / "hermes-dashboard"
+
+
+def private_environment(home):
+    """Hermes' home, plus its per-user state folder (gateway locks), which would otherwise be shared
+    with any other Hermes under ~/.local/state."""
+    return {"HERMES_HOME": str(home), "XDG_STATE_HOME": str(Path(home) / "xdg-state")}
 
 
 class InstallError(RuntimeError):
@@ -114,10 +123,11 @@ class Runtime:
         os.replace(temporary, self.dir / "state.json")
 
     def installed(self):
-        return self.binary() is not None and self.state().get("version") == HERMES_VERSION
+        state = self.state()
+        return self.binary() is not None and state.get("version") == HERMES_VERSION and state.get("extras") == list(EXTRAS)
 
     def environment(self):
-        return {**os.environ, "HERMES_HOME": str(self.home)}
+        return {**os.environ, **private_environment(self.home)}
 
     # Installing
 
@@ -151,9 +161,10 @@ class Runtime:
             self._record(status="installing", version=previous, step="Installing Python and dependencies")
             self.run([uv, "sync", "--frozen", "--no-dev", "--python", PYTHON,
                       *[arg for extra in EXTRAS for arg in ("--extra", extra)]], cwd=self.source)
+            self.write_stamp()
             hermes = self.source / ".venv" / "bin" / "hermes"
             reported = self.run([str(hermes), "--version"], cwd=self.dir, env=self.environment())
-            if HERMES_VERSION not in reported:
+            if not reported.startswith(f"Hermes Agent v{HERMES_VERSION} "):
                 raise InstallError(f"The installed Hermes reported {reported.strip()[:80]!r}.")
             link = self.dir / "current.tmp"
             with contextlib.suppress(FileNotFoundError):
@@ -164,7 +175,7 @@ class Runtime:
                 if old != self.source:
                     shutil.rmtree(old, ignore_errors=True)
             shutil.rmtree(self.dir / "cache", ignore_errors=True)  # Only needed while installing.
-            self._record(status="ready", version=HERMES_VERSION, error="")
+            self._record(status="ready", version=HERMES_VERSION, extras=list(EXTRAS), error="")
 
     def install_uv(self):
         machine = {"amd64": "x86_64", "aarch64": "arm64"}.get(platform.machine().lower(), platform.machine().lower())
@@ -197,13 +208,20 @@ class Runtime:
             self.fetch(HERMES_URL, archive, HERMES_SHA256)
             extract(archive, partial)
         inner = next(partial.iterdir())  # GitHub archives hold one top-level folder.
-        if DASHBOARD.is_dir():
-            # The macOS app ships the dashboard prebuilt from this same source. Elsewhere Hermes
-            # builds it with the system's Node.js the first time `dashboard` runs.
-            shutil.copytree(DASHBOARD, inner / "hermes_cli" / "web_dist", dirs_exist_ok=True)
         shutil.rmtree(self.source, ignore_errors=True)
         inner.rename(self.source)
         shutil.rmtree(partial, ignore_errors=True)
+
+    def write_stamp(self):
+        """Hermes reads its version from this stamp; a source archive has no git history to read.
+
+        `external` tells `hermes update` that MeMyselfAI, not Hermes, replaces this copy.
+        """
+        stamp = {"schemaVersion": 2, "commit": HERMES_COMMIT, "commitDate": 0, "branch": None,
+                 "builtAt": "1970-01-01T00:00:00+00:00", "dirty": False, "source": "memyselfai",
+                 "distribution": None, "updateMechanism": "external", "baseVersion": HERMES_VERSION,
+                 "displayVersion": HERMES_VERSION, "distance": 0, "payload": "bootstrap", "tag": None}
+        (self.source / "install-stamp.json").write_text(json.dumps(stamp, indent=2) + "\n")
 
     def run(self, command, cwd, env=None):
         # uv keeps its cache and Python under the runtime folder and ignores the user's uv settings.
@@ -220,6 +238,41 @@ class Runtime:
             raise InstallError(f"{Path(command[0]).name} failed: " + (" ".join(tail) or f"status {done.returncode}"))
         return done.stdout.decode("utf-8", "replace")
 
+    # The gateway
+
+    def stop_gateway(self, wait=15):
+        """Stop the gateway Hermes starts for one-shot runs.
+
+        Hermes 0.23 runs every prompt through a gateway that outlives the run, keeps the MCP connection
+        it opened at start and runs Hermes' own cron scheduler. The orchestrator stops it before and
+        after each run, so each run starts fresh with that run's token and nothing runs in between.
+        Only a gateway of this copy and this home is signalled.
+        """
+        try:
+            record = json.loads((self.home / "gateway.pid").read_text())
+            pid = int(record["pid"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+        if record.get("hermes_home") != str(self.home) or not self._is_gateway(pid):
+            return False
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline and self._is_gateway(pid):
+            time.sleep(0.2)
+        if self._is_gateway(pid):
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGKILL)
+        return True
+
+    def _is_gateway(self, pid):
+        try:
+            done = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        command = done.stdout.decode("utf-8", "replace")
+        return " gateway run" in command and str(self.dir) in command
+
     # Direct access
 
     def write_command(self):
@@ -228,7 +281,7 @@ class Runtime:
             "#!/bin/sh",
             "# MeMyselfAI's own Hermes. It uses its private home and never touches ~/.hermes.",
             "# The app rewrites config.yaml on start; settings you change here may be replaced.",
-            "export HERMES_HOME=" + shlex.quote(str(self.home)),
+            *[f"export {name}={shlex.quote(value)}" for name, value in private_environment(self.home).items()],
             "exec " + shlex.quote(str(self.dir / "current" / ".venv" / "bin" / "hermes")) + ' "$@"',
         ]
         temporary = self.wrapper.with_suffix(".tmp")

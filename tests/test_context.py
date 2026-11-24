@@ -181,7 +181,8 @@ class OrchestratorContextToolTests(unittest.TestCase):
         reply = app_mcp.handle(self.tools, session, {
             "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments}})
         result = reply["result"]
-        return json.loads(result["content"][0]["text"]), result["isError"]
+        out = json.loads(result["content"][0]["text"])
+        return out, result["isError"] or "refused" in out
 
     def test_only_the_orchestrator_curates_context_and_schedules(self):
         hermes = app_mcp.Session(app_mcp.ORCHESTRATOR)

@@ -57,7 +57,8 @@ def call(name, arguments):
                                    "params": {"name": name, "arguments": arguments}}) + "\n")
     bridge.stdin.flush()
     result = json.loads(bridge.stdout.readline())["result"]
-    return json.loads(result["content"][0]["text"]), result["isError"]
+    out = json.loads(result["content"][0]["text"])
+    return out, result["isError"] or "refused" in out
 bridge.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}}) + "\n")
 bridge.stdin.flush()
 bridge.stdout.readline()

@@ -71,7 +71,7 @@ ssh -L 9119:127.0.0.1:9119 you@your-server   # then open http://127.0.0.1:9119 o
 docker compose exec memyselfai /data/workspace/hermes-runtime/memyselfai-hermes dashboard --no-open --host 0.0.0.0 --insecure
 ```
 
-The first `dashboard` on a server builds Hermes' web interface with the server's Node.js. The app rewrites Hermes' `config.yaml` on every start, so change settings through MeMyselfAI rather than in Hermes.
+The first `dashboard` builds Hermes' web interface with a Node.js that Hermes downloads into its private home. That takes about a minute and about 1 GB of disk. The app rewrites Hermes' `config.yaml` on every start, so change settings through MeMyselfAI rather than in Hermes.
 
 ## Pairing with your laptop
 

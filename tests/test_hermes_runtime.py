@@ -2,9 +2,11 @@
 
 import hashlib
 import io
+import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -67,6 +69,9 @@ class RuntimeTests(unittest.TestCase):
         script = runtime.wrapper.read_text()
         self.assertIn("HERMES_HOME=" + str(self.data / "hermes"), script)
         self.assertNotIn(str(self.root / "home" / ".hermes"), script)
+        self.assertIn("XDG_STATE_HOME=" + str(self.data / "hermes" / "xdg-state"), script)
+        stamp = json.loads((runtime.source / "install-stamp.json").read_text())
+        self.assertEqual((stamp["baseVersion"], stamp["updateMechanism"]), (self.version, "external"))
         link = self.root / "home" / ".local" / "bin" / "memyselfai-hermes"
         self.assertEqual(link.resolve(), runtime.wrapper.resolve())
         self.assertEqual(list((self.root / "home" / ".hermes").iterdir()), [])
@@ -121,6 +126,30 @@ class RuntimeTests(unittest.TestCase):
             self.assertIsNone(agents.executable("hermes"))
             Runtime(self.data, self.fetch).ensure()
             self.assertTrue(agents.executable("hermes", self.data).startswith(str(self.data)))
+
+    def test_stops_only_its_own_gateway(self):
+        runtime = Runtime(self.data, self.fetch)
+        runtime.dir.mkdir(parents=True)
+        runtime.home.mkdir(parents=True)
+        script = runtime.dir / "fake-hermes"
+        script.write_text("#!/bin/sh\nsleep 30\n")
+        script.chmod(0o755)
+        ours = subprocess.Popen([str(script), "gateway", "run", "--idle-exit"])
+        other = subprocess.Popen(["sleep", "30"])  # Another Hermes's gateway, say.
+        self.addCleanup(other.kill)
+        self.addCleanup(ours.kill)
+
+        def record(pid, home=runtime.home):
+            (runtime.home / "gateway.pid").write_text(json.dumps({"pid": pid, "hermes_home": str(home)}))
+
+        record(other.pid)
+        self.assertFalse(runtime.stop_gateway(wait=1))
+        record(ours.pid, home=self.root / "elsewhere")
+        self.assertFalse(runtime.stop_gateway(wait=1))
+        record(ours.pid)
+        self.assertTrue(runtime.stop_gateway())
+        self.assertIsNotNone(ours.wait(5))
+        self.assertIsNone(other.poll())
 
 
 if __name__ == "__main__":

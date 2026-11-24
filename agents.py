@@ -25,7 +25,9 @@ SUBSCRIPTIONS = ("claude", "codex")
 HERMES_PROVIDER = {"claude": "anthropic", "codex": "openai-codex"}
 # Hermes sends an empty model name unless one is configured, which providers reject.
 HERMES_MODEL = {"claude": "claude-opus-5-5", "codex": "gpt-5.5"}
-HERMES_MIN_VERSION = (0, 13, 0)
+HERMES_MIN_VERSION = (0, 23, 3)
+# The config schema of that version. Without it Hermes treats the file as too old to migrate.
+HERMES_CONFIG_VERSION = 54
 # Hermes toolsets the orchestrator may use. Terminal, file, browser, web, code execution,
 # messaging, cron and delegation stay off. The app MCP server is the only way to act.
 HERMES_TOOLSETS = ("memory", "todo", "session_search", "memyselfai")
@@ -77,7 +79,7 @@ def hermes_env(root, binary=None):
         "PATH": os.pathsep.join(
             ([str(Path(binary).parent)] if binary else []) + ["/opt/homebrew/bin", "/usr/local/bin", os.defpath]
         ),
-        "HERMES_HOME": str(hermes_home(root)),
+        **hermes_runtime.private_environment(hermes_home(root)),
         "NO_COLOR": "1",
     }
     return env
@@ -128,7 +130,8 @@ def sign_in_command(name, root, subscription):
         return [binary, "login"]
     if subscription == "claude":
         return [executable("claude") or "claude", "auth", "login"]
-    return ["env", "HERMES_HOME=" + str(hermes_home(root)), binary, "auth", "add", HERMES_PROVIDER[subscription]]
+    private = hermes_runtime.private_environment(hermes_home(root))
+    return ["env", *[f"{name}={value}" for name, value in private.items()], binary, "auth", "add", HERMES_PROVIDER[subscription]]
 
 
 def _state(installed, version, minimum, signed_in, error):
@@ -246,6 +249,7 @@ class Agents:
         provider = HERMES_PROVIDER[subscription]
         model = self.settings().get("orchestrator_model") or HERMES_MODEL[subscription]
         config = {
+            "_config_version": HERMES_CONFIG_VERSION,
             "model": {"provider": provider, "default": model},
             "approvals": {"mode": "manual", "cron_mode": "deny", "unattended_mode": "deny",
                           "single_query_mode": "deny"},

@@ -58,7 +58,8 @@ class Fixture(unittest.TestCase):
         reply = app_mcp.handle(self.tools, session, {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                                                      "params": {"name": name, "arguments": args}})
         result = reply["result"]
-        return json.loads(result["content"][0]["text"]), result["isError"]
+        out = json.loads(result["content"][0]["text"])
+        return out, result["isError"] or "refused" in out
 
     def dispatch(self, kind="email_reply", evidence=None):
         out, error = self.call(self.orchestrator(), "dispatch_task", type=kind, title="Reply to client",
@@ -134,6 +135,15 @@ class OrchestratorTests(Fixture):
         names = {t["name"] for t in app_mcp.handle(self.tools, self.orchestrator(),
                  {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]}
         self.assertFalse(names & {"propose_task", "ask_user"})
+
+    def test_refusals_do_not_count_as_orchestrator_errors(self):
+        """Hermes stops calling a server after three error results; a refusal must not trip that."""
+        call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "send_email", "arguments": {}}}
+        reply = app_mcp.handle(self.tools, self.orchestrator(), call)["result"]
+        self.assertFalse(reply["isError"])
+        self.assertIn("refused", json.loads(reply["content"][0]["text"]))
+        task = app_mcp.Session(app_mcp.TASK, "t1")
+        self.assertTrue(app_mcp.handle(self.tools, task, call)["result"]["isError"])
 
     def test_orchestrator_cannot_send(self):
         out, error = self.call(self.orchestrator(), "send_email", text="hi")
@@ -284,6 +294,28 @@ class TransportTests(Fixture):
         self.assertEqual([r["id"] for r in replies], [1, 2])
         self.assertIn("Invoice please", replies[1]["result"]["content"][0]["text"])
 
+    def test_a_long_lived_bridge_uses_each_runs_token(self):
+        """Hermes' gateway keeps the bridge between orchestrator runs; each run writes a new token."""
+        token_file = Path(self.directory.name) / "mcp-token"
+        token_file.write_text(self.sessions.issue(app_mcp.ORCHESTRATOR))
+        entry = app_mcp.launch_config(self.engine.mcp_url, token_file)
+        bridge = subprocess.Popen([entry["command"], *entry["args"]], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  text=True, env={**os.environ, **entry["env"]})
+        self.addCleanup(bridge.wait, 10)
+        self.addCleanup(bridge.stdin.close)
+
+        def call(ident):
+            bridge.stdin.write(json.dumps({"jsonrpc": "2.0", "id": ident, "method": "tools/list"}) + "\n")
+            bridge.stdin.flush()
+            return json.loads(bridge.stdout.readline())
+
+        self.assertIn("result", call(1))
+        self.sessions.revoke(token_file.read_text())  # The first run ends.
+        token_file.unlink()
+        self.assertIn("refused", call(2)["error"]["message"])
+        token_file.write_text(self.sessions.issue(app_mcp.ORCHESTRATOR))  # The next run starts.
+        self.assertIn("result", call(3))
+
 
 class AgentSetupTests(unittest.TestCase):
     def setUp(self):
@@ -307,7 +339,7 @@ class AgentSetupTests(unittest.TestCase):
     def test_one_claude_sign_in_makes_task_agents_and_hermes_ready(self):
         outputs = {("claude", "--version"): (0, "2.1.330 (Claude Code)", ""),
                    ("claude", "auth", "status"): (0, '{"loggedIn": true}', ""),
-                   ("hermes", "--version"): (0, "Hermes Agent v0.13.0", "")}
+                   ("hermes", "--version"): (0, "Hermes Agent v0.23.3", "")}
         a, b = self.fake({"claude", "hermes"}, outputs)
         with a, b:
             self.assertEqual(self.states(), {"claude": "ready", "codex": "not_installed", "hermes": "ready"})
@@ -319,7 +351,7 @@ class AgentSetupTests(unittest.TestCase):
         self.settings["orchestrator_subscription"] = "codex"
         outputs = {("codex", "--version"): (0, "codex-cli 0.166.0", ""),
                    ("codex", "login", "status"): (0, "Logged in using ChatGPT", ""),
-                   ("hermes", "--version"): (0, "Hermes Agent v0.13.0", ""),
+                   ("hermes", "--version"): (0, "Hermes Agent v0.23.3", ""),
                    ("hermes", "auth", "status"): (0, "openai-codex: logged out (No Codex credentials stored.)", "")}
         a, b = self.fake({"codex", "hermes"}, outputs)
         with a, b:
