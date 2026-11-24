@@ -363,21 +363,17 @@ function instancesSection() {
   const peers=inst.peers.map(p=>{
     const id='data-peer="'+esc(p.id)+'"', cap=p.capacity||{};
     const ready=Object.entries(cap.agents||{}).filter(([,v])=>v==="ready").map(([k])=>titleCase(k)).join(", ");
-    const detail=[titleCase(p.platform),p.trusted?(p.state||"Not contacted yet"):"Waiting for your confirmation",cap.state&&cap.state!=="active"?titleCase(cap.state):"",cap.preference?preferenceNames[cap.preference]:"",cap.battery?"On battery":"",p.last_seen?"Last seen "+relativeDate(p.last_seen):"",cap.slots?(cap.free??0)+" of "+cap.slots+" agent slots free":"",ready?"Ready: "+ready:"","Fingerprint "+shortPrint(p.fingerprint),p.owns+" items owned"].filter(Boolean).join(" · ");
-    const controls=!p.trusted
-      ? button("Confirm","instance-confirm",null,"primary",id)+button("Reject","instance-reject",null,"quiet",id)
-      : (silent(p)?button("Take over","instance-takeover",null,"secondary",id):"")+button("Hand over connections","instance-move",null,"secondary",id+' data-items="connections"')+button("Take connections back","instance-move-back",null,"quiet",id)+button("Hand over orchestrator","instance-move",null,"quiet",id+' data-items="orchestrator"')+button("Remove","instance-remove",null,"quiet",id);
+    const detail=[titleCase(p.platform),silent(p)?"Silent; its work moves here after 15 minutes":(p.state||"Not contacted yet"),cap.state&&cap.state!=="active"?titleCase(cap.state):"",cap.preference?preferenceNames[cap.preference]:"",cap.battery?"On battery":"",p.last_seen?"Last seen "+relativeDate(p.last_seen):"",cap.slots?(cap.free??0)+" of "+cap.slots+" agent slots free":"",ready?"Ready: "+ready:"","Fingerprint "+shortPrint(p.fingerprint),p.owns+" items owned"].filter(Boolean).join(" · ");
+    const controls=button("Remove","instance-remove",null,"quiet",id);
     return entry("sync",p.name,detail,controls);
   }).join("");
-  const departed=(inst.departed||[]).map(p=>entry("sync",p.name+" (removed)",p.owns+" items still owned. They wait until you take them over.",button("Take over","instance-takeover",null,"secondary",'data-peer="'+esc(p.id)+'"'))).join("");
+  const departed=(inst.departed||[]).map(p=>entry("sync",p.name+" (removed)",p.owns+" items it can't hand over stay with it, such as work on its local folders.")).join("");
   return section("Instances","",self+departed+(peers||'<p class="section-note">Run MeMyselfAI on a VPS too and pair it here. Paired instances share tasks, logins and work, and talk to each other directly.</p>'));
 }
 const silent=p=>p.trusted&&(!p.last_seen||Date.now()/1000-p.last_seen>120);
 function runOn(t) {
   const inst=state.instances;
   if (!inst?.peers.length || ["done","dismissed","skipped","sending","uncertain"].includes(t.status)) return "";
-  const owner=inst.peers.find(p=>p.name===t.owner);
-  if (owner && silent(owner)) return button("Take over from "+owner.name,"instance-takeover",null,"quiet",'data-peer="'+esc(owner.id)+'" data-id="'+esc(t.id)+'"');
   const targets=[...(t.owner?[{id:inst.id,name:inst.name+" (here)"}]:[]),...inst.peers.filter(p=>p.trusted&&p.name!==t.owner)];
   return targets.map(p=>button("Run on "+p.name,"run-on",null,"quiet",'data-id="'+esc(t.id)+'" data-peer="'+esc(p.id)+'"')).join("");
 }
@@ -385,7 +381,7 @@ const preferenceNames={first:"Run here first",overflow:"Overflow only",never:"Ne
 async function pairingCode() {
   try {
     const r=await request("/api/action",{op:"instance_code"});
-    showDialog("pairing","Add instance",'<p>On the other instance, choose <strong>Join</strong> and enter this instance\'s address with this code. It works once, for '+Math.round(r.expires_in/60)+' minutes.</p><p class="pairing-code"><code>'+esc(r.code)+'</code></p><p class="section-note">Then confirm the new instance here after checking that its fingerprint matches.</p>');
+    showDialog("pairing","Add instance",'<p>On the other instance, choose <strong>Join</strong> and enter this instance\'s address with this code. It works once, for '+Math.round(r.expires_in/60)+' minutes.</p><p class="pairing-code"><code>'+esc(r.code)+'</code></p><p class="section-note">Once it joins, both instances share work right away. Connections move to an always-on server by themselves.</p>');
     await refresh();
   } catch(e) { notify(e.message); }
 }
@@ -786,19 +782,9 @@ function handleAction(el) {
     case "agent-sign-in": void signInAgent(el.dataset.agent); return;
     case "instance-code": void pairingCode(); return;
     case "instance-checkout": openForm("instance_checkout","Add a checkout on this instance",input("path","Path of a Git checkout",{required:true,placeholder:"/home/me/src/project"}),"Add",{},"Coding tasks for this repository's origin can then move to this instance with their worktree."); return;
-    case "instance-takeover": {
-      const peer=[...state.instances.peers,...(state.instances.departed||[])].find(p=>p.id===el.dataset.peer);
-      const scope=el.dataset.id?"this task":"everything "+esc(peer?.name||"it")+" owns";
-      openForm("instance_takeover","Take over from "+(peer?.name||"instance"),'<p>Take over '+scope+'. If '+esc(peer?.name||"that instance")+' is still running somewhere, both may work on or send the same items. Tasks that were being sent are marked for you to check first.</p>'+input("confirm","Type "+(peer?.name||"its name")+" to confirm",{required:true}),"Take over",{peer:el.dataset.peer,items:el.dataset.id?["task:"+el.dataset.id]:undefined});
-      return;
-    }
     case "run-on": void mutate({op:"move",items:["task:"+el.dataset.id],to:el.dataset.peer},"Move requested. It happens once the task is idle and the instances sync."); return;
     case "instance-join": openForm("instance_join","Join another instance",input("address","Address of the other instance",{required:true,placeholder:"vps.example.com:8802"})+input("code","Pairing code",{required:true,placeholder:"XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"}),"Pair",{},"Pair only machines you control. Paired instances share your logins."); return;
     case "instance-rename": openForm("instance_rename","Rename this instance",input("name","Name",{required:true,value:state.instances.name}),"Save"); return;
-    case "instance-confirm": void mutate({op:"instance_confirm",peer:el.dataset.peer},"Instance confirmed."); return;
-    case "instance-reject": void mutate({op:"instance_reject",peer:el.dataset.peer},"Pairing rejected."); return;
-    case "instance-move": void mutate({op:"move",items:el.dataset.items,to:el.dataset.peer},"Handoff requested. It completes after the next sync."); return;
-    case "instance-move-back": void mutate({op:"move",items:"connections",to:state.instances.id},"Handoff requested. It completes after the next sync."); return;
     case "instance-remove": openForm("instance_remove","Remove instance",'<p>'+esc(state.instances.peers.find(p=>p.id===el.dataset.peer)?.name||"This instance")+' stops syncing and the workspace key is rotated. It keeps the logins it already has. Reconnect each account afterwards to revoke them.</p>',"Remove",{peer:el.dataset.peer}); return;
     case "settings": void loadProviders(); openForm("settings","Agent settings",selectField("dry","Delivery mode",[["true","Dry mode — review every external write"],["false","Live mode — follow project rules"]],String(!!state.settings.dry))+providerField()+selectField("orchestrator_subscription","Orchestrator subscription",Object.entries(subscriptionNames),state.settings.orchestrator_subscription||(state.settings.provider==="codex"?"codex":"claude"))+(state.instances?.peers.length?selectField("preference","Tasks on this instance",Object.entries(preferenceNames),state.settings.preference||"first")+input("slots","Agent slots on this instance",{type:"number",value:String(state.settings.slots||""),placeholder:"Default",help:"How many tasks run here at once. Leave empty for the default."}):""),"Save settings",{},"In live mode the agent may deliver work without asking when all applicable rules allow it."); return;
     case "connect": {
@@ -860,7 +846,7 @@ function handleAction(el) {
     case "sync": void mutate({op:action},"Source sync requested."); return;
   }
 }
-const messages={instance_checkout:"Checkout added.",instance_takeover:"Taken over.",instance_join:"Paired. Confirm on the other instance.",instance_rename:"Instance renamed.",instance_remove:"Instance removed and workspace key rotated.",orchestrator_prompt:"Message sent to the orchestrator.",app_finding:"Finding tracked.",chat_source_config:"Chat source saved.",suggestion_config:"Activity sources saved.",task:"Task created.",project:"Project saved.",report:"Investigation requested.",style:"Style preference submitted for review.",rule:"Decision rule saved.",settings:"Agent settings saved.",connect:"Connection saved.",feedback:"Feedback recorded.",answer:"Answer submitted.",reconcile:"Delivery outcome recorded.",dismiss:"Task dismissed.",disconnect:"Account disconnected.",demo:"Sample workspace loaded.",revert_skill:"Revision reverted."};
+const messages={instance_checkout:"Checkout added.",instance_join:"Paired. The instances now share work.",instance_rename:"Instance renamed.",instance_remove:"Instance removed and workspace key rotated.",orchestrator_prompt:"Message sent to the orchestrator.",app_finding:"Finding tracked.",chat_source_config:"Chat source saved.",suggestion_config:"Activity sources saved.",task:"Task created.",project:"Project saved.",report:"Investigation requested.",style:"Style preference submitted for review.",rule:"Decision rule saved.",settings:"Agent settings saved.",connect:"Connection saved.",feedback:"Feedback recorded.",answer:"Answer submitted.",reconcile:"Delivery outcome recorded.",dismiss:"Task dismissed.",disconnect:"Account disconnected.",demo:"Sample workspace loaded.",revert_skill:"Revision reverted."};
 async function signInAgent(agent) {
   try {
     const result=await request("/api/action",{op:"agent_sign_in",agent});

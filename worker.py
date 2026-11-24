@@ -678,6 +678,29 @@ def checkout_origin(path):
         return ""
 
 
+def checkout_remote(path):
+    try:
+        return os.fsdecode(_git(Path(path), "remote", "get-url", "origin")).strip()
+    except (WorkerError, OSError):
+        return ""
+
+
+def clone_checkout(remote, target):
+    """Clone with the user's own Git setup, so private repositories use their credentials. Reads only."""
+    target = Path(target)
+    if (target / ".git").exists():
+        return target.resolve()
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    proc = subprocess.run(["git", "clone", "--quiet", "--", remote, str(target)], capture_output=True, text=True,
+                          timeout=600, stdin=subprocess.DEVNULL,
+                          # No ext:: or other command transports, whatever the remote says.
+                          env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ALLOW_PROTOCOL": "file:git:http:https:ssh"})
+    if proc.returncode:
+        shutil.rmtree(target, ignore_errors=True)
+        raise WorkerError("Could not clone " + remote + ": " + (proc.stderr.strip().splitlines() or ["error"])[-1][:200])
+    return target.resolve()
+
+
 def export_worktree(worktree, task_id):
     """Snapshot a task worktree, untracked files included, as a bundle. The user's index is untouched."""
     root = _check_worktree(worktree, expected_branch="memyselfai/task-" + task_id)
@@ -721,7 +744,8 @@ def import_worktree(repo, root, task_id, package):
         except WorkerError:
             # The base commit may be missing; fetch it with the user's own Git setup, once.
             subprocess.run(["git", "-C", str(repo), "fetch", "--quiet", "origin"], capture_output=True,
-                           timeout=120, stdin=subprocess.DEVNULL, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+                           timeout=120, stdin=subprocess.DEVNULL, env={**os.environ, "GIT_TERMINAL_PROMPT": "0",
+                                                       "GIT_ALLOW_PROTOCOL": "file:git:http:https:ssh"})
             try:
                 _git(repo, "bundle", "verify", str(bundle))
             except WorkerError as exc:

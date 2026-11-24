@@ -172,6 +172,10 @@ class Sync:
         db.observer = self
         with db.atomic():
             self.claim_unowned()
+            # Pairings made when the listener still asked for confirmation: the code already proved both ends.
+            for p in db.rows("peers"):
+                if not p.get("trusted") and not p.get("removed"):
+                    db.put("peers", {**p, "trusted": True, "state": "paired"})
 
     # Local identity and peers
 
@@ -371,6 +375,13 @@ class Sync:
                     self.db.put("handoff_requests", {**request, "done": True})
                 changed = True
         return changed
+
+    def declined_recently(self, item, to, seconds=3600):
+        with self.db.lock:
+            rows = self.db.conn.execute(
+                "SELECT data FROM records WHERE bucket='handoffs' AND json_extract(data,'$.item')=?"
+                " AND json_extract(data,'$.to')=? AND json_extract(data,'$.answer')='declined'", (item, to)).fetchall()
+        return any(self.now() - json.loads(d)["at"] < seconds for (d,) in rows)
 
     def _current(self, offer):
         record = self.owner(offer["item"])
@@ -715,8 +726,8 @@ class Sync:
             self.db.delete("local", "pairing")
             info = request["instance"]
             self.db.put("peers", dict(id=info["id"], name=info["name"], platform=info["platform"],
-                                      cert=cert, fingerprint=their_fp, trusted=False, address="",
-                                      state="awaiting your confirmation", paired_at=self.now()))
+                                      cert=cert, fingerprint=their_fp, trusted=True, address="",
+                                      state="paired", paired_at=self.now()))
         self.reload_server()
         return dict(instance=self.heartbeat(), cert=self.cert(),
                     proof=self.proof(match, "host", own_fp, their_fp, request["nonce"]))
@@ -738,21 +749,9 @@ class Sync:
         with self.db.atomic():
             self.db.put("peers", dict(id=info["id"], name=info["name"], platform=info["platform"], cert=cert,
                                       fingerprint=fp, trusted=True, address=address,
-                                      state="waiting for confirmation on " + info["name"], paired_at=self.now()))
+                                      state="paired", paired_at=self.now()))
         self.start_journal()
         return info
-
-    def confirm(self, peer_id, accept=True):
-        with self.db.atomic():
-            p = self.db.get("peers", peer_id)
-            if not p or p.get("removed"):
-                raise ValueError("Unknown instance.")
-            if accept:
-                p.update(trusted=True, state="confirmed")
-                self.db.put("peers", p)
-            else:
-                self.db.delete("peers", peer_id)
-        self.reload_server()
 
     def remove(self, peer_id):
         with self.db.atomic():

@@ -1,6 +1,6 @@
 # Instances, sync and sharing work
 
-**Status** — Draft. Phase 1 (headless Linux service), phase 2 (pairing, sync and ownership) and phase 3 (capacity scheduling, planned absence, **Run on…**, worktree handoff and **Take over**) are implemented as described in [phase 2 design](#phase-2-design) and [phase 3 design](#phase-3-design). See the status sections and the [VPS guide](../vps.md). Covers [US-25 through US-29](../user-stories.md). Changes the "one process owns a data directory" rule in the [desktop runtime](desktop-runtime.md). That rule still holds per instance, but several instances can now share one workspace.
+**Status** — Draft. Phase 1 (headless Linux service), phase 2 (pairing, sync and ownership) and phase 3 (capacity scheduling, planned absence, **Run on…**, worktree handoff and automatic takeover) are implemented as described in [phase 2 design](#phase-2-design) and [phase 3 design](#phase-3-design). See the status sections and the [VPS guide](../vps.md). Covers [US-25 through US-29](../user-stories.md). Changes the "one process owns a data directory" rule in the [desktop runtime](desktop-runtime.md). That rule still holds per instance, but several instances can now share one workspace.
 
 ## Intent
 
@@ -61,7 +61,7 @@ Each instance runs the same service, including the [app MCP server](agents-and-a
 
 1. On the instance that already holds the workspace, the user chooses **Instances → Add instance**. The app shows a one-time pairing code, valid for ten minutes, and the command to install and start the other instance.
 2. The user runs that command on the new machine and enters the code and the first instance's address. A laptop can pair with a VPS without being reachable itself, because the laptop always dials out.
-3. Both instances show the other's name, platform and key fingerprint. The user confirms on the first instance.
+3. Both instances show the other's name, platform and key fingerprint for reference. A valid code is the user's confirmation, so neither side asks again.
 4. Each instance stores the other's public key. All later traffic uses mutual TLS with those pinned keys. The code is never reused.
 5. The first instance sends the workspace key to the new one over that channel. The workspace key encrypts logins in the sync log.
 
@@ -114,11 +114,9 @@ When the instance comes back, it can ask for items back under the normal capacit
 
 ### Takeover when an owner is gone
 
-A crash, a dead disk or a lost laptop leaves items with an owner that cannot hand them over. Their rows show "Owned by Laptop, last seen 3 hours ago". The other instances never take them over on their own.
+A crash, a dead disk, a lost laptop or a laptop that slept without handing over leaves items with an owner that cannot hand them over. The other instances take them over automatically: after 15 minutes of silence, or at once when the owner is removed. The user is not asked. See [automatic takeover](#phase-3-design) for the rules. When the old instance reconnects, it sees the higher epoch and stops. Its unsynced work is kept on the affected tasks as discarded attempts.
 
-The user can choose **Take over from Laptop** in Instances, for all of its items or for a single row. The app warns that if that instance is still running somewhere, both may act on those items. It asks for typed confirmation. The takeover writes ownership at a higher epoch. When the old instance reconnects, it sees the higher epoch and stops. Its unsynced work is kept on the affected tasks as discarded attempts. Any send intent without a receipt is reconciled, through the connector's verification read, before the new owner sends that action.
-
-This is the only path where duplicate work is possible, and only when the user takes over from an instance that is in fact still running. To narrow it, connectors that support it send with an identifier derived from the action version, such as an email Message-ID, and check for an earlier delivery before sending.
+This is the only path where duplicate work is possible. It happens only when the silent instance was in fact still running and cut off from its peers while it could still reach the outside world. Sends are protected separately: a task that was being sent becomes `uncertain`. A taken-over task's pending version also needs the user's approval, even where rules would send it on their own, because sending is an external write.
 
 ## Conflicts
 
@@ -158,7 +156,7 @@ A user can move a task with **Run on…** in the command palette. This performs 
 
 ## Instances view
 
-**Instances** lists every paired instance with name, platform, state, last seen, slots in use, agent readiness, items owned and preference. It offers Add instance, Remove, Rename, the preference and **Take over**. Each row in the inbox and board shows its owner.
+**Instances** lists every paired instance with name, platform, state, last seen, slots in use, agent readiness, items owned and preference. It offers Add instance, Join, Add checkout, Rename, Remove and the preference. Takeover is automatic. Each row in the inbox and board shows its owner.
 
 ## Failures
 
@@ -167,7 +165,7 @@ A user can move a task with **Run on…** in the command palette. This performs 
 | Laptop sleeps | Before sleeping it hands its tasks and connections to the VPS. The VPS keeps polling, discovering and working. Desktop-only sources pause and catch up on wake, as today. |
 | VPS unreachable | The laptop keeps working on everything it owns, including sending. Items the VPS owns wait for it. Their rows say so. New tasks created on the laptop run there. |
 | Cut off with both online | Each instance continues on what it owns. No item is worked or sent by both. When they reconnect, proposals merge by evidence key and queued work rebalances. |
-| Laptop crashes without handing over | Its items wait. The user can **Take over** after typed confirmation. |
+| Laptop crashes without handing over | After 15 minutes of silence, the VPS takes over its tasks and connections automatically. |
 | Instance pauses and resumes after a takeover | Its next synced change carries an old epoch and is refused. It learns of the higher epoch and stops. |
 | Handoff interrupted | The owner still owns the item and does not act until the receiver confirms or the handoff is cancelled. No item is left with two owners or with none. |
 | Clock skew between peers | Ownership does not depend on clocks. Large skew only affects the ordering of hand-edited fields. Instances shows skew over 30 seconds. |
@@ -186,7 +184,7 @@ A user can move a task with **Run on…** in the command palette. This performs 
 
 1. **Headless service on Linux.** Separate the service from AppKit, add the encrypted credential store, and ship an install script and Docker image. Setups *Laptop* and *VPS* work.
 2. **Pairing, sync and ownership.** Sync workspace state and logins. Every agent run, poll and send checks ownership, even with one instance. Add handoff, fencing, send intents and the Instances view.
-3. **Capacity scheduling**, planned-absence handoffs, worktree bundles, **Run on…** and **Take over**.
+3. **Capacity scheduling**, planned-absence handoffs, worktree bundles, **Run on…** and automatic takeover.
 
 Each phase ships with its acceptance criteria below passing.
 
@@ -220,8 +218,8 @@ This section fixes the details phase 2 implements. Where it narrows the sections
 
 1. **Add instance** on the reachable instance, usually the VPS, shows a code: 120 random bits, valid for 10 minutes, one at a time.
 2. **Join** on the other instance takes the address and the code. It connects, reads the listener's certificate, and sends its own certificate with an HMAC of both fingerprints keyed by the code. The listener checks the proof and answers with a proof of its own. The code is then spent. A man in the middle would have to know the code. Five wrong proofs spend the code too.
-3. Both sides show both fingerprints. The joiner trusts the listener at once, because the code proved it. The listener trusts the joiner only after the user presses **Confirm** there. Until then, its exchanges are refused with "awaiting confirmation".
-4. The workspace key is sent on the first confirmed exchange. Whichever side has the newer key version gives it to the other.
+3. Both sides trust each other at once, because the code proves both ends. Both show both fingerprints. **Remove** undoes a pairing at any time.
+4. The workspace key is sent on the first exchange. Whichever side has the newer key version gives it to the other.
 
 Data on both sides merges. The joiner does not need to be empty.
 
@@ -245,7 +243,7 @@ An offer is pending until it is answered `cancel_ack` or the receiver's owner re
 
 **Checks in the engine.** The scheduler runs agents, polls connections, discovers events and sends only for items this instance owns. It also checks ownership again before saving an agent's result. Events are processed by the owner of their connection. An approval pressed on an instance that does not own the task is recorded for that exact version and synced. The owner then sends that version. When the orchestrator dispatches evidence from a connection another instance owns, it records a dispatch request. The connection's owner creates the task. Before a send, the owner records a send intent on the task: version, epoch and instance. A send that was in progress during a crash becomes `uncertain` at restart, as before. It is reconciled, never resent blindly.
 
-**Instances view.** Settings → Instances shows this instance's name and fingerprint, then each peer: platform, last exchange, slots, agent readiness and the items it owns. It offers **Add instance** (code), **Join**, **Confirm** or **Reject** for a pending peer, **Hand over connections**, **Hand over the orchestrator**, **Take back**, and **Remove**. Removing a peer revokes it on every reachable instance, rotates the workspace key, re-seals every login and flags each connection with **Reconnect to revoke old login**.
+**Instances view.** Settings → Instances shows this instance's name and fingerprint, then each peer: platform, last exchange, slots, agent readiness and the items it owns. It offers **Add instance** (code), **Join** and **Remove**. Phase 2 first had **Confirm**, **Reject** and hand-over buttons. Phase 3 removed them: pairing, connection placement and takeover are automatic. Removing a peer revokes it on every reachable instance, rotates the workspace key, re-seals every login and flags each connection with **Reconnect to revoke old login**.
 
 **Left to phase 3:** capacity-based handoffs, planned absence, worktree bundles, **Run on…** and **Take over**. Phase 2 also does not sign handoff records with the instance key. Paired instances trust each other fully, and records arrive only over mutual TLS from a paired peer. A refresh token rotated by a non-owner during a send is a known risk until owners refresh on request.
 
@@ -292,16 +290,26 @@ It exchanges every 0.3 seconds until every offer is confirmed or time is up. An 
 - **Checkouts by origin.** Repository paths in projects belong to the instance that registered them. Each instance advertises the normalised origin URLs of its checkouts, such as `github.com/owner/repo`. Those are the project repositories that exist on that machine, plus checkouts added under Settings → Instances → **Add checkout**, which stay local.
 - **Bundle at offer.** When the owner offers a task with a worktree, it snapshots the worktree, including uncommitted and untracked files, into a commit made with a temporary index. The user's index and files are untouched. It writes a Git bundle of the task branch and the snapshot, relative to the branch's merge base with the checkout's remote-tracking branches. The bundle rides with the offer as a synced `bundles` record. A bundle over 4 MB cannot be sent, so the task stays.
 - **Import before confirming.** The receiver imports the bundle into its own checkout of that origin. It verifies the bundle, fetching from `origin` once if the base commit is missing. It then creates the worktree `task-<id>` on branch `memyselfai/task-<id>` and restores the snapshot as uncommitted changes. Only then does it confirm. If the import fails, it answers `declined` with the reason, and the owner resumes at once. The sender keeps its own worktree.
+- **Clone when missing.** An instance with Git advertises that it can clone. A receiver without a checkout clones the task's origin, using its own Git credentials, into `checkouts/` in its data directory, then imports. Cloning reads the repository and writes nothing to it, so the user is not asked. If the clone fails, the receiver declines. The owner then does not offer that task to that instance again for an hour. **Add checkout** stays available to reuse an existing clone.
 - **Coding tasks without a repository yet** stay with their owner, because the repository is chosen from that instance's checkouts.
 
-**Take over.** For an owner that crashed, was lost or was removed:
+**Only writes and sends involve the user.** Coordination between instances never asks the user anything: pairing after the code, handoffs, connection placement, takeover and cloning. The user approves only what writes to a repository or sends something, such as mail, messages or calendar events, under the existing dry-mode and rules flow.
 
-1. Settings → Instances offers **Take over** on a peer that has been silent for more than 2 minutes, and on a removed instance that still owns items. The task detail offers it for one task owned by such a peer.
-2. The user types the instance's name to confirm. The app warns that if the instance is still running, both may act on those items.
-3. For each item, the app writes an owner record at epoch + 2. The +2 also overrides a handoff the old owner may have offered just before it went silent. Tasks that were `sending` become `uncertain`, so the user verifies delivery before anything is sent again. Tasks that were `working` are queued again.
-4. When the old instance reconnects, it applies the higher epoch and stops acting on those items. Peers refuse its changes from the older epoch. The new owner keeps up to 20 refused task changes on the task as discarded attempts.
+**Connections and the orchestrator prefer an always-on instance.** A Mac instance that sees an active non-Mac peer offers it each connection that peer can poll, about once a minute while idle. It also offers the orchestrator if the peer's Hermes is ready. If that peer stops and hands them back, they return once it is active again. There are no hand-over buttons.
 
-A send that the old owner made but never synced as `sending` cannot be detected this way. That is the duplicate risk the user accepts by typing the name.
+**Automatic takeover.** Every few seconds, each instance checks for peers that have been silent for 15 minutes, and for removed peers that still own items.
+
+1. Only the best-ranked live instance takes over. Ranking prefers an active instance, then one not on a Mac, then not on battery, then the lowest instance ID. If two take over at once, the equal-epoch rule keeps the lower instance ID.
+2. It takes the silent owner's items that it can serve:
+   - tasks without local evidence or a desktop source,
+   - movable connections,
+   - the orchestrator, if its own Hermes is ready.
+
+   A task tied to a repository is taken only if a checkout of its origin exists here, or can be cloned. A worktree left on the silent instance cannot be recovered. Such a task restarts from a fresh worktree, and its last result notes that.
+3. For each item, it writes an owner record at epoch + 2. The +2 also overrides a handoff the old owner may have offered just before it went silent. Tasks that were `sending` become `uncertain`. Tasks that were `working` are queued again. A task in review keeps its draft, but the taken-over version needs approval before it is sent.
+4. When the old instance reconnects, it applies the higher epoch and stops acting on those items. Peers refuse its changes from the older epoch. The new owner keeps up to 20 refused task changes on the task as discarded attempts. Capacity scheduling and the connection preference then rebalance as usual.
+
+A laptop that was offline also sees its VPS as silent and may take over the VPS's items. While it is offline it cannot poll or send, and once reconnected the preferences move connections back to the VPS. The only risk left is two instances that both reach the internet but not each other.
 
 **Still left:** reconciliation through a connector's own verification read, detecting a data directory restored from backup, and removing the sender's copy of a moved worktree, which is kept for now.
 
@@ -309,7 +317,7 @@ A send that the old owner made but never synced as `sending` cannot be detected 
 
 Implemented in `sync.py`, with checks in the engine, the app MCP server and the dashboard:
 
-- Instance identity, pairing with a one-time code, confirmation on the listening instance, and the mutual TLS listener (`--sync-port`). The installer and the Docker image turn the listener on at port 8802.
+- Instance identity, pairing with a one-time code (trusted at once since phase 3), and the mutual TLS listener (`--sync-port`). The installer and the Docker image turn the listener on at port 8802.
 - The change log with hybrid logical clocks, per-field last writer wins, relaying through any peer, and a baseline at first pairing. Activity and logins sync. Logins are sealed with the workspace key.
 - Owner records, creation by the connection's owner (dispatch requests), handoffs through the log with the 10-minute cancellation, fencing by epoch, approval relay to the owner, and send intents.
 - Settings → Instances, owner labels on task and connection rows, and Remove with key rotation and reconnect flags.
@@ -317,7 +325,7 @@ Implemented in `sync.py`, with checks in the engine, the app MCP server and the 
 Verified:
 
 - `tests/test_sync.py`: sealing, log convergence and idempotence, cut-off edits converging to the later one, local-only settings, logins absent from captured exchange bodies, key rotation on remove, handoff, cancellation and the cancel/confirm race, fencing of an older epoch, and move requests.
-- Pairing over real mutual TLS on loopback: matching fingerprints, refusal before confirmation, refused wrong, reused and expired codes, and refusal of an unpaired client certificate.
+- Pairing over real mutual TLS on loopback: matching fingerprints, immediate trust on both sides, refused wrong, reused and expired codes, and refusal of an unpaired client certificate.
 - Two full engines: a task runs only on its owner, an approval on the non-owner is sent by the owner, a connection polls only from the VPS after a handoff, and an orchestrator dispatch is forwarded to the connection's owner.
 - The fault harness runs two and three instances for 400 random steps per seed: partitions, crashes (including between send intent and send), offers, timeouts and new items. After every step, no item has two acting owners and no fixture write is sent twice. After healing, every item has exactly one owner. It fails when the owner is allowed to act during an offer, or to resume after cancelling without the receiver's acknowledgement.
 - End to end between this Mac and the Docker image: pairing with a refused wrong code, matching fingerprints, a task in each direction (the first exchange took 10.7 seconds, later ones about 5), a login arriving in the VPS encrypted store with no plaintext in `vault.json`, and a connection polled by the VPS right after it took ownership at epoch 2.
@@ -347,13 +355,18 @@ Verified:
   - `docker compose stop` handed the connection back to the running laptop at epoch 3 and finished in 8.6 seconds.
 - The desktop host compiles and links with the power hook.
 
-Worktree handoff and Take over, verified in `tests/test_sync.py` with real Git repositories (a bare origin and a clone per instance):
+Worktree handoff and automatic takeover, verified in `tests/test_sync.py` with real Git repositories (a bare origin and a clone per instance):
 
 - **Worktree moves.** A coding task moves to the VPS with its worktree. The new worktree sits in the VPS's own checkout, on the task branch with its commit. The modified, untracked and deleted files arrive as uncommitted changes. The sender's worktree and index are untouched, and the bundle record is deleted.
-- **No checkout.** Moving to an instance without a checkout is refused up front. A direct offer is declined, and the owner resumes at once.
+- **No checkout.** A receiver without a checkout clones the origin into its data directory and imports the worktree. If the clone fails, it declines. The owner resumes at once and does not offer that task to that instance again for an hour.
 - **No repository yet.** A coding task without a repository stays.
-- **Take over.** It is refused while the peer was in touch recently or the typed name is wrong. It then writes epoch 3 over epoch 1. A task that was `sending` becomes `uncertain`, and a `working` task is queued. When the old owner reconnects, its stale change is refused, kept on the task as a discarded attempt, and the old owner stops.
-- **Removed instance.** One task can be taken over from a removed instance, which is listed with the items it still owns.
+- **Automatic takeover.**
+  - Nothing happens after 5 minutes of silence.
+  - After 15 minutes, the VPS writes epoch 3 over epoch 1, with no user step. A `sending` task becomes `uncertain`, and a `working` task is queued. A task in review keeps its draft, but rules no longer send it automatically. A local-evidence task stays with the silent instance. When the old owner reconnects, its stale change is refused and kept on the task as a discarded attempt, and the old owner stops.
+  - A removed instance is taken over at once.
+  - A laptop does not take over while a better-ranked server is live. Otherwise it does.
+  - A worktree task restarts from the taker's checkout with an empty worktree.
+- **Always-on preference.** A Mac instance hands a mail connection and the orchestrator to a Linux peer without a click.
 
 The suite passes on macOS and on Debian with Git 2.39.
 
@@ -367,4 +380,4 @@ A gateway would hold OAuth app registrations for many users. It would give simpl
 
 - Is Docker acceptable as the primary VPS install, or should the first target be a single binary plus systemd unit?
 - Default slots on a VPS: CPU count minus one assumes about 2 GB of memory per agent. Confirm with a measurement once phase 1 runs.
-- Should a takeover ever happen automatically, for example after the owner has been silent for several days? This draft says never, because it cannot be made safe.
+- Is 15 minutes of silence the right takeover delay? A shorter delay resumes work sooner but makes a takeover from a running but cut-off owner more likely. The user chose automatic takeover over asking.

@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import connectors
+import engine
 import sync
 import worker
 from engine import Engine
@@ -393,7 +394,7 @@ class PairingTests(unittest.TestCase):
         self.address = f"127.0.0.1:{self.port}"
         self.addCleanup(self.vps.close)
 
-    def test_pair_confirm_and_sync_both_ways(self):
+    def test_pair_and_sync_both_ways(self):
         code = self.vps.create_code()
         info = self.laptop.join(self.address, code)
         self.assertEqual(info["name"], "VPS")
@@ -401,11 +402,9 @@ class PairingTests(unittest.TestCase):
         vps_view = self.vps.peer(self.laptop.id)
         self.assertEqual(laptop_view["fingerprint"], self.vps.fingerprint)
         self.assertEqual(vps_view["fingerprint"], self.laptop.fingerprint)
-        self.assertFalse(vps_view["trusted"])
-        # Before confirmation the VPS refuses exchanges.
-        self.laptop.exchange_all()
-        self.assertIn("awaiting confirmation", self.laptop.peer(self.vps.id)["state"])
-        self.vps.confirm(self.laptop.id)
+        # The code is the confirmation: both sides trust each other at once.
+        self.assertTrue(vps_view["trusted"])
+        self.assertTrue(laptop_view["trusted"])
         with self.laptop.db.atomic():
             self.laptop.db.put("tasks", dict(id="from-laptop", title="Laptop task"))
         with self.vps.db.atomic():
@@ -783,11 +782,23 @@ class WorktreeHandoffTests(CapacityBase):
         # The laptop's working index was not touched by the snapshot.
         self.assertIn("?? new.txt", git(tree, "status", "--porcelain"))
 
-    def test_without_a_checkout_the_receiver_declines_and_the_owner_resumes(self):
+    def test_receiver_without_a_checkout_clones_it(self):
         t, _ = self.coding_task()
         self.link()
-        with self.assertRaises(ValueError):
-            self.laptop.action(dict(op="move", items=["task:" + t["id"]], to=self.vps.instances.id))
+        self.laptop.action(dict(op="move", items=["task:" + t["id"]], to=self.vps.instances.id))
+        self.link()
+        self.link()
+        self.assertTrue(self.vps.owns("task:" + t["id"]))
+        moved = self.vps.db.get("tasks", t["id"])
+        self.assertTrue(moved["repository"].startswith(str(Path(self.vps.db.root).resolve() / "checkouts")))
+        self.assertEqual((Path(moved["worktree"]) / "new.txt").read_text(), "untracked\n")
+        self.assertIn(moved["repository"], self.vps.instances.state()["checkouts"])
+
+    def test_failed_clone_is_declined_and_not_retried_soon(self):
+        git(self.laptop_checkout, "remote", "set-url", "origin", str(Path(self.tmp.name) / "missing.git"))
+        self.laptop.origin_cache.clear()
+        t, _ = self.coding_task()
+        self.link()
         self.assertTrue(self.laptop.instances.offer("task:" + t["id"], self.vps.instances.id))
         self.assertFalse(self.laptop.owns("task:" + t["id"]))
         self.link()
@@ -795,6 +806,21 @@ class WorktreeHandoffTests(CapacityBase):
         self.assertTrue(self.laptop.owns("task:" + t["id"]))
         self.assertFalse(self.vps.owns("task:" + t["id"]))
         self.assertTrue(any(r["kind"] == "Handoff declined" for r in self.vps.db.history()))
+        self.assertTrue(self.laptop.instances.declined_recently("task:" + t["id"], self.vps.instances.id))
+
+    def test_takeover_restarts_a_worktree_task_from_a_local_checkout(self):
+        self.vps.action(dict(op="instance_checkout", path=str(self.vps_checkout)))
+        t, _ = self.coding_task()
+        self.laptop.record_origins()
+        self.link()
+        self.clock.advance(engine.TAKEOVER_SECONDS + 1)
+        self.assertGreaterEqual(self.vps.auto_takeover(), 1)
+        taken = self.vps.db.get("tasks", t["id"])
+        self.assertTrue(self.vps.owns("task:" + t["id"]))
+        self.assertEqual(taken["repository"], str(self.vps_checkout.resolve()))
+        self.assertEqual(taken["worktree"], "")
+        self.assertEqual(taken["status"], "queued")
+        self.assertIn("could not be reached", taken["reason"])
 
     def test_coding_task_without_repository_stays(self):
         self.busy(self.laptop)
@@ -807,26 +833,32 @@ class WorktreeHandoffTests(CapacityBase):
 
 
 class TakeoverTests(CapacityBase):
-    def test_takeover_from_a_silent_instance(self):
+    """Automatic takeover: no user step. See "Automatic takeover" in the spec."""
+
+    def test_silent_instance_is_taken_over_automatically(self):
         sending = self.queued(self.laptop, "Sending", status="review", draft="Hi", account="me", destination="you")
         working = self.queued(self.laptop, "Working")
+        review = self.queued(self.laptop, "Review", status="review", draft="Draft", account="me", destination="you")
+        local = self.queued(self.laptop, "Local", evidence=[{"source": "Git", "folder": "/tmp/repo"}])
         with self.laptop.db.atomic():
             self.laptop.db.put("tasks", {**self.laptop.db.get("tasks", sending["id"]), "status": "sending"})
             self.laptop.db.put("tasks", {**self.laptop.db.get("tasks", working["id"]), "status": "working"})
         self.link()
-        laptop_id = self.laptop.instances.id
-        with self.assertRaises(ValueError):
-            self.vps.action(dict(op="instance_takeover", peer=laptop_id, confirm="Laptop"))  # in touch just now
         self.clock.advance(300)
-        with self.assertRaises(ValueError):
-            self.vps.action(dict(op="instance_takeover", peer=laptop_id, confirm="laptop?"))
-        result = self.vps.action(dict(op="instance_takeover", peer=laptop_id, confirm=" laptop "))
-        self.assertGreaterEqual(result["taken"], 2)
-        for t in (sending, working):
+        self.assertEqual(self.vps.auto_takeover(), 0, "five minutes of silence is not enough")
+        self.clock.advance(engine.TAKEOVER_SECONDS)
+        self.assertGreaterEqual(self.vps.auto_takeover(), 3)
+        for t in (sending, working, review):
             self.assertTrue(self.vps.owns("task:" + t["id"]))
             self.assertEqual(self.vps.instances.owner("task:" + t["id"])["epoch"], 3)
+        self.assertFalse(self.vps.owns("task:" + local["id"]), "desktop-only work stays with its instance")
         self.assertEqual(self.vps.db.get("tasks", sending["id"])["status"], "uncertain")
         self.assertEqual(self.vps.db.get("tasks", working["id"])["status"], "queued")
+        taken_review = self.vps.db.get("tasks", review["id"])
+        self.assertEqual(taken_review["status"], "review")
+        with patch.object(self.vps, "settings", return_value={**self.vps.settings(), "dry": False}), \
+                patch.object(self.vps, "rule", return_value="auto"):
+            self.assertFalse(self.vps.auto(taken_review), "a taken-over draft needs approval before sending")
         # The laptop was only paused. It acts once more with its old epoch, then reconnects.
         with self.laptop.db.atomic():
             self.laptop.db.put("tasks", {**self.laptop.db.get("tasks", working["id"]), "result": "stale work"})
@@ -835,19 +867,43 @@ class TakeoverTests(CapacityBase):
         vps_task = self.vps.db.get("tasks", working["id"])
         self.assertNotEqual(vps_task.get("result"), "stale work")
         self.assertEqual(vps_task["discarded"][-1]["value"], "stale work")
-        self.link()
-        self.assertEqual(self.laptop.db.get("tasks", working["id"])["discarded"][-1]["value"], "stale work")
 
-    def test_takeover_of_a_removed_instance_and_a_single_task(self):
+    def test_removed_instance_is_taken_over_at_once(self):
         a = self.queued(self.laptop, "A")
-        b = self.queued(self.laptop, "B")
         self.link()
         self.vps.instances.remove(self.laptop.instances.id)
         self.assertEqual(self.vps.state()["instances"]["departed"][0]["name"], "Laptop")
-        self.vps.action(dict(op="instance_takeover", peer=self.laptop.instances.id, confirm="Laptop",
-                             items=["task:" + a["id"]]))
+        self.assertGreaterEqual(self.vps.auto_takeover(), 1)
         self.assertTrue(self.vps.owns("task:" + a["id"]))
-        self.assertFalse(self.vps.owns("task:" + b["id"]))
+
+    def test_only_the_best_ranked_live_instance_takes_over(self):
+        self.laptop.instances._set_me(platform="darwin")
+        self.vps.instances._set_me(platform="linux")
+        b = self.queued(self.vps, "B")
+        self.link()
+        self.clock.advance(engine.TAKEOVER_SECONDS + 1)  # the VPS has gone silent
+        server = dict(id="0", name="Server", platform="linux", capacity=dict(state="active"))
+        with patch.object(self.laptop, "fresh_peers", return_value=[server]):
+            self.assertEqual(self.laptop.auto_takeover(), 0, "a live always-on peer ranks above this laptop")
+        self.assertFalse(self.laptop.owns("task:" + b["id"]))
+        self.assertGreaterEqual(self.laptop.auto_takeover(), 1)
+        self.assertTrue(self.laptop.owns("task:" + b["id"]))
+
+    def test_connections_and_orchestrator_move_to_an_always_on_peer(self):
+        self.laptop.instances._set_me(platform="darwin")
+        self.vps.instances._set_me(platform="linux")
+        with self.laptop.db.atomic():
+            self.laptop.db.put("connections", dict(id="mail", kind="email", label="Mail", config={},
+                                                   status="Connected", next=10**12, revision="r"))
+        self.link()
+        if not self.laptop.owns(sync.ORCHESTRATOR):
+            self.vps.action(dict(op="move", items="orchestrator", to=self.laptop.instances.id))
+            self.link()
+            self.link()
+        self.laptop.balance()
+        self.link()
+        self.assertTrue(self.vps.owns("connection:mail"))
+        self.assertTrue(self.vps.owns(sync.ORCHESTRATOR))
 
 if __name__ == "__main__":
     unittest.main()
