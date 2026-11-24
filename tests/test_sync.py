@@ -978,3 +978,25 @@ class TakeoverTests(CapacityBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PullRequestStartTests(EngineBase):
+    """A task's copy starts at the pull request it works on. See "Task start point" in task-execution.md."""
+
+    def task(self, title, body="Body", **fields):
+        return self.laptop.new_task(title, self.laptop.global_project, body, **fields)
+
+    def test_number_comes_from_the_title(self):
+        self.assertEqual(self.laptop.pull_request_number(self.task("Tweak the flare in PR #316 (closes #315)")), 316)
+        self.assertEqual(self.laptop.pull_request_number(self.task("Get PR aped-web-ui#317 reviewed")), 317)
+
+    def test_issue_work_and_ambiguous_mentions_start_at_the_default_branch(self):
+        self.assertIsNone(self.laptop.pull_request_number(self.task("Fix the zero-address mapping (repo#1032)")))
+        self.assertIsNone(self.laptop.pull_request_number(self.task("Compare", "PR #1 and PR #2")))
+
+    def test_number_comes_from_a_pull_request_event_of_an_ancestor(self):
+        with self.laptop.db.atomic():
+            self.laptop.db.put("events", dict(id="e1", raw=dict(context=dict(is_pull_request=True, number=42))))
+        parent = self.task("Handle review", event="e1")
+        step = self.task("Address the comments", parent=parent["id"], depth=1)
+        self.assertEqual(self.laptop.pull_request_number(step), 42)

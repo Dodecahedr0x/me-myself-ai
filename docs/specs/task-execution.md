@@ -6,7 +6,26 @@
 
 When a task becomes actionable, the app spawns a fresh agent through the local AI CLI. The agent receives the task's project, source references, instructions, applicable decision rules, and completion criteria. Its progress belongs to the task and survives a CLI exit. On retry, the app restores that progress and checks existing receipts before resuming. Two workers must never dispatch the same task action concurrently.
 
-Each coding task gets a private clone of the selected checkout’s committed HEAD. Its branch, Git objects and working files live together under app storage. Retries reopen that clone even if the source folder has moved. Older linked worktrees migrate on use, preserving their revision and local edits. A task can run local commands in its private workspace and use their exit status and output as completion evidence. Existing tasks waiting for the user to run commands or blocked by a Git preparation permission error receive one new preparation attempt.
+Each coding task gets a private clone of the selected checkout, starting where the [task start point](#task-start-point) says. Its branch, Git objects and working files live together under app storage. Retries reopen that clone even if the source folder has moved. Older linked worktrees migrate on use, preserving their revision and local edits. A task can run local commands in its private workspace and use their exit status and output as completion evidence. Existing tasks waiting for the user to run commands or blocked by a Git preparation permission error receive one new preparation attempt.
+
+### Task start point
+
+A task's private clone starts from the code the task is about, not from whatever branch the user's folder happens to be on.
+
+- **Pull request work** starts at the pull request's head, `refs/pull/<n>/head`, fetched from the folder's origin. The number comes from the task's GitHub event or a step ancestor's event. Without one, it comes from a single pull request named in the title, such as `PR #316` or `PR repo#316`, or failing that in the body. Two different numbers in the same text count as none.
+- **Other work**, including GitHub issues and bug fixes, starts at the origin's current default branch. That is the revision the bug workflow checks before publishing a fix.
+- **Offline or refused fetches** fall back to the folder's own `origin/HEAD` (or `origin/main`, then `origin/master`), and finally to the folder's HEAD.
+
+The fetch uses the user's own Git setup and credentials, reads only, and writes into the private clone. The user's folder keeps its branches, refs and files. The clone records where it started in `memyselfai.start` and any pull request number in `memyselfai.pull`. An existing clone keeps its branch, so retries and resumed tasks are unchanged. A clone made to receive a handed-over task keeps the handed-over commit. When its base commit is missing and the task works on a pull request, the receiver fetches that pull request's head as well.
+
+Acceptance, verified in `tests/test_worker.py` and `tests/test_sync.py` with a bare origin and a folder on a feature branch whose `origin/main` is behind:
+
+- A prepared task starts at the origin's current default branch, not the folder's feature branch.
+- A pull request task starts at the pull request's head.
+- With the origin unreachable, the task starts at the folder's `origin/main`.
+- Without the start point option, as in handoff imports, the clone starts at the folder's HEAD.
+- The folder's refs and current branch are unchanged afterwards.
+- The pull request number is read from a title, from an ancestor's GitHub event, and is absent for issue work or for two different numbers.
 
 ## Global work and project repositories
 

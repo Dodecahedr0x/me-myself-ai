@@ -393,3 +393,70 @@ class WorktreeTests(unittest.TestCase):
         with self.assertRaises(worker.WorkerError):
             worker.apply_worktree_files(self.first, edits, before)
         self.assertFalse((self.first / "example.txt").exists())
+
+
+class TaskStartPointTests(unittest.TestCase):
+    """A prepared task copy starts at the origin's default branch, or at the pull request's head for PR work,
+    whatever branch the user's folder is on. See "Task start point" in docs/specs/task-execution.md."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.origin = root / "origin.git"
+        seed = root / "seed"
+        self.git(root, "init", "-q", "--bare", "-b", "main", str(self.origin))
+        self.git(root, "init", "-q", "-b", "main", str(seed))
+        self.commit(seed, "v1")
+        self.git(seed, "remote", "add", "origin", str(self.origin))
+        self.git(seed, "push", "-q", "origin", "main")
+        self.checkout = root / "checkout"
+        self.git(root, "clone", "-q", str(self.origin), str(self.checkout))
+        self.stale_main = self.head(self.checkout)
+        self.git(self.checkout, "checkout", "-q", "-b", "feature")
+        self.commit(self.checkout, "feature work")
+        self.commit(seed, "v2")
+        self.git(seed, "push", "-q", "origin", "main")
+        self.fresh_main = self.head(seed)
+        self.git(seed, "checkout", "-q", "-b", "pr")
+        self.commit(seed, "pr work")
+        self.git(seed, "push", "-q", "origin", "pr:refs/pull/7/head")
+        self.pr_head = self.head(seed)
+        self.storage = root / "worktrees"
+        self.user_refs = self.git(self.checkout, "for-each-ref")
+
+    @staticmethod
+    def git(cwd, *args):
+        return subprocess.run(["git", "-c", "commit.gpgsign=false", "-c", "user.name=Fixture", "-c",
+                               "user.email=fixture@example.invalid", "-C", str(cwd), *args],
+                              check=True, capture_output=True, text=True).stdout
+
+    def commit(self, repo, content):
+        (Path(repo) / "app.txt").write_text(content)
+        self.git(repo, "add", "-A")
+        self.git(repo, "commit", "-qm", content)
+
+    def head(self, repo):
+        return self.git(repo, "rev-parse", "HEAD").strip()
+
+    def tearDown(self):
+        self.assertEqual(self.git(self.checkout, "for-each-ref"), self.user_refs, "the user's folder is untouched")
+        self.assertEqual(self.git(self.checkout, "branch", "--show-current").strip(), "feature")
+
+    def test_starts_at_the_current_default_branch(self):
+        tree = worker.prepare_worktree(self.checkout, self.storage, "a", base="remote")
+        self.assertEqual(self.head(tree), self.fresh_main)
+        self.assertEqual(self.git(tree, "branch", "--show-current").strip(), "memyselfai/task-a")
+
+    def test_pull_request_work_starts_at_its_head(self):
+        tree = worker.prepare_worktree(self.checkout, self.storage, "b", base="remote", pull=7)
+        self.assertEqual(self.head(tree), self.pr_head)
+
+    def test_offline_falls_back_to_the_folders_copy_of_the_default_branch(self):
+        with patch.object(worker, "checkout_remote", return_value=str(Path(self.tmp.name) / "missing.git")):
+            tree = worker.prepare_worktree(self.checkout, self.storage, "c", base="remote", pull=7)
+        self.assertEqual(self.head(tree), self.stale_main)
+
+    def test_without_a_base_it_keeps_the_folders_head(self):
+        tree = worker.prepare_worktree(self.checkout, self.storage, "d")
+        self.assertEqual(self.head(tree), self.head(self.checkout))

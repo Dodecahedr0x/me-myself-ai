@@ -253,6 +253,25 @@ class Engine:
             if (task["status"] == "question" and task.get("repository_question")) or legacy_context:
                 self.recheck_repository(task, origins)
 
+    PULL_REFERENCE = re.compile(r"\b(?:PR|pull request)\s*(?:[\w.-]+/)?(?:[\w.-]+)?#(\d+)|/pull/(\d+)\b", re.I)
+
+    def pull_request_number(self, task):
+        """The pull request a task works on, so its copy starts at that PR's head. From the source event of the
+        task or a step's ancestors, else from one PR named in the title, else in the body."""
+        seen, current = set(), task
+        while current and current["id"] not in seen:
+            seen.add(current["id"])
+            event = self.db.get("events", current.get("event", "")) if current.get("event") else None
+            context = (event or {}).get("raw", {}).get("context", {})
+            if context.get("is_pull_request") and str(context.get("number", "")).isdigit():
+                return int(context["number"])
+            current = self.step_parent(current)
+        for text in (task.get("title", ""), task.get("body", "")):
+            numbers = {int(a or b) for a, b in self.PULL_REFERENCE.findall(text)}
+            if numbers:
+                return numbers.pop() if len(numbers) == 1 else None
+        return None
+
     def step_parent(self, task):
         if task.get("depth") and task.get("parent"):
             parent = self.db.get("tasks", task["parent"])
@@ -1753,7 +1772,8 @@ class Engine:
                 # Older tasks stored only the verified task worktree.
                 location = str(worker.resume_worktree(location, self.db.root / "worktrees", t["id"]))
             elif location:
-                location = str(worker.prepare_worktree(repository, self.db.root / "worktrees", t["id"]))
+                location = str(worker.prepare_worktree(repository, self.db.root / "worktrees", t["id"],
+                                                       base="remote", pull=self.pull_request_number(t)))
             else:
                 if candidates is None:
                     candidates = self.repository_candidates(t, repo_source)
@@ -1788,7 +1808,8 @@ class Engine:
                         self.save(latest, "Selected repository is ignored")
                         return {}
                     self.db.put("tasks", latest)
-                location = str(worker.prepare_worktree(repository, self.db.root / "worktrees", t["id"]))
+                location = str(worker.prepare_worktree(repository, self.db.root / "worktrees", t["id"],
+                                                       base="remote", pull=self.pull_request_number(t)))
             t = dict(t, repository=repository, worktree=location,
                      github_repository=bugflow.checkout_repository(location))
             with self.db.atomic():

@@ -15,6 +15,10 @@ class BugIntegrationTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
+        # The fixture's origin is a made-up GitHub address: task copies start from the local folder, as offline.
+        offline = patch("worker._fetch_remote", return_value=False)
+        offline.start()
+        self.addCleanup(offline.stop)
         root = Path(directory.name).resolve()
         self.repo = root / "checkout"
         self.repo.mkdir()
