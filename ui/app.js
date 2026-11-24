@@ -221,26 +221,109 @@ function taskSuggestions(showSources = true) {
   return section("Suggested tasks",button("Check activity","suggestion_scan","sync","quiet"),items+gaps||
     empty(data.scan.at?"No new suggestions · "+relativeDate(data.scan.at):"No suggestions yet.",showSources?link("Activity sources","connections"):""));
 }
-function orchestratorSection() {
-  const o = state.orchestrator;
-  if (!o) return "";
-  const names = {user:"You",hermes:"Orchestrator",app:"MeMyselfAI"};
-  const status = !o.enabled ? "Paused" : o.error ? o.error : o.pending ? "Answering…" : titleCase(o.status||"idle");
-  const detail = status+" · "+o.used_today+" of "+o.budget+" new tasks today";
-  const thread = (o.messages||[]).slice(-6).map(m=>'<div class="entry"><div class="entry-text"><strong>'+esc(names[m.role]||m.role)+'</strong><p class="message-text">'+esc(m.text)+'</p></div></div>').join("");
-  const controls = button("Ask","orchestrator-ask","add","secondary")+
-    button("Sweep now","orchestrator-run","sync","quiet")+
-    button(o.enabled?"Pause":"Resume","orchestrator-toggle",null,"quiet");
-  return section("Orchestrator",controls,'<p class="section-note">'+esc(detail)+'</p>'+(thread||empty("Ask what is on your plate, or wait for the next sweep.")));
+// Overview dashboard: stats, an activity report and a chat with Hermes. See docs/specs/dashboard.md#overview-dashboard.
+const reportPeriods = {today:["Today",1], week:["7 days",7], month:["30 days",30]};
+let reportPeriod = Object.hasOwn(reportPeriods,localStorage.getItem("report-period"))?localStorage.getItem("report-period"):"week";
+let chatDraft = "", chatSending = false;
+const chatPrompts = [
+  ["What's on my plate?","What's on my plate right now? List what needs me first."],
+  ["What's stuck?","Which tasks are stuck or failing, and why?"],
+];
+function reportPrompt() {
+  const span=reportPeriod==="today"?"today":"over the last "+reportPeriods[reportPeriod][0];
+  return "Report on my activity "+span+": what came in, what you dispatched, what finished, what failed and what is waiting for me.";
+}
+function dayStart(offset=0) {
+  const d=new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()-offset); return d.getTime()/1000;
+}
+function connectionName(id) {
+  if (!id) return "MeMyselfAI";
+  const c=state.connections.find(c=>c.id===id);
+  return c?(c.identity && c.label!==c.identity?c.label+" · "+c.identity:c.label):{"desktop:mac":"This Mac","desktop:claude":"Claude","desktop:chatgpt":"ChatGPT"}[id]||"Disconnected source";
+}
+function activityReport() {
+  const [label,days]=reportPeriods[reportPeriod], since=dayStart(days-1), events=lastEvents();
+  const inPeriod=state.activity.filter(a=>Number(a.at)>=since);
+  // Hourly bars for today, daily bars otherwise.
+  const buckets=days===1?Array.from({length:24},(_,h)=>[since+h*3600,since+(h+1)*3600,String(h).padStart(2,"0")+":00"]):
+    Array.from({length:days},(_,i)=>{const from=dayStart(days-1-i);return [from,dayStart(days-2-i),compactDate(from)];});
+  const counts=buckets.map(([from,to])=>inPeriod.filter(a=>Number(a.at)>=from && Number(a.at)<to).length);
+  const peak=Math.max(1,...counts);
+  const bars=buckets.map(([,,name],i)=>'<li style="--h:'+(counts[i]/peak*100).toFixed(1)+'%" data-tip="'+esc(name+": "+counts[i]+(counts[i]===1?" event":" events"))+'" title="'+esc(name+": "+counts[i])+'"><i></i></li>').join("");
+  const axis=[buckets[0][2],buckets[Math.floor(buckets.length/2)][2],buckets[buckets.length-1][2]];
+  const chart='<figure class="report-chart"><figcaption><strong>'+inPeriod.length+'</strong> events · '+esc(label.toLowerCase())+'</figcaption>'+
+    '<ol class="bars" role="img" aria-label="'+esc("Events per "+(days===1?"hour":"day")+": "+buckets.map(([,,n],i)=>n+" "+counts[i]).join(", "))+'">'+bars+'</ol>'+
+    '<div class="bar-axis" aria-hidden="true">'+axis.map(a=>'<span>'+esc(a)+'</span>').join("")+'</div></figure>';
+  const touched=t=>(events.get(String(t.id))||Number(t.created||0))>=since;
+  const facts=[
+    ["New tasks",state.tasks.filter(t=>Number(t.created)>=since).length,"all"],
+    ["Completed",state.tasks.filter(t=>t.status==="done" && touched(t)).length,"completed"],
+    ["Failed",state.tasks.filter(t=>t.status==="failed" && touched(t)).length,"attention"],
+    ["Waiting for you",state.tasks.filter(t=>inboxKind(t)).length,null],
+  ].map(([name,n,f])=>'<div><dt>'+esc(name)+'</dt><dd>'+(f?'<button type="button" class="fact-link" data-action="filter" data-filter="'+f+'">'+n+'</button>':'<a class="fact-link" href="#inbox">'+n+'</a>')+'</dd></div>').join("");
+  const top=(key,name)=>{
+    const tally=new Map();
+    for (const a of inPeriod) { const k=key(a); if (k!=null) tally.set(k,(tally.get(k)||0)+1); }
+    const rows=[...tally].sort((a,b)=>b[1]-a[1]).slice(0,5);
+    return '<div class="report-list"><h3>'+esc(name)+'</h3>'+(rows.length?'<ol>'+rows.map(([k,n])=>'<li><span>'+esc(k)+'</span><b>'+n+'</b></li>').join("")+'</ol>':'<p class="empty">Nothing yet.</p>')+'</div>';
+  };
+  const periods='<div class="segmented" role="group" aria-label="Report period">'+Object.entries(reportPeriods).map(([key,[name]])=>
+    '<button type="button" data-action="report-period" data-period="'+key+'" aria-pressed="'+(reportPeriod===key)+'">'+esc(name)+'</button>').join("")+'</div>';
+  const ask=button("Ask Hermes for a report","chat-report","review","secondary",state.orchestrator?.pending||chatSending?"disabled":"");
+  return '<section class="block report"><div class="section-title"><h2>Activity report</h2><div class="entry-actions">'+periods+ask+'</div></div>'+
+    '<div class="report-body">'+chart+'<dl class="report-facts">'+facts+'</dl></div>'+
+    '<div class="report-lists">'+top(a=>connectionName(a.connection),"By source")+top(a=>a.project||null,"By project")+top(a=>titleCase(a.kind),"By kind")+'</div></section>';
+}
+function dashboardStats() {
+  const events=lastEvents(), week=dayStart(6), o=state.orchestrator;
+  const attention=state.tasks.filter(t=>inboxKind(t)).length;
+  const progress=state.tasks.filter(t=>groups.progress.includes(t.status)).length;
+  const done=state.tasks.filter(t=>t.status==="done" && (events.get(String(t.id))||Number(t.created||0))>=week).length;
+  const today=state.activity.filter(a=>Number(a.at)>=dayStart()).length;
+  const card=(cls,glyph,n,label,attrs)=>'<'+(attrs.startsWith("href")?'a':'button type="button"')+' class="stat '+cls+'" '+attrs+'><span class="stat-top">'+icon(glyph,22)+'<strong>'+n+'</strong></span><span>'+esc(label)+'</span></'+(attrs.startsWith("href")?'a':'button')+'>';
+  return '<div class="stats dash-stats">'+card(attention?"attention":"","user",attention,"Need you",'href="#inbox"')+
+    card("progress","working",progress,"In progress",'data-action="filter" data-filter="progress"')+
+    card("complete","check",done,"Done in 7 days",'data-action="filter" data-filter="completed"')+
+    card("progress","stack",o?o.used_today+" / "+o.budget:"–","Hermes started today",'data-action="chat-focus"')+
+    card("blocked","activity",today,"Events today",'href="#activity"')+'</div>';
+}
+function chatHead() {
+  const o=state.orchestrator;
+  if (!o) return '<div class="chat-head"><h2>Hermes</h2></div>';
+  const busy=o.pending||chatSending;
+  const statusText=!o.enabled?"Paused":busy?"Answering…":o.status==="failed"||o.status==="waiting"?"Needs attention":titleCase(o.status||"idle");
+  const tone=!o.enabled?"neutral":o.error?"attention":busy||o.status!=="idle"?"progress":"complete";
+  const last=o.last_sweep?"Last sweep "+relativeDate(o.last_sweep):"No sweep yet";
+  return '<div class="chat-head"><div><h2>Hermes</h2><p><span class="status '+tone+'"><i></i>'+esc(statusText)+'</span> · '+esc(last)+'</p></div><div class="entry-actions">'+
+    '<button type="button" class="iconbtn plain" data-action="orchestrator-run" aria-label="Sweep now" title="Sweep now">'+icon("sync",16)+'</button>'+
+    '<button type="button" class="iconbtn plain" data-action="orchestrator-toggle" aria-label="'+(o.enabled?"Pause Hermes":"Resume Hermes")+'" title="'+(o.enabled?"Pause":"Resume")+'">'+icon(o.enabled?"pause":"play",16)+'</button></div></div>'+
+    (o.error?'<p class="chat-error">'+icon("alert",14)+' '+esc(o.error)+'</p>':"");
+}
+function chatThread() {
+  const o=state.orchestrator;
+  if (!o) return empty("Hermes is not available on this instance.");
+  const who={user:"You",hermes:"Hermes",app:"MeMyselfAI"};
+  const messages=(o.messages||[]).map(m=>'<div class="chat-msg '+esc(m.role)+'"><div class="chat-meta"><strong>'+esc(who[m.role]||m.role)+'</strong><time title="'+esc(fullDate(m.at))+'">'+esc(relativeDate(m.at))+'</time></div>'+
+    (m.role==="user"?'<p class="message-text">'+esc(m.text)+'</p>':'<div class="markdown-body">'+taskMarkdown.render(plain(m.text))+'</div>')+'</div>').join("");
+  const typing=o.pending||chatSending?'<div class="chat-msg hermes typing" aria-label="Hermes is answering"><span></span><span></span><span></span></div>':"";
+  return messages+typing || '<div class="chat-empty">'+icon("review",22)+'<p>Ask Hermes what is on your plate, why a task is stuck, or for a report on your activity. It reads your connected accounts and can start tasks. Anything it prepares to send still waits for your approval.</p></div>';
+}
+function chatComposer() {
+  const busy=!!(state.orchestrator?.pending||chatSending), off=!state.orchestrator;
+  const quick=chatPrompts.map(([label,text])=>'<button type="button" class="chip" data-action="chat-quick" data-text="'+esc(text)+'" '+(busy||off?"disabled":"")+'>'+esc(label)+'</button>').join("");
+  return '<div class="chip-row chat-quick">'+quick+'</div><form id="chat-form"><label class="sr-only" for="chat-text">Message Hermes</label>'+
+    '<textarea id="chat-text" name="text" rows="2" maxlength="4000" placeholder="'+(busy?"Hermes is answering…":"Message Hermes…")+'" '+(off?"disabled":"")+'>'+esc(chatDraft)+'</textarea>'+
+    '<div class="composer-foot"><small>⌘↵ to send</small><button type="submit" class="btn primary send" aria-label="Send" '+(busy||off?"disabled":"")+'>'+icon("send",16)+'</button></div></form>';
 }
 function overview() {
+  return '<div class="dashboard dash-grid"><div class="dash-main"><div id="ov-top"></div><div id="ov-main"></div></div>'+
+    '<aside class="dash-chat" id="ov-chat" aria-label="Chat with Hermes"><div id="ov-chat-head"></div><div class="chat-thread" id="ov-thread" aria-live="polite"></div><div id="ov-composer"></div></aside></div>';
+}
+function overviewMain() {
   const ordered = recent(state.tasks.filter(t=>!["closed","paused"].includes(t.status)),"created");
   const attention = ordered.filter(t=>groups.attention.includes(t.status));
   const active = ordered.filter(t=>groups.progress.includes(t.status));
-  const closed = ordered.filter(t=>!groups.attention.includes(t.status) && !groups.progress.includes(t.status));
-  const summary = [["attention","Needs attention",attention.length],["progress","In progress",active.length],["completed","Completed",closed.filter(t=>t.status==="done").length]]
-    .map(([key,label,count])=>'<button type="button" class="counter" data-action="filter" data-filter="'+key+'">'+label+' <strong>'+count+'</strong></button>').join("");
-  const queue = ordered.length ? taskTable([...attention,...active,...closed].slice(0,12)) : empty("No tasks yet.");
+  const queue = attention.length+active.length ? taskTable([...attention,...active].slice(0,8)) : empty(ordered.length?"Nothing open. Completed work is in Tasks.":"No tasks yet.");
   const events = recent(state.activity,"at").slice(0,8);
   const projects = state.projects.map(p=>{
     const count = [...attention,...active].filter(t=>inProject(p.name,t.project)).length;
@@ -249,11 +332,41 @@ function overview() {
   const styleReviews = state.skills.filter(s=>s.kind==="style" && !s.active && s.status==="pending")
     .map(s=>'<button class="skill-row" data-action="skill" data-id="'+esc(s.id)+'"><span class="row-title"><strong>'+esc(s.body)+'</strong></span>'+icon("chevron",14)+'</button>').join("");
   const manage = '<a class="btn secondary" href="#connections">Manage connections</a>';
-  return setupCard()+'<section class="home-queue"><div class="queue-heading"><h2>Task queue</h2><div class="counters">'+summary+'</div>'+button("Manage ignore list","ignorelist",null,"quiet")+link("All tasks","tasks")+'</div>'+queue+'</section>'+orchestratorSection()+taskSuggestions(false)+
+  return activityReport()+
+    '<section class="home-queue block"><div class="queue-heading"><h2>Open tasks</h2>'+button("Manage ignore list","ignorelist",null,"quiet")+link("All tasks","tasks")+'</div>'+queue+'</section>'+
+    taskSuggestions(false)+
     '<div class="overview-grid">'+section("Recent activity",link("View log","activity"),events.length?timeline(events):empty("No activity yet."))+
     '<div>'+section("Connections",manage,"")+
     (projects?section("Projects",link("View all","projects"),projects):"")+
     (styleReviews?section("Style to review",link("View all","skills"),styleReviews):"")+'</div></div>';
+}
+function renderOverview() {
+  if (!$("#ov-top")) return;
+  setIfChanged($("#ov-top"),setupCard()+dashboardStats());
+  setIfChanged($("#ov-main"),overviewMain());
+  setIfChanged($("#ov-chat-head"),chatHead());
+  const thread=$("#ov-thread"), html=chatThread();
+  if (thread.rendered!==html) {
+    const pinned=!thread.rendered || thread.scrollHeight-thread.scrollTop-thread.clientHeight<60;
+    setIfChanged(thread,html);
+    if (pinned) thread.scrollTop=thread.scrollHeight;
+  }
+  const busy=!!(state.orchestrator?.pending||chatSending), box=$("#ov-composer"), signature=[busy,!!state.orchestrator].join("|");
+  if (box.dataset.signature!==signature) {
+    const focused=box.contains(document.activeElement) && document.activeElement.id==="chat-text";
+    box.innerHTML=chatComposer(); box.dataset.signature=signature;
+    if (focused) { const area=$("#chat-text"); area.focus({preventScroll:true}); area.setSelectionRange(area.value.length,area.value.length); }
+  }
+}
+async function sendChat(text) {
+  text=String(text||"").trim();
+  if (!text || chatSending || state.orchestrator?.pending) return;
+  chatSending=true; renderOverview();
+  try {
+    await request("/api/action",{op:"orchestrator_prompt",text});
+    chatDraft=""; const area=$("#chat-text"); if (area) area.value="";
+  } catch(e) { notify(e.message); }
+  finally { chatSending=false; await refresh(); }
 }
 function selectOptions(values, current) {
   return values.map(([val,label])=>'<option value="'+esc(val)+'" '+(String(val)===String(current)?"selected":"")+'>'+esc(label)+'</option>').join("");
@@ -958,11 +1071,14 @@ function render() {
     if (view==="tasks") { setIfChanged($("#task-list"),taskList()); return; }
     if (view==="activity") { setIfChanged($("#activity-list"),activityList()); return; }
     if (view==="inbox") { renderInbox(); return; }
+    if (view==="overview") { renderOverview(); return; }
     if (view==="setup") { const p=$("#vps-progress"); if (p && !p.contains(document.activeElement)) setIfChanged(p,vpsProgress()); return; }
   }
   if (activeView===view && view==="inbox") { renderInbox(); return; }
+  if (activeView===view && view==="overview" && $("#ov-top")) { renderOverview(); return; }
   activeView=view; setIfChanged($("#main"),pages[view]());
   if (view==="inbox") renderInbox();
+  if (view==="overview") renderOverview();
   if (view==="settings") { void loadProviders(); void loadAgents(); }
   if (view==="setup" || view==="overview") void loadSetup();
   document.title=viewNames[view]+" · MeMyselfAI";
@@ -1456,6 +1572,10 @@ function handleAction(el) {
     case "providers": void loadProviders(true); return;
     case "agents": void loadAgents(true); return;
     case "orchestrator-ask": openForm("orchestrator_prompt","Ask the orchestrator",input("text","Message",{type:"textarea",required:true,placeholder:"What's on my plate this week?"}),"Send",{},"The orchestrator reads your connected accounts through MeMyselfAI and can start tasks. Anything it prepares to send still needs your approval in dry mode."); return;
+    case "report-period": reportPeriod=el.dataset.period; localStorage.setItem("report-period",reportPeriod); renderOverview(); return;
+    case "chat-report": void sendChat(reportPrompt()); return;
+    case "chat-quick": void sendChat(el.dataset.text); return;
+    case "chat-focus": $("#chat-text")?.focus(); return;
     case "orchestrator-run": void mutate({op:"orchestrator_settings",run_now:true},"Sweep requested."); return;
     case "orchestrator-toggle": void mutate({op:"orchestrator_settings",enabled:!state.orchestrator.enabled},state.orchestrator.enabled?"Orchestrator paused.":"Orchestrator resumed."); return;
     case "agent-sign-in": void signInAgent(el.dataset.agent); return;
@@ -1599,6 +1719,7 @@ document.addEventListener("input",event=>{
   }
   const el=event.target;
   if (el.id==="vps-host") hostDraft=el.value;
+  if (el.id==="chat-text") chatDraft=el.value;
   if (el.id==="instruct-text") inboxDrafts.set(el.form.dataset.id,el.value);
   if (el.id==="task-search") {query=el.value;setIfChanged($("#task-list"),taskList());}
   if (el.id==="activity-search") {activityQuery=el.value;setIfChanged($("#activity-list"),activityList());}
@@ -1620,6 +1741,7 @@ document.addEventListener("change",event=>{
 });
 document.addEventListener("submit",event=>{
   if (event.target.id==="instruct-form") {event.preventDefault();void sendInstruction(event.target);return;}
+  if (event.target.id==="chat-form") {event.preventDefault();void sendChat(event.target.elements.text.value);return;}
   if (event.target.id==="auth-form") {event.preventDefault();void submitSignIn(event.target);return;}
   if (event.target.id==="vps-form") {event.preventDefault();void vpsStart($("#vps-host").value.trim());return;}
   if (event.target.id==="vps-password-form") {
@@ -1671,7 +1793,7 @@ $("#dialog").addEventListener("close",()=>{
 $("#scrim").addEventListener("click",closeMenu);
 const typing=el=>el.matches?.("input,textarea,select,[contenteditable]");
 document.addEventListener("keydown",e=>{
-  if (e.target.id==="instruct-text" && e.key==="Enter" && (e.metaKey||e.ctrlKey)) {e.preventDefault();e.target.form.requestSubmit();return;}
+  if ((e.target.id==="instruct-text" || e.target.id==="chat-text") && e.key==="Enter" && (e.metaKey||e.ctrlKey)) {e.preventDefault();e.target.form.requestSubmit();return;}
   const plainKey=!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !e.isComposing;
   if (activeView==="inbox" && plainKey && !typing(e.target) && !$("#dialog").open && !running) {
     const key=e.key.toLowerCase();

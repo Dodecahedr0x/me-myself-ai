@@ -16,9 +16,32 @@ The sidebar links to agent provider settings. Settings shows the configured CLI 
 
 **Context** shows when Hermes last used its context tools, every schedule with its timing, origin, reason and next run (with **Cancel**), and every context entry with its kind, project and review state (with **Retire** or **Restore**). Stale entries are labeled as withheld from agents. **Decision rules** lists handoff candidates above the rules. [Context and schedules](context-and-schedules.md)
 
+## Overview dashboard
+
+**Overview** is a dashboard: numbers first, a report on recent activity, and a chat with Hermes beside them. It replaces the Home layout's Orchestrator section and **Ask** dialog. Implemented in `ui/app.js` (`overview`, `renderOverview`).
+
+- **Layout.** Two columns: the dashboard on the left, the Hermes chat on the right. The chat is pinned to the window height so its message box stays visible while the left column scrolls. Under 1180 pixels the chat moves below the dashboard. The left column's sections stack when it is narrower than 820 pixels.
+- **Stats.** Need you (opens Inbox), In progress and Done in 7 days (open Tasks with that filter), Hermes started today against the daily safety limit (focuses the chat), and Events today (opens Activity). The setup card, when shown, sits above them.
+- **Activity report.** A period switch (Today, 7 days, 30 days, remembered in the browser) drives:
+  - a bar chart of activity events per hour (Today) or per day, one series in the app's green, with the count on hover and a text alternative listing every bar;
+  - New tasks, Completed, Failed and Waiting for you. Completed and Failed count tasks whose last recorded event falls in the period. Waiting for you is the current Inbox count. Each number opens the matching list;
+  - the five busiest sources (connection), projects and event kinds in the period.
+  The report is computed in the browser from the activity log and tasks the app already sends. **Ask Hermes for a report** sends Hermes a plain prompt for the same period ("Report on my activity over the last 7 days: what came in, what you dispatched, what finished, what failed and what is waiting for me."). Its answer arrives in the chat.
+- **Open tasks, suggestions, recent activity, connections, projects and style reviews** follow the report, as before. Open tasks lists up to eight tasks that need attention or are in progress, attention first.
+- **Chat with Hermes.** The header shows Hermes' status (Idle, Answering…, Paused or Needs attention), when it last swept, **Sweep now** and **Pause**/**Resume**. A recorded error shows in a red strip. The thread shows the last 30 messages: yours on the right, Hermes' replies and digests rendered as Markdown, and the app's own notices (such as "Hermes is not installed.") in amber. While Hermes is answering, a typing indicator shows and sending is disabled, because the service accepts one prompt at a time. Two quick prompts ("What's on my plate?", "What's stuck?") send a ready-made question. The message box sends with the button or **⌘↵**. Typed text survives the five-second refresh. The thread stays scrolled to the newest message unless you scrolled up to read.
+- Hermes still has no tool to send anything. A request for work in the chat becomes a dispatched task, and its writes go through review in dry mode.
+
+### Acceptance criteria
+
+- Load the sample workspace and open Overview. The stats match the Inbox, Tasks and Activity counts, and each stat opens its view.
+- Switch the report period. The chart, numbers and lists change to that period, and the choice survives a reload. Hovering a bar shows its count.
+- Type in the chat, wait for a refresh, and the text is still there. Send with **⌘↵**. Your message appears, sending is disabled while Hermes answers, and the reply appears in the thread. With Hermes not installed, the reply is the app's notice and sending is available again.
+- **Ask Hermes for a report** sends the prompt for the selected period.
+- At 900 pixels wide every section is readable and the chat follows the dashboard.
+
 ## Inbox view
 
-The Inbox is the landing view. It has three columns: the sidebar, the task list and the open task. It follows the reference layout the user supplied on 2026-11-24. The [Home overview](#desktop-workspace) remains available as **Overview**.
+The Inbox is the landing view. It has three columns: the sidebar, the task list and the open task. It follows the reference layout the user supplied on 2026-11-24. The [Overview dashboard](#overview-dashboard) remains available as **Overview**.
 
 - **Sidebar.** Brand, then Overview, Inbox, Tasks, Activity, Projects and Connections. Inbox carries a badge with the number of tasks that need attention. Context, Decision rules, Skills & style, Setup and Configuration (settings) follow. The footer names the agent provider and the delivery mode and links to Configuration.
 - **Header.** "Inbox", one line saying these tasks need the user to keep agents moving, and an **Auto-group** switch. The switch is remembered in the browser.

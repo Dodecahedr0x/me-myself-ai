@@ -136,7 +136,7 @@ Implemented in `orchestrator.py` and tested in `tests/test_orchestrator.py`. The
 - **Autonomy.** The orchestrator never asks the user to decide whether to act. It has no tool to propose or ask. Its prompt tells it to dispatch anything that plausibly needs action and to let the task agent skip what does not.
 - **Safety limit.** `dispatch_task` stops at a daily limit of new tasks (default 50, adjustable up to 500). It counts tasks the orchestrator created since local midnight. Returning an existing task costs nothing.
 - **Context.** Sweeps also curate the [shared context and schedules](context-and-schedules.md). A cleanup run follows once a day after 07:00 when an entry is stale.
-- **Conversation.** Home shows an Orchestrator section with status, new tasks today against the limit, the latest messages, and **Ask**, **Sweep now** and **Pause**. Sweep summaries go to the activity log. Digests and replies go to the thread.
+- **Conversation.** The [Overview dashboard](dashboard.md#overview-dashboard) has a chat with Hermes: status, the latest messages, a message box, quick prompts, a report request, **Sweep now** and **Pause**. New tasks today against the limit is one of its stats. Sweep summaries go to the activity log. Digests and replies go to the thread.
 - When Hermes is not ready, runs wait and a prompt gets an answer explaining what to fix.
 
 Not implemented yet:

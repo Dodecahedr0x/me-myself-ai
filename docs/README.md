@@ -13,7 +13,8 @@ flowchart LR
     GitHub["GitHub CLI"] -->|Repository activity| Connectors
     Tasks -->|Rows needing you, grouped failures, shortcut answers| Inbox[Inbox: list and open task]
     Inbox -->|Approve, answer, retry, instruct| Tasks
-    Tasks -->|Queue with project, repository, source and counts| Home[Home overview]
+    Tasks -->|Stats, activity report and open tasks| Home[Overview dashboard]
+    Home <-->|Chat and report requests| HermesCurator
     Suggestions --> Home
     Activity -->|Recent activity| Home
     Home -->|Manage connections| Accounts[Connections]
