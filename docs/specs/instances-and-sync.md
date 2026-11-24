@@ -1,6 +1,6 @@
 # Instances, sync and sharing work
 
-**Status** — Draft. Phase 1 (headless Linux service), phase 2 (pairing, sync and ownership) and most of phase 3 (capacity scheduling, planned absence, **Run on…**) are implemented as described in [phase 2 design](#phase-2-design) and [phase 3 design](#phase-3-design). Worktree bundles and **Take over** are still planned. See the status sections and the [VPS guide](../vps.md). Covers [US-25 through US-29](../user-stories.md). Changes the "one process owns a data directory" rule in the [desktop runtime](desktop-runtime.md). That rule still holds per instance, but several instances can now share one workspace.
+**Status** — Draft. Phase 1 (headless Linux service), phase 2 (pairing, sync and ownership) and phase 3 (capacity scheduling, planned absence, **Run on…**, worktree handoff and **Take over**) are implemented as described in [phase 2 design](#phase-2-design) and [phase 3 design](#phase-3-design). See the status sections and the [VPS guide](../vps.md). Covers [US-25 through US-29](../user-stories.md). Changes the "one process owns a data directory" rule in the [desktop runtime](desktop-runtime.md). That rule still holds per instance, but several instances can now share one workspace.
 
 ## Intent
 
@@ -260,9 +260,9 @@ This section fixes how phase 3 splits work and hands it over before an absence. 
 - tasks with local evidence, such as a folder or a desktop chat,
 - tasks from a Google browser-profile connection,
 - app self-checks and app findings,
-- coding and bug tasks, and tasks with a worktree or repository. Worktree bundles are not built yet, so moving them would lose local edits.
+- coding and bug tasks whose repository is not chosen yet.
 
-The user can still move a pinned task with **Run on…**, except a task with a worktree.
+A task with a repository can move only to an instance with a checkout of the same origin. See [worktree handoff](#phase-3-design) below. The user can still move a pinned task with **Run on…**.
 
 **Scheduling, run by each owner about every 5 seconds.** For each queued task it owns, unpinned, due, and not offered in the last 60 seconds:
 
@@ -287,7 +287,23 @@ It exchanges every 0.3 seconds until every offer is confirmed or time is up. An 
 
 **Run on….** The task detail offers **Run on <instance>** for each paired instance. It records a move request for that task.
 
-**Left out of phase 3 for now:** worktree bundles (so coding tasks are pinned) and **Take over** for an owner that is gone.
+**Worktree handoff.** A coding task can move once it has a repository, to an instance that has a checkout of the same origin.
+
+- **Checkouts by origin.** Repository paths in projects belong to the instance that registered them. Each instance advertises the normalised origin URLs of its checkouts, such as `github.com/owner/repo`. Those are the project repositories that exist on that machine, plus checkouts added under Settings → Instances → **Add checkout**, which stay local.
+- **Bundle at offer.** When the owner offers a task with a worktree, it snapshots the worktree, including uncommitted and untracked files, into a commit made with a temporary index. The user's index and files are untouched. It writes a Git bundle of the task branch and the snapshot, relative to the branch's merge base with the checkout's remote-tracking branches. The bundle rides with the offer as a synced `bundles` record. A bundle over 4 MB cannot be sent, so the task stays.
+- **Import before confirming.** The receiver imports the bundle into its own checkout of that origin. It verifies the bundle, fetching from `origin` once if the base commit is missing. It then creates the worktree `task-<id>` on branch `memyselfai/task-<id>` and restores the snapshot as uncommitted changes. Only then does it confirm. If the import fails, it answers `declined` with the reason, and the owner resumes at once. The sender keeps its own worktree.
+- **Coding tasks without a repository yet** stay with their owner, because the repository is chosen from that instance's checkouts.
+
+**Take over.** For an owner that crashed, was lost or was removed:
+
+1. Settings → Instances offers **Take over** on a peer that has been silent for more than 2 minutes, and on a removed instance that still owns items. The task detail offers it for one task owned by such a peer.
+2. The user types the instance's name to confirm. The app warns that if the instance is still running, both may act on those items.
+3. For each item, the app writes an owner record at epoch + 2. The +2 also overrides a handoff the old owner may have offered just before it went silent. Tasks that were `sending` become `uncertain`, so the user verifies delivery before anything is sent again. Tasks that were `working` are queued again.
+4. When the old instance reconnects, it applies the higher epoch and stops acting on those items. Peers refuse its changes from the older epoch. The new owner keeps up to 20 refused task changes on the task as discarded attempts.
+
+A send that the old owner made but never synced as `sending` cannot be detected this way. That is the duplicate risk the user accepts by typing the name.
+
+**Still left:** reconciliation through a connector's own verification read, detecting a data directory restored from backup, and removing the sender's copy of a moved worktree, which is kept for now.
 
 ## Phase 2 status
 
@@ -330,6 +346,16 @@ Verified:
   - a task stayed on the laptop because the VPS had no ready task CLI,
   - `docker compose stop` handed the connection back to the running laptop at epoch 3 and finished in 8.6 seconds.
 - The desktop host compiles and links with the power hook.
+
+Worktree handoff and Take over, verified in `tests/test_sync.py` with real Git repositories (a bare origin and a clone per instance):
+
+- **Worktree moves.** A coding task moves to the VPS with its worktree. The new worktree sits in the VPS's own checkout, on the task branch with its commit. The modified, untracked and deleted files arrive as uncommitted changes. The sender's worktree and index are untouched, and the bundle record is deleted.
+- **No checkout.** Moving to an instance without a checkout is refused up front. A direct offer is declined, and the owner resumes at once.
+- **No repository yet.** A coding task without a repository stays.
+- **Take over.** It is refused while the peer was in touch recently or the typed name is wrong. It then writes epoch 3 over epoch 1. A task that was `sending` becomes `uncertain`, and a `working` task is queued. When the old owner reconnects, its stale change is refused, kept on the task as a discarded attempt, and the old owner stops.
+- **Removed instance.** One task can be taken over from a removed instance, which is listed with the items it still owns.
+
+The suite passes on macOS and on Debian with Git 2.39.
 
 Not verified yet: an actual Mac sleep through the desktop app (the host code is built but was not run through a real sleep), and battery detection on a laptop running on battery.
 

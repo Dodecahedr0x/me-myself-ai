@@ -1,7 +1,9 @@
 """Pairing, the synced log and the ownership protocol. See docs/specs/instances-and-sync.md, phase 2."""
 
 import json
+import os
 import random
+import subprocess
 import tempfile
 import time
 import unittest
@@ -10,6 +12,7 @@ from unittest.mock import patch
 
 import connectors
 import sync
+import worker
 from engine import Engine
 from store import Store
 
@@ -438,7 +441,7 @@ class PairingTests(unittest.TestCase):
         self.assertEqual(self.vps.db.rows("tasks"), [])
 
 
-class EngineTests(unittest.TestCase):
+class EngineBase(unittest.TestCase):
     """Two full engines linked in memory: ownership gates the scheduler, sends and dispatch."""
 
     def setUp(self):
@@ -468,6 +471,9 @@ class EngineTests(unittest.TestCase):
             self.laptop.instances.review(self.laptop.idle)
             self.vps.instances.review(self.vps.idle)
 
+
+
+class EngineTests(EngineBase):
     def test_task_appears_on_the_peer_and_runs_only_on_its_owner(self):
         t = self.laptop.new_task("Draft the reply", self.laptop.global_project, "Body")
         self.link()
@@ -558,7 +564,7 @@ class EngineTests(unittest.TestCase):
 
 
 
-class CapacityTests(EngineTests):
+class CapacityBase(EngineBase):
     """Phase 3: splitting queued work by capacity, pulling when idle, and handing over before an absence."""
 
     def setUp(self):
@@ -596,6 +602,9 @@ class CapacityTests(EngineTests):
     def queued(self, engine, title="Reply", **fields):
         return engine.new_task(title, engine.global_project, "Body", **fields)
 
+
+
+class CapacityTests(CapacityBase):
     def test_full_laptop_hands_a_new_task_to_the_vps(self):
         self.busy(self.laptop)
         t = self.queued(self.laptop)
@@ -692,17 +701,153 @@ class CapacityTests(EngineTests):
         self.assertEqual(self.laptop.prepare_absence("stopping", timeout=1, exchange=lambda capacity: None), (0, 0))
         self.assertTrue(self.laptop.owns("task:" + t["id"]))
 
-    def test_run_on_moves_a_task_but_not_one_with_a_worktree(self):
+    def test_run_on_moves_a_task(self):
         t = self.queued(self.laptop)
-        w = self.queued(self.laptop, worktree="/tmp/wt")
         self.link()
         self.vps.action(dict(op="move", items=["task:" + t["id"]], to=self.vps.instances.id))
         self.link()
         self.link()
         self.assertTrue(self.vps.owns("task:" + t["id"]))
-        with self.assertRaises(ValueError):
-            self.laptop.action(dict(op="move", items=["task:" + w["id"]], to=self.vps.instances.id))
 
+
+GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="test@example.invalid",
+               GIT_COMMITTER_NAME="Test", GIT_COMMITTER_EMAIL="test@example.invalid", GIT_CONFIG_GLOBAL=os.devnull)
+
+
+def git(cwd, *args):
+    return subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True,
+                          env=GIT_ENV).stdout
+
+
+class WorktreeHandoffTests(CapacityBase):
+    """A coding task moves with its worktree, uncommitted and untracked edits included."""
+
+    def setUp(self):
+        super().setUp()
+        root = Path(self.tmp.name)
+        origin = root / "origin.git"
+        seed = root / "seed"
+        git(root, "init", "-q", "--bare", "-b", "main", str(origin))
+        git(root, "init", "-q", "-b", "main", str(seed))
+        (seed / "app.py").write_text("print('v1')\n")
+        (seed / "old.txt").write_text("remove me\n")
+        git(seed, "add", "-A")
+        git(seed, "commit", "-q", "-m", "seed")
+        git(seed, "remote", "add", "origin", str(origin))
+        git(seed, "push", "-q", "origin", "main")
+        self.origin = origin
+        self.laptop_checkout = root / "laptop-checkout"
+        self.vps_checkout = root / "vps-checkout"
+        for checkout in (self.laptop_checkout, self.vps_checkout):
+            git(root, "clone", "-q", str(origin), str(checkout))
+        self.laptop.action(dict(op="instance_checkout", path=str(self.laptop_checkout)))
+
+    def coding_task(self):
+        t = self.queued(self.laptop, "Fix the bug", kind="coding", status="question", question="Which approach?",
+                        repository=str(self.laptop_checkout))
+        tree = worker.prepare_worktree(self.laptop_checkout, self.laptop.db.root / "worktrees", t["id"])
+        with self.laptop.db.atomic():
+            self.laptop.db.put("tasks", {**self.laptop.db.get("tasks", t["id"]), "worktree": str(tree)})
+        (tree / "lib.py").write_text("def helper():\n    return 1\n")
+        git(tree, "add", "lib.py")
+        git(tree, "commit", "-q", "-m", "Add helper")
+        (tree / "app.py").write_text("print('v2')\n")
+        (tree / "new.txt").write_text("untracked\n")
+        (tree / "old.txt").unlink()
+        return t, tree
+
+    def test_task_moves_with_its_worktree(self):
+        self.vps.action(dict(op="instance_checkout", path=str(self.vps_checkout)))
+        t, tree = self.coding_task()
+        self.link()
+        self.assertIn(worker.normalize_origin(str(self.origin)) or str(self.origin), str(self.vps.capacity()))
+        self.laptop.action(dict(op="move", items=["task:" + t["id"]], to=self.vps.instances.id))
+        self.link()
+        self.link()
+        self.assertTrue(self.vps.owns("task:" + t["id"]))
+        moved = self.vps.db.get("tasks", t["id"])
+        new_tree = Path(moved["worktree"])
+        self.assertEqual(moved["repository"], str(self.vps_checkout.resolve()))
+        self.assertTrue(str(new_tree).startswith(str(Path(self.vps.db.root).resolve())))
+        self.assertEqual((new_tree / "app.py").read_text(), "print('v2')\n")
+        self.assertEqual((new_tree / "new.txt").read_text(), "untracked\n")
+        self.assertEqual((new_tree / "lib.py").read_text(), "def helper():\n    return 1\n")
+        self.assertFalse((new_tree / "old.txt").exists())
+        status = git(new_tree, "status", "--porcelain")
+        self.assertIn(" M app.py", status)
+        self.assertIn("?? new.txt", status)
+        self.assertIn(" D old.txt", status)
+        self.assertIn("Add helper", git(new_tree, "log", "--oneline", "-1"))
+        self.assertTrue((tree / "new.txt").exists(), "the sender keeps its worktree")
+        self.assertEqual(self.vps.db.rows("bundles"), [])
+        # The laptop's working index was not touched by the snapshot.
+        self.assertIn("?? new.txt", git(tree, "status", "--porcelain"))
+
+    def test_without_a_checkout_the_receiver_declines_and_the_owner_resumes(self):
+        t, _ = self.coding_task()
+        self.link()
+        with self.assertRaises(ValueError):
+            self.laptop.action(dict(op="move", items=["task:" + t["id"]], to=self.vps.instances.id))
+        self.assertTrue(self.laptop.instances.offer("task:" + t["id"], self.vps.instances.id))
+        self.assertFalse(self.laptop.owns("task:" + t["id"]))
+        self.link()
+        self.link()
+        self.assertTrue(self.laptop.owns("task:" + t["id"]))
+        self.assertFalse(self.vps.owns("task:" + t["id"]))
+        self.assertTrue(any(r["kind"] == "Handoff declined" for r in self.vps.db.history()))
+
+    def test_coding_task_without_repository_stays(self):
+        self.busy(self.laptop)
+        t = self.queued(self.laptop, kind="coding")
+        self.vps.action(dict(op="instance_checkout", path=str(self.vps_checkout)))
+        self.link()
+        self.laptop.balance()
+        self.link()
+        self.assertTrue(self.laptop.owns("task:" + t["id"]))
+
+
+class TakeoverTests(CapacityBase):
+    def test_takeover_from_a_silent_instance(self):
+        sending = self.queued(self.laptop, "Sending", status="review", draft="Hi", account="me", destination="you")
+        working = self.queued(self.laptop, "Working")
+        with self.laptop.db.atomic():
+            self.laptop.db.put("tasks", {**self.laptop.db.get("tasks", sending["id"]), "status": "sending"})
+            self.laptop.db.put("tasks", {**self.laptop.db.get("tasks", working["id"]), "status": "working"})
+        self.link()
+        laptop_id = self.laptop.instances.id
+        with self.assertRaises(ValueError):
+            self.vps.action(dict(op="instance_takeover", peer=laptop_id, confirm="Laptop"))  # in touch just now
+        self.clock.advance(300)
+        with self.assertRaises(ValueError):
+            self.vps.action(dict(op="instance_takeover", peer=laptop_id, confirm="laptop?"))
+        result = self.vps.action(dict(op="instance_takeover", peer=laptop_id, confirm=" laptop "))
+        self.assertGreaterEqual(result["taken"], 2)
+        for t in (sending, working):
+            self.assertTrue(self.vps.owns("task:" + t["id"]))
+            self.assertEqual(self.vps.instances.owner("task:" + t["id"])["epoch"], 3)
+        self.assertEqual(self.vps.db.get("tasks", sending["id"])["status"], "uncertain")
+        self.assertEqual(self.vps.db.get("tasks", working["id"])["status"], "queued")
+        # The laptop was only paused. It acts once more with its old epoch, then reconnects.
+        with self.laptop.db.atomic():
+            self.laptop.db.put("tasks", {**self.laptop.db.get("tasks", working["id"]), "result": "stale work"})
+        self.link()
+        self.assertFalse(self.laptop.owns("task:" + working["id"]))
+        vps_task = self.vps.db.get("tasks", working["id"])
+        self.assertNotEqual(vps_task.get("result"), "stale work")
+        self.assertEqual(vps_task["discarded"][-1]["value"], "stale work")
+        self.link()
+        self.assertEqual(self.laptop.db.get("tasks", working["id"])["discarded"][-1]["value"], "stale work")
+
+    def test_takeover_of_a_removed_instance_and_a_single_task(self):
+        a = self.queued(self.laptop, "A")
+        b = self.queued(self.laptop, "B")
+        self.link()
+        self.vps.instances.remove(self.laptop.instances.id)
+        self.assertEqual(self.vps.state()["instances"]["departed"][0]["name"], "Laptop")
+        self.vps.action(dict(op="instance_takeover", peer=self.laptop.instances.id, confirm="Laptop",
+                             items=["task:" + a["id"]]))
+        self.assertTrue(self.vps.owns("task:" + a["id"]))
+        self.assertFalse(self.vps.owns("task:" + b["id"]))
 
 if __name__ == "__main__":
     unittest.main()

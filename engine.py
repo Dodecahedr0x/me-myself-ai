@@ -75,6 +75,8 @@ class Engine:
         self.db = Store(root)
         # Pairing, the synced log and item ownership. See docs/specs/instances-and-sync.md.
         self.instances = instances.Sync(self.db, clock, secrets_api=SyncedSecrets())
+        self.instances.package_hook = self.package
+        self.instances.accept_hook = self.accept
         connectors.secret_listener = self.instances.record_secret
         self.signins = SignIns(self)
         self.suggestions = Suggestions(self)
@@ -88,6 +90,7 @@ class Engine:
         self.dispatch_lock = threading.RLock()
         self.absence = None
         self.recent_offers = {}
+        self.origin_cache = {}
         self.next_balance = 0
         # The app MCP server. The HTTP service sets mcp_url once it listens.
         self.mcp_sessions = app_mcp.Sessions()
@@ -416,6 +419,7 @@ class Engine:
             battery=self.on_battery(),
             task_ready=states.get(settings.get("provider", "")) == "ready",
             hermes_ready=states.get("hermes") == "ready",
+            origins=self.local_origins(),
         )
 
     @staticmethod
@@ -438,16 +442,106 @@ class Engine:
         return found
 
     def pinned(self, t):
-        """Tasks that stay with their owner: local evidence, desktop sources, app checks and code work."""
+        """Tasks that stay with their owner: local evidence, desktop sources, app checks, and code work whose
+        repository is not chosen yet. Code work with a repository moves to instances with that origin."""
         if any("connection" not in e for e in t.get("evidence") or []):
             return True
-        if t.get("special") in {"self_check", "app_finding"} or t.get("worktree") or t.get("repository"):
+        if t.get("special") in {"self_check", "app_finding"}:
             return True
-        if t.get("kind") in {"bug", "bugfix", "coding", "code"}:
+        if t.get("kind") in {"bug", "bugfix", "coding", "code"} and not t.get("repository"):
             return True
         e = self.db.get("events", t.get("event", "")) if t.get("event") else None
         c = self.db.get("connections", e["connection"]) if e else None
         return bool(c and c.get("workspace_profile"))
+
+    # Checkouts by origin, for worktree handoff. See "Worktree handoff" in instances-and-sync.md.
+
+    def checkout_paths(self):
+        local = self.db.get("local", "checkouts") or {}
+        paths = list(local.get("paths", []))
+        for p in self.db.rows("projects"):
+            paths += p.get("repos", [])
+        return [path for path in dict.fromkeys(paths) if os.path.isdir(path)]
+
+    def origin_of(self, path):
+        cache = self.origin_cache
+        if path not in cache or time.monotonic() - cache[path][0] > 60:
+            cache[path] = (time.monotonic(), worker.checkout_origin(path))
+        return cache[path][1]
+
+    def local_origins(self):
+        return sorted({o for o in (self.origin_of(p) for p in self.checkout_paths()) if o})
+
+    def find_checkout(self, origin):
+        return next((p for p in self.checkout_paths() if self.origin_of(p) == origin), None)
+
+    def required_origin(self, t):
+        if not t.get("repository"):
+            return ""
+        if t.get("repository_origin"):
+            return t["repository_origin"]
+        return self.origin_of(t["repository"]) if self.owns("task:" + t["id"]) else ""
+
+    def can_take(self, t, info):
+        origin = self.required_origin(t)
+        if t.get("repository") and not origin:
+            return False
+        return not origin or origin in (info.get("origins") or [])
+
+    def package(self, item, to):
+        """Runs before an offer: a task's repository origin, and its worktree as a bundle."""
+        kind, _, key = item.partition(":")
+        t = self.db.get("tasks", key) if kind == "task" else None
+        if not t or not t.get("repository"):
+            return None
+        origin = self.origin_of(t["repository"])
+        if not origin:
+            raise ValueError("The task's checkout has no origin remote, so no other instance can take it.")
+        package = dict(origin=origin, task=key)
+        if t.get("worktree"):
+            package.update(worker.export_worktree(t["worktree"], key))
+        return package
+
+    def accept(self, offer, package):
+        """Runs before confirming an offer: recreate a task's worktree in this instance's checkout."""
+        kind, _, key = offer["item"].partition(":")
+        if kind != "task" or not package:
+            return {}
+        path = self.find_checkout(package["origin"])
+        if not path:
+            raise ValueError(f"No checkout of {package['origin']} here. Add one in Settings → Instances.")
+        fields = dict(repository=path, repository_origin=package["origin"])
+        if package.get("bundle"):
+            fields["worktree"] = str(worker.import_worktree(path, self.db.root / "worktrees", key, package))
+        self.db.log("Task received", f"{key} with {'its worktree' if package.get('bundle') else 'its repository'}"
+                    f" in {path}", task=key)
+        return fields
+
+    def takeover(self, peer_id, confirm, items=None):
+        """User-confirmed takeover from an instance that cannot hand over. See "Take over" in the spec."""
+        peer = self.db.get("peers", peer_id)
+        if not peer:
+            raise ValueError("Unknown instance.")
+        if " ".join(str(confirm).split()).casefold() != peer["name"].casefold():
+            raise ValueError(f"Type {peer['name']} to confirm.")
+        silent = self.now() - peer.get("last_seen", 0)
+        if not peer.get("removed") and silent < 120:
+            raise ValueError(f"{peer['name']} was in touch {int(silent)} seconds ago. Ask it to hand over instead.")
+        taken = self.instances.takeover(peer_id, items)
+        with self.db.atomic():
+            for item in taken:
+                kind, _, key = item.partition(":")
+                t = self.db.get("tasks", key) if kind == "task" else None
+                if t and t["status"] == "sending":
+                    t.update(status="uncertain", result=f"Taken over from {peer['name']} during a send. "
+                             "Check whether it was delivered before sending again.")
+                    self.save(t, "Taken over during a send")
+                elif t and t["status"] == "working":
+                    t.update(status="queued")
+                    self.save(t, f"Taken over from {peer['name']}")
+            self.db.log("Taken over", f"{len(taken)} items from {peer['name']}")
+        self.wake.set()
+        return {"taken": len(taken)}
 
     @staticmethod
     def movable_connection(c):
@@ -474,12 +568,12 @@ class Engine:
             item = "task:" + t["id"]
             if self.owns(item):
                 if "task:" + t["id"] not in self.jobs:
-                    mine.append(item)
-            else:
+                    mine.append((item, t))
+            elif self.can_take(t, me):
                 theirs.append(item)
-        for item in mine:
-            ranked = sorted((p for p in peers if self.eligible(p["capacity"]) and p["capacity"].get("free", 0) > 0),
-                            key=self.rank)
+        for item, t in mine:
+            ranked = sorted((p for p in peers if self.eligible(p["capacity"]) and p["capacity"].get("free", 0) > 0
+                             and self.can_take(t, p["capacity"])), key=self.rank)
             best = ranked[0] if ranked else None
             stay = free > 0 and not (not first and best and best["capacity"].get("preference") == "first")
             if stay:
@@ -519,8 +613,11 @@ class Engine:
         hermes_peers = [p for p in peers if p["capacity"].get("hermes_ready")]
         wanted = {}
         for t in self.db.rows("tasks"):
-            if t["status"] not in TERMINAL and not self.pinned(t) and task_peers and self.owns("task:" + t["id"]):
-                wanted["task:" + t["id"]] = task_peers[0]
+            if t["status"] in TERMINAL or self.pinned(t) or not self.owns("task:" + t["id"]):
+                continue
+            target = next((p for p in task_peers if self.can_take(t, p["capacity"])), None)
+            if target:
+                wanted["task:" + t["id"]] = target
         for c in self.db.rows("connections"):
             if self.movable_connection(c) and self.owns("connection:" + c["id"]):
                 wanted["connection:" + c["id"]] = peers[0]
@@ -2031,6 +2128,22 @@ class Engine:
             sync.remove(required(d, "peer", 64))
             self.db.log("Instance removed", "Workspace key rotated. Reconnect each account to revoke old logins.")
             return
+        if op == "instance_takeover":
+            items = d.get("items")
+            if items is not None and (not isinstance(items, list) or not all(isinstance(i, str) for i in items)):
+                raise ValueError("Choose what to take over.")
+            return self.takeover(required(d, "peer", 64), d.get("confirm", ""), items)
+        if op == "instance_checkout":
+            path = os.path.expanduser(required(d, "path", 1000))
+            origin = worker.checkout_origin(path) if os.path.isdir(path) else ""
+            if not origin:
+                raise ValueError("Enter the path of a Git checkout that has an origin remote.")
+            with self.db.atomic():
+                local = self.db.get("local", "checkouts") or {"id": "checkouts", "paths": []}
+                local["paths"] = list(dict.fromkeys(local["paths"] + [os.path.realpath(path)]))
+                self.db.put("local", local)
+            self.origin_cache.clear()
+            return {"origin": origin}
         if op == "instance_rename":
             sync.rename(required(d, "name", 60))
             return
@@ -2050,10 +2163,16 @@ class Engine:
                 items = [instances.ORCHESTRATOR]
             elif not isinstance(items, list) or not all(isinstance(i, str) for i in items):
                 raise ValueError("Choose what to move.")
+            info = next((p["capacity"] for p in self.fresh_peers() if p["id"] == to), None)
             for item in items:
                 t = self.db.get("tasks", item[5:]) if item.startswith("task:") else None
-                if t and t.get("worktree"):
-                    raise ValueError("A task with a worktree stays on its instance until worktree handoff exists.")
+                if not t or not t.get("repository"):
+                    continue
+                origin = self.required_origin(t)
+                if to == self.instances.id and origin and not self.find_checkout(origin):
+                    raise ValueError(f"Add a checkout of {origin} here first, in Settings → Instances.")
+                if to != self.instances.id and info is not None and not self.can_take(t, info):
+                    raise ValueError(f"That instance has no checkout of {origin or 'this repository'}.")
             results = {item: sync.request_move(item, to) for item in items}
             sync.wake.set()
             return {"requested": sum(1 for r in results.values() if r == "requested")}

@@ -140,6 +140,11 @@ class Sync:
         self.server = None
         self.thread = None
         self.on_change = None
+        # Set by the engine: package_hook(item, to) builds what travels with an offer (a worktree bundle);
+        # accept_hook(offer, package) prepares this instance and returns task fields, or raises to decline.
+        self.package_hook = None
+        self.accept_hook = None
+        self.discarded = []
         c = db.conn
         with db.atomic():
             c.execute(
@@ -225,7 +230,7 @@ class Sync:
                 " AND json_extract(data,'$.epoch')=?", (item, record["epoch"] + 1)).fetchall()
         for (data,) in rows:
             offer = json.loads(data)
-            if "from" in offer and offer.get("answer") != "cancel_ack":
+            if "from" in offer and offer.get("answer") not in {"cancel_ack", "declined"}:
                 return offer
         return None
 
@@ -273,21 +278,37 @@ class Sync:
         return "requested"
 
     def offer(self, item, to, idle=lambda item: True):
+        """Offer an idle item to a peer. A package (such as a worktree bundle) travels with the offer."""
+        record = self.owner(item)
+        if not record or record["owner"] != self.id or self.pending_offer(item, record) or to == self.id:
+            return False
+        if not idle(item):
+            return False
+        package = None
+        if self.package_hook:
+            try:
+                package = self.package_hook(item, to)
+            except Exception as exc:
+                self.db.log("Handoff not offered", f"{item}: {exc}")
+                return False
         with self.db.atomic():
             record = self.owner(item)
-            if not record or record["owner"] != self.id or self.pending_offer(item, record):
-                return False
-            if to == self.id or not idle(item):
+            if not record or record["owner"] != self.id or self.pending_offer(item, record) or not idle(item):
                 return False
             epoch = record["epoch"] + 1
-            self.db.put("handoffs", {"id": f"{item}@{epoch}:{uuid.uuid4().hex[:8]}", "item": item, "epoch": epoch, "from": self.id,
-                                     "to": to, "at": self.now(), "cancelled": False, "answer": ""})
+            offer_id = f"{item}@{epoch}:{uuid.uuid4().hex[:8]}"
+            if package:
+                self.db.put("bundles", {"id": offer_id, "item": item, **package})
+            self.db.put("handoffs", {"id": offer_id, "item": item, "epoch": epoch, "from": self.id,
+                                     "to": to, "at": self.now(), "cancelled": False, "answer": "",
+                                     "package": bool(package)})
         self.wake.set()
         return True
 
     def review(self, idle=lambda item: True):
         """Advance handoffs: answer offers to this instance, time out its own offers, honour requests."""
         changed = False
+        incoming = []
         with self.db.atomic():
             for offer in self.db.rows("handoffs"):
                 if offer.get("answer") or not {"from", "to", "item", "epoch"} <= offer.keys():
@@ -297,14 +318,8 @@ class Sync:
                         offer["answer"] = "cancel_ack"
                         self.db.put("handoffs", offer)
                         changed = True
-                        continue
-                    record = self.owner(offer["item"])
-                    if record and record["epoch"] == offer["epoch"] - 1 and record["owner"] == offer["from"]:
-                        self.db.put("owners", dict(id=offer["item"], owner=self.id, epoch=offer["epoch"],
-                                                   at=self.now()))
-                        offer["answer"] = "confirmed"
-                        self.db.put("handoffs", offer)
-                        changed = True
+                    elif self._current(offer) and (not offer.get("package") or self.db.get("bundles", offer["id"])):
+                        incoming.append(offer)
                 elif offer["from"] == self.id and not offer.get("cancelled"):
                     record = self.owner(offer["item"])
                     current = record and record["epoch"] == offer["epoch"] - 1
@@ -312,19 +327,67 @@ class Sync:
                         offer["cancelled"] = True
                         self.db.put("handoffs", offer)
                         changed = True
+            requests = []
             for request in self.db.rows("handoff_requests"):
                 if request.get("done"):
                     continue
                 record = self.owner(request["id"])
-                if not record:
+                if record and record["owner"] == request["to"]:
+                    self.db.put("handoff_requests", {**request, "done": True})
+                    changed = True
+                elif record and record["owner"] == self.id:
+                    requests.append(request)
+        for offer in incoming:
+            # Accepting may import a worktree, so it runs outside the database transaction.
+            accepted = {}
+            if self.accept_hook:
+                try:
+                    accepted = self.accept_hook(offer, self.db.get("bundles", offer["id"]))
+                except Exception as exc:
+                    accepted = None
+                    reason = str(exc)
+            with self.db.atomic():
+                latest = self.db.get("handoffs", offer["id"])
+                if not latest or latest.get("answer") or not self._current(latest):
                     continue
-                if record["owner"] == request["to"]:
+                if latest.get("cancelled"):
+                    latest["answer"] = "cancel_ack"
+                elif accepted is None:
+                    latest.update(answer="declined", reason=reason[:300])
+                    self.db.log("Handoff declined", f"{offer['item']}: {reason}")
+                else:
+                    self.db.put("owners", dict(id=offer["item"], owner=self.id, epoch=offer["epoch"], at=self.now()))
+                    prefix, _, key = offer["item"].partition(":")
+                    if accepted and prefix == "task" and self.db.get("tasks", key):
+                        self.db.put("tasks", {**self.db.get("tasks", key), **accepted})
+                    if self.db.get("bundles", offer["id"]):
+                        self.db.delete("bundles", offer["id"])
+                    latest["answer"] = "confirmed"
+                self.db.put("handoffs", latest)
+                changed = True
+        for request in requests:
+            if self.offer(request["id"], request["to"], idle):
+                with self.db.atomic():
                     self.db.put("handoff_requests", {**request, "done": True})
-                    changed = True
-                elif record["owner"] == self.id and self.offer(request["id"], request["to"], idle):
-                    self.db.put("handoff_requests", {**request, "done": True})
-                    changed = True
+                changed = True
         return changed
+
+    def _current(self, offer):
+        record = self.owner(offer["item"])
+        return bool(record and record["epoch"] == offer["epoch"] - 1 and record["owner"] == offer["from"])
+
+    def takeover(self, peer_id, items=None):
+        """User-confirmed: own the items of an instance that cannot hand them over. Returns the items."""
+        taken = []
+        with self.db.atomic():
+            for record in self.db.rows("owners"):
+                if record["owner"] != peer_id or (items is not None and record["id"] not in items):
+                    continue
+                self.db.put("owners", dict(id=record["id"], owner=self.id, epoch=record["epoch"] + 2,
+                                           at=self.now(), taken_from=peer_id))
+                taken.append(record["id"])
+        self.wake.set()
+        return taken
 
     # The log
 
@@ -450,6 +513,14 @@ class Sync:
                     applied += 1
             finally:
                 self.applying.on = False
+        if self.discarded:
+            # Kept on the task by its new owner, so the user can see what the old owner had done.
+            with self.db.atomic():
+                for key, attempt in self.discarded:
+                    t = self.db.get("tasks", key)
+                    if t:
+                        self.db.put("tasks", {**t, "discarded": (t.get("discarded") or [])[-19:] + [attempt]})
+            self.discarded = []
         if applied:
             self.apply_revocations()
         return applied
@@ -472,6 +543,9 @@ class Sync:
             return
         if bucket in OWNED and ch["epoch"] < self.epoch(bucket, key):
             self.db.log("Refused change from an older owner", f"{bucket} {key} field {field}")
+            if bucket == "tasks" and self.owns("task:" + key):
+                self.discarded.append((key, dict(field=field, value=value, instance=ch["origin"],
+                                                 epoch=ch["epoch"], at=self.now())))
             return
         if field == "*":
             fields = {name: v for name, v in value.items()
@@ -899,7 +973,11 @@ class Sync:
                               trusted=p.get("trusted", False), address=p.get("address", ""),
                               state=p.get("state", ""), last_seen=p.get("last_seen"),
                               capacity=info.get("capacity", {}), owns=len(owned.get(p["id"], []))))
+        departed = [dict(id=p["id"], name=p["name"], owns=len(owned.get(p["id"], [])))
+                    for p in self.db.rows("peers") if p.get("removed") and owned.get(p["id"])]
+        local = self.db.get("local", "checkouts") or {}
         return dict(id=self.id, name=me["name"], platform=me["platform"], fingerprint=self.fingerprint,
+                    departed=departed, checkouts=local.get("paths", []),
                     listening=self.server.server_address[1] if self.server else None,
                     paired=self.paired(), owns=len(owned.get(self.id, [])), peers=peers,
                     code_active=bool(pending and pending["expires"] > self.now()),

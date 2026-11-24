@@ -1,5 +1,6 @@
 """Fresh CLI inference and file preparation for a single app-owned task."""
 
+import base64
 import contextlib
 import json
 import os
@@ -565,7 +566,7 @@ def run_agent(role: str, payload: dict, provider: str, mcp=None) -> dict:
         raise WorkerError(f"The {provider} CLI failed to return a valid JSON response.") from exc
 
 
-def _git(repo, *args):
+def _git(repo, *args, env=None):
     try:
         proc = subprocess.run(
             ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", str(repo), *args],
@@ -577,6 +578,9 @@ def _git(repo, *args):
                 "GIT_CONFIG_NOSYSTEM": "1",
                 "GIT_CONFIG_GLOBAL": os.devnull,
                 "GIT_TERMINAL_PROMPT": "0",
+                "GIT_AUTHOR_NAME": "MeMyselfAI", "GIT_AUTHOR_EMAIL": "memyselfai@localhost",
+                "GIT_COMMITTER_NAME": "MeMyselfAI", "GIT_COMMITTER_EMAIL": "memyselfai@localhost",
+                **(env or {}),
             },
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -639,6 +643,101 @@ def prepare_worktree(repo, root, task_id) -> Path:
         storage.mkdir(mode=0o700, parents=True, exist_ok=True)
         _git(repo, "worktree", "add", "-b", "memyselfai/task-" + ident, str(path), "HEAD")
     return _check_worktree(path, expected_branch="memyselfai/task-" + ident, common_dir=common)
+
+
+# Moving a task's worktree between instances. See "Worktree handoff" in docs/specs/instances-and-sync.md.
+
+MAX_BUNDLE = 4 * 1024 * 1024
+
+
+def normalize_origin(url):
+    """github.com/owner/repo for SSH, HTTPS and scp-like remote URLs."""
+    url = url.strip()
+    if url.startswith("/") or url.startswith("file://"):
+        path = url[len("file://"):] if url.startswith("file://") else url
+        path = path.rstrip("/")
+        return "file://" + (path[:-4] if path.endswith(".git") else path)
+    match = re.fullmatch(r"(?:[\w.+-]+@)?([\w.-]+):(?!//)(.+)", url)
+    if match:
+        host, path = match.groups()
+    else:
+        match = re.fullmatch(r"[a-z+]+://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+)", url)
+        if not match:
+            return ""
+        host, path = match.groups()
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    return (host + "/" + path).casefold()
+
+
+def checkout_origin(path):
+    try:
+        return normalize_origin(os.fsdecode(_git(Path(path), "remote", "get-url", "origin")))
+    except (WorkerError, OSError):
+        return ""
+
+
+def export_worktree(worktree, task_id):
+    """Snapshot a task worktree, untracked files included, as a bundle. The user's index is untouched."""
+    root = _check_worktree(worktree, expected_branch="memyselfai/task-" + task_id)
+    branch = "memyselfai/task-" + task_id
+    with tempfile.TemporaryDirectory() as tmp:
+        index = {"GIT_INDEX_FILE": str(Path(tmp) / "index")}
+        _git(root, "read-tree", "HEAD", env=index)
+        _git(root, "add", "-A", env=index)
+        tree = os.fsdecode(_git(root, "write-tree", env=index)).strip()
+        snapshot = os.fsdecode(_git(root, "commit-tree", tree, "-p", "HEAD", "-m", "Worktree snapshot")).strip()
+        _git(root, "update-ref", "refs/memyselfai/snapshot-" + task_id, snapshot)
+        base = ""
+        remotes = os.fsdecode(_git(root, "for-each-ref", "--format=%(objectname)", "refs/remotes")).split()
+        for ref in remotes:
+            try:
+                base = os.fsdecode(_git(root, "merge-base", branch, ref)).strip()
+                break
+            except WorkerError:
+                continue
+        bundle = Path(tmp) / "task.bundle"
+        _git(root, "bundle", "create", str(bundle), branch, "refs/memyselfai/snapshot-" + task_id,
+             *(["--not", base] if base else []))
+        data = bundle.read_bytes()
+    if len(data) > MAX_BUNDLE:
+        raise WorkerError("The task's worktree is too large to hand over.")
+    return dict(bundle=base64.b64encode(data).decode(), base=base, snapshot=snapshot, size=len(data))
+
+
+def import_worktree(repo, root, task_id, package):
+    """Recreate a handed-over task worktree in this instance's checkout, with its uncommitted edits."""
+    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,119}", task_id):
+        raise WorkerError("Invalid worktree task identifier.")
+    repo = Path(repo).expanduser().resolve()
+    branch = "memyselfai/task-" + task_id
+    snapshot_ref = "refs/memyselfai/snapshot-" + task_id
+    with tempfile.TemporaryDirectory() as tmp:
+        bundle = Path(tmp) / "task.bundle"
+        bundle.write_bytes(base64.b64decode(package["bundle"]))
+        try:
+            _git(repo, "bundle", "verify", str(bundle))
+        except WorkerError:
+            # The base commit may be missing; fetch it with the user's own Git setup, once.
+            subprocess.run(["git", "-C", str(repo), "fetch", "--quiet", "origin"], capture_output=True,
+                           timeout=120, stdin=subprocess.DEVNULL, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+            try:
+                _git(repo, "bundle", "verify", str(bundle))
+            except WorkerError as exc:
+                raise WorkerError("This checkout lacks the task's base commit. Pull the repository and retry.") from exc
+        path = Path(root).expanduser().resolve() / ("task-" + task_id)
+        if path.exists():
+            _git(repo, "worktree", "remove", "--force", str(path))
+        _git(repo, "worktree", "prune")
+        _git(repo, "fetch", "--quiet", str(bundle), f"+refs/heads/{branch}:refs/heads/{branch}",
+             f"+{snapshot_ref}:{snapshot_ref}")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _git(repo, "worktree", "add", str(path), branch)
+    # Restore the snapshot as uncommitted changes: files to the snapshot, index back to the branch.
+    _git(path, "read-tree", "--reset", "-u", snapshot_ref)
+    _git(path, "reset", "--quiet")
+    return _check_worktree(path, expected_branch=branch)
 
 
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
