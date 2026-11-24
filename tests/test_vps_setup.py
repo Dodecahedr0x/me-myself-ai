@@ -222,6 +222,9 @@ class VpsSetupTest(unittest.TestCase):
         setup2 = self.setup(FakePeers(), ssh_error="Host key verification failed.")
         setup2.start("OVH-VPS")
         self.assertIn("Connect once from Terminal", self.wait(setup2)["error"])
+        setup3 = self.setup(FakePeers(), ssh_error="kex_exchange_identification: read: Connection reset by peer")
+        setup3.start("OVH-VPS")
+        self.assertIn("provider's web console", self.wait(setup3)["error"])
 
     def test_installer_failure_shows_its_output_and_retry_runs_again(self):
         setup = self.setup(FakePeers([dict(name="vps", address="203.0.113.5:8802", trusted=True)]),

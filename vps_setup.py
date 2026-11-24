@@ -129,6 +129,10 @@ def ssh_failure(stderr):
                 "agent (ssh-add --apple-use-keychain <key>), then retry.")
     elif "could not resolve" in low or "name or service not known" in low:
         hint = "This host name doesn't resolve. Check the HostName in your SSH config."
+    elif "kex_exchange_identification" in low or "banner exchange" in low or "connection reset" in low:
+        hint = ("The server dropped the SSH connection before it started. Its SSH service may be overloaded "
+                "or stuck, or a firewall such as fail2ban may be blocking this Mac. Check it from your "
+                "provider's web console, then retry.")
     elif "timed out" in low or "connection refused" in low or "no route" in low:
         hint = "The server didn't answer on its SSH port. Check that it is running, then retry."
     else:
@@ -291,7 +295,8 @@ class VpsSetup:
     def start(self, host):
         host = valid_host(host)
         with self.lock:
-            if self.thread and self.thread.is_alive():
+            # A finished run may still be closing its SSH connection; its own control socket is separate.
+            if self.run_state and self.run_state["status"] in {"running", "needs_password"}:
                 raise ValueError("A server setup is already running.")
             self.cancelled.clear()
             self.answered.clear()
