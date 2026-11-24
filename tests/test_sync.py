@@ -454,6 +454,11 @@ class EngineTests(unittest.TestCase):
                 a.db.put("peers", dict(id=b.instances.id, name="VPS" if b is self.vps else "Laptop",
                                        platform="test", cert="", fingerprint="x", trusted=True, address="memory"))
             a.instances.identity = False
+            # No real agents, Hermes or desktop scans from the scheduler in these tests.
+            for target, name in ((a.orchestrator, "due"), (a.suggestions, "run")):
+                patcher = patch.object(target, name, return_value=None)
+                patcher.start()
+                self.addCleanup(patcher.stop)
 
     def link(self):
         for _ in range(2):
@@ -541,11 +546,162 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(result["status"], "forwarded")
         self.assertIsNone(self.laptop.db.get("tasks", "e1"))
         self.link()
-        self.vps.tick()
+        with patch.object(self.vps.orchestrator, "due", return_value=None), \
+                patch.object(self.vps, "process"), patch.object(self.vps.suggestions, "run"):
+            self.vps.tick()
+            for job in list(self.vps.jobs.values()):
+                job.result()
         for job in list(self.vps.jobs.values()):
             job.result()
         self.assertEqual(self.vps.db.get("tasks", "e1")["task_type"], "email_reply")
         self.assertTrue(self.vps.owns("task:e1"))
+
+
+
+class CapacityTests(EngineTests):
+    """Phase 3: splitting queued work by capacity, pulling when idle, and handing over before an absence."""
+
+    def setUp(self):
+        super().setUp()
+        for engine in (self.laptop, self.vps):
+            provider = engine.settings()["provider"]
+            patcher = patch.object(engine, "agent_states", return_value={provider: "ready", "hermes": "ready"})
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            patcher = patch.object(engine, "on_battery", return_value=False)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.set(self.laptop, slots=1)
+        self.set(self.vps, slots=2)
+
+    def set(self, engine, **fields):
+        with engine.db.atomic():
+            engine.db.put("config", {**engine.settings(), **fields})
+
+    def link(self):
+        for _ in range(2):
+            self.laptop.instances.sync_with(
+                self.vps.instances.id,
+                lambda r: wire(self.vps.instances.handle_exchange(self.laptop.instances.id, wire(r),
+                                                                  self.vps.capacity())),
+                self.laptop.capacity())
+            self.laptop.instances.review(self.laptop.idle)
+            self.vps.instances.review(self.vps.idle)
+
+    def busy(self, engine):
+        import concurrent.futures
+        engine.jobs["task:running"] = concurrent.futures.Future()
+        self.addCleanup(lambda: engine.jobs.pop("task:running", None))
+
+    def queued(self, engine, title="Reply", **fields):
+        return engine.new_task(title, engine.global_project, "Body", **fields)
+
+    def test_full_laptop_hands_a_new_task_to_the_vps(self):
+        self.busy(self.laptop)
+        t = self.queued(self.laptop)
+        self.link()
+        self.laptop.balance()
+        self.link()
+        self.assertTrue(self.vps.owns("task:" + t["id"]))
+        self.assertFalse(self.laptop.owns("task:" + t["id"]))
+
+    def test_free_laptop_keeps_work_when_the_vps_is_overflow_only(self):
+        self.set(self.vps, preference="overflow")
+        t = self.queued(self.laptop)
+        self.link()
+        self.laptop.balance()
+        self.link()
+        self.assertTrue(self.laptop.owns("task:" + t["id"]))
+        # A task created on the overflow-only VPS goes to the laptop while it has a free slot.
+        v = self.queued(self.vps, "Made on the VPS")
+        self.link()
+        self.vps.balance()
+        self.link()
+        self.assertTrue(self.laptop.owns("task:" + v["id"]))
+
+    def test_pinned_tasks_never_move(self):
+        self.busy(self.laptop)
+        local = self.queued(self.laptop, evidence=[{"source": "Git", "folder": "/tmp/repo"}])
+        code = self.queued(self.laptop, kind="bugfix")
+        self.link()
+        self.laptop.balance()
+        self.vps.balance()
+        self.link()
+        self.assertTrue(self.laptop.owns("task:" + local["id"]))
+        self.assertTrue(self.laptop.owns("task:" + code["id"]))
+
+    def test_idle_vps_pulls_work_from_a_full_laptop(self):
+        t = self.queued(self.laptop)
+        self.busy(self.laptop)
+        self.laptop.recent_offers["task:" + t["id"]] = self.clock()  # the laptop has not offered it yet
+        self.link()
+        self.vps.balance()
+        self.link()
+        self.link()
+        self.assertTrue(self.vps.owns("task:" + t["id"]))
+
+    def test_slot_limit_bounds_running_tasks(self):
+        import threading
+        release = threading.Event()
+        self.addCleanup(release.set)
+        for i in range(3):
+            self.queued(self.laptop, f"Task {i}")
+        with patch.object(self.laptop, "process", side_effect=lambda key: release.wait(5)), \
+                patch.object(self.laptop.orchestrator, "due", return_value=None):
+            self.laptop.tick()
+            self.assertEqual(self.laptop.running_tasks(), 1)
+            release.set()
+
+    def test_absence_hands_movable_items_to_the_vps(self):
+        mail = dict(id="mail", kind="email", label="Mail", config={}, status="Connected", next=10**12, revision="r")
+        gh = dict(id="gh", kind="github", label="Repo", config={"repository": "a/b"}, auth_method="gh_repository",
+                  status="Connected", next=10**12, revision="r")
+        with self.laptop.db.atomic():
+            self.laptop.db.put("connections", mail)
+            self.laptop.db.put("connections", gh)
+        waiting = self.queued(self.laptop, status="review", draft="Hi", account="me", destination="you")
+        queued = self.queued(self.laptop)
+        local = self.queued(self.laptop, evidence=[{"source": "Git", "folder": "/tmp/repo"}])
+        self.link()
+        if not self.laptop.owns(sync.ORCHESTRATOR):
+            self.vps.action(dict(op="move", items="orchestrator", to=self.laptop.instances.id))
+            self.link()
+            self.link()
+
+        def exchange(capacity):
+            self.link()
+
+        handed, kept = self.laptop.prepare_absence("sleeping", timeout=5, exchange=exchange)
+        for item in ("task:" + waiting["id"], "task:" + queued["id"], "connection:mail", sync.ORCHESTRATOR):
+            self.assertTrue(self.vps.owns(item), item)
+        self.assertTrue(self.laptop.owns("task:" + local["id"]))
+        self.assertTrue(self.laptop.owns("connection:gh"))
+        self.assertEqual(kept, 0)
+        self.assertGreaterEqual(handed, 4)
+        self.assertTrue(self.laptop.absent())
+        self.assertEqual(self.laptop.capacity()["state"], "sleeping")
+        with patch.object(self.laptop, "process") as process, \
+                patch.object(self.laptop.orchestrator, "due", return_value=None):
+            self.laptop.tick()
+        self.assertFalse(process.called, "nothing new starts while preparing to sleep")
+        self.clock.advance(120)
+        self.assertFalse(self.laptop.absent(), "waking resumes work")
+
+    def test_absence_without_a_reachable_peer_keeps_work(self):
+        t = self.queued(self.laptop)
+        self.assertEqual(self.laptop.prepare_absence("stopping", timeout=1, exchange=lambda capacity: None), (0, 0))
+        self.assertTrue(self.laptop.owns("task:" + t["id"]))
+
+    def test_run_on_moves_a_task_but_not_one_with_a_worktree(self):
+        t = self.queued(self.laptop)
+        w = self.queued(self.laptop, worktree="/tmp/wt")
+        self.link()
+        self.vps.action(dict(op="move", items=["task:" + t["id"]], to=self.vps.instances.id))
+        self.link()
+        self.link()
+        self.assertTrue(self.vps.owns("task:" + t["id"]))
+        with self.assertRaises(ValueError):
+            self.laptop.action(dict(op="move", items=["task:" + w["id"]], to=self.vps.instances.id))
 
 
 if __name__ == "__main__":

@@ -65,6 +65,10 @@ The VPS accepts paired instances on port 8802. Allow that port in the server's f
 
 Tasks, projects, rules, activity and logins from the app's credential store now sync both ways within seconds. Each task, connection and the orchestrator has one owner instance, shown on its row. Only the owner works on it, polls it or sends for it. To let the VPS poll your accounts while the laptop sleeps, choose **Hand over connections** on the VPS row. **Take connections back** reverses it. Approving a draft on either instance sends it from the task's owner.
 
+**Splitting work.** Each instance runs at most its number of agent slots at once. The default is 2 on a Mac and the CPU count minus one on a server. When the instance that owns a queued task has no free slot, it hands the task to a paired instance that has one, and an idle instance asks for waiting tasks. In Agent settings, each instance can be set to **Run here first**, **Overflow only** or **Never run agents**. Coding tasks, tasks from local folders or desktop chats, and Google browser-profile sources stay where they started. **Run on…** in a task's detail moves one task by hand.
+
+**Sleep and shutdown.** Before the Mac sleeps or the app quits, it hands its tasks, connections and the orchestrator to the VPS, holding sleep for up to 25 seconds. A task moves only if the VPS has a signed-in task CLI, and the orchestrator only if the VPS has Hermes ready. Stopping the VPS hands its items to the laptop in the same way, if the laptop is connected.
+
 Logins held by other tools do not sync: `gh` sign-ins, Google sign-ins through a browser profile, and AI subscriptions. Sign those in on each instance. **Remove** stops syncing with an instance and rotates the workspace key. The removed instance keeps the logins it had, so reconnect each account afterwards to revoke them.
 
 ## What works on a VPS today
@@ -77,4 +81,4 @@ Logins held by other tools do not sync: `gh` sign-ins, Google sign-ins through a
 | Google browser sign-in | Not yet verified. The consent page opens a browser on the server. Use IMAP mail meanwhile. |
 | Local folders, frontmost app, Claude and ChatGPT desktop chats | No. These are Mac-only sources. |
 | Native folder picker | No. Type repository paths on the server instead. |
-| Sync with your Mac | Yes: pairing, shared tasks and logins, handing over connections and the orchestrator. Automatic splitting by capacity is phase 3. |
+| Sync with your Mac | Yes: pairing, shared tasks and logins, splitting queued work by free agent slots, and handing work over before the laptop sleeps or quits |

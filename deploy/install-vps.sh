@@ -81,6 +81,8 @@ $KEY_LINE
 ExecStart=/usr/bin/env python3 -B $APP/server.py --data $DATA --port $PORT --launch-file $DATA/launch-url${SYNC_PORT:+ --sync-port $SYNC_PORT}
 Restart=on-failure
 RestartSec=5
+# Time to hand work to a paired instance before stopping.
+TimeoutStopSec=60
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes

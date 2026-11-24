@@ -4,9 +4,13 @@
 services:
   memyselfai:
     build: .
+    # Shown to paired instances as this instance's name; rename it in Settings → Instances.
+    hostname: vps
     restart: unless-stopped
     # A minimal init as PID 1 reaps the agent CLIs' child processes when they are stopped.
     init: true
+    # Time to hand work to a paired instance before stopping.
+    stop_grace_period: 30s
     ports:
       # Loopback only. Reach the dashboard through an SSH tunnel, never a public port.
       - "127.0.0.1:8801:8801"

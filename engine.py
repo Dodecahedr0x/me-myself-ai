@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -85,6 +86,9 @@ class Engine:
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=6, thread_name_prefix="task")
         self.sync_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="source")
         self.dispatch_lock = threading.RLock()
+        self.absence = None
+        self.recent_offers = {}
+        self.next_balance = 0
         # The app MCP server. The HTTP service sets mcp_url once it listens.
         self.mcp_sessions = app_mcp.Sessions()
         self.mcp_tools = app_mcp.Tools(self)
@@ -366,15 +370,177 @@ class Engine:
             return "sync:" + key not in self.jobs
         return "orchestrator" not in self.jobs
 
-    def capacity(self):
-        settings = self.settings()
-        slots = settings.get("slots") or (2 if os.uname().sysname == "Darwin" else max(1, (os.cpu_count() or 2) - 1))
-        busy = sum(1 for key in self.jobs if key.startswith("task:"))
+    def slots(self):
+        configured = self.settings().get("slots")
+        if configured:
+            return int(configured)
+        return 2 if os.uname().sysname == "Darwin" else max(1, (os.cpu_count() or 2) - 1)
+
+    def running_tasks(self):
+        return sum(1 for key, job in self.jobs.items() if key.startswith("task:") and not job.done())
+
+    def agent_states(self):
         try:
-            ready = {row["name"]: row["status"] for row in self.agents.inventory()}
+            return {row["id"]: row["state"] for row in self.agents.inventory()["harnesses"]}
         except Exception:
-            ready = {}
-        return dict(slots=slots, free=max(0, slots - busy), agents=ready)
+            return {}
+
+    def on_battery(self):
+        """Mac only, checked at most once a minute."""
+        if os.uname().sysname != "Darwin":
+            return False
+        cached = getattr(self, "_battery", None)
+        if cached and time.monotonic() - cached[0] < 60:
+            return cached[1]
+        try:
+            out = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True, timeout=5).stdout
+            value = "Battery Power" in out
+        except Exception:
+            value = False
+        self._battery = (time.monotonic(), value)
+        return value
+
+    def absent(self):
+        """Preparing for sleep or stop. Expires on its own, so waking from sleep resumes work."""
+        return self.absence and self.absence[1] > self.now()
+
+    def capacity(self):
+        """Advertised to peers on every exchange. See "Phase 3 design" in instances-and-sync.md."""
+        settings = self.settings()
+        slots = self.slots()
+        states = self.agent_states()
+        return dict(
+            slots=slots, free=max(0, slots - self.running_tasks()),
+            preference=settings.get("preference", "first"),
+            state=self.absence[0] if self.absent() else "active",
+            battery=self.on_battery(),
+            task_ready=states.get(settings.get("provider", "")) == "ready",
+            hermes_ready=states.get("hermes") == "ready",
+        )
+
+    @staticmethod
+    def eligible(info):
+        return bool(info) and info.get("preference") != "never" and info.get("task_ready") \
+            and info.get("state", "active") == "active"
+
+    @staticmethod
+    def rank(peer):
+        info = peer["capacity"]
+        return (info.get("preference") != "first", bool(info.get("battery")), -info.get("free", 0), peer["id"])
+
+    def fresh_peers(self):
+        now = self.now()
+        found = []
+        for p in self.instances.peers():
+            info = (p.get("info") or {}).get("capacity")
+            if p.get("trusted") and info and now - p.get("last_seen", 0) <= instances.FRESH_SECONDS:
+                found.append(dict(id=p["id"], name=p["name"], capacity=dict(info)))
+        return found
+
+    def pinned(self, t):
+        """Tasks that stay with their owner: local evidence, desktop sources, app checks and code work."""
+        if any("connection" not in e for e in t.get("evidence") or []):
+            return True
+        if t.get("special") in {"self_check", "app_finding"} or t.get("worktree") or t.get("repository"):
+            return True
+        if t.get("kind") in {"bug", "bugfix", "coding", "code"}:
+            return True
+        e = self.db.get("events", t.get("event", "")) if t.get("event") else None
+        c = self.db.get("connections", e["connection"]) if e else None
+        return bool(c and c.get("workspace_profile"))
+
+    @staticmethod
+    def movable_connection(c):
+        """Connections a peer can poll with synced logins."""
+        return not (c.get("workspace_profile") or c.get("github_parent")
+                    or c.get("auth_method") in {"gh_account", "gh_repository"})
+
+    def balance(self):
+        """Offer queued work to peers with capacity, and ask for work when idle."""
+        peers = self.fresh_peers()
+        if not peers:
+            return
+        now = self.now()
+        me = self.capacity()
+        free = me["free"] if self.eligible(me) else 0
+        first = me["preference"] == "first"
+        offered = self.recent_offers
+        for key in [k for k, at in offered.items() if now - at > 60]:
+            del offered[key]
+        mine, theirs = [], []
+        for t in sorted(self.db.rows("tasks"), key=lambda t: t.get("created", 0)):
+            if t["status"] not in {"queued", "scheduled"} or t.get("due", 0) > now or self.pinned(t):
+                continue
+            item = "task:" + t["id"]
+            if self.owns(item):
+                if "task:" + t["id"] not in self.jobs:
+                    mine.append(item)
+            else:
+                theirs.append(item)
+        for item in mine:
+            ranked = sorted((p for p in peers if self.eligible(p["capacity"]) and p["capacity"].get("free", 0) > 0),
+                            key=self.rank)
+            best = ranked[0] if ranked else None
+            stay = free > 0 and not (not first and best and best["capacity"].get("preference") == "first")
+            if stay:
+                free -= 1
+            elif best and item not in offered:
+                if self.instances.offer(item, best["id"], self.idle):
+                    offered[item] = now
+                    best["capacity"]["free"] -= 1
+                    self.db.log("Handing over", f"{item} to {best['name']}: "
+                                + ("no free slot here" if self.eligible(me) else "not eligible here"))
+        if free <= 0 or self.absent():
+            return
+        owners = {p["id"]: p for p in peers}
+        for item in theirs:
+            record = self.instances.owner(item)
+            owner = owners.get(record["owner"]) if record else None
+            if not owner or item in offered or free <= 0:
+                continue
+            info = owner["capacity"]
+            if info.get("free", 0) <= 0 or not self.eligible(info):
+                self.instances.request_move(item, self.instances.id)
+                offered[item] = now
+                free -= 1
+
+    def prepare_absence(self, reason="sleeping", timeout=20, exchange=None):
+        """Hand idle items to the best fresh peer before sleep or stop. Returns (handed, kept)."""
+        deadline = self.now() + timeout
+        self.absence = (reason, deadline + 60)
+        exchange = exchange or self.instances.exchange_all
+        exchange(self.capacity)
+        peers = sorted(self.fresh_peers(), key=self.rank)
+        if not peers:
+            self.db.log("Absence", f"{reason.title()} with no reachable instance; work stays here.")
+            return 0, 0
+        task_peers = [p for p in peers if p["capacity"].get("preference") != "never"
+                      and p["capacity"].get("task_ready")] or []
+        hermes_peers = [p for p in peers if p["capacity"].get("hermes_ready")]
+        wanted = {}
+        for t in self.db.rows("tasks"):
+            if t["status"] not in TERMINAL and not self.pinned(t) and task_peers and self.owns("task:" + t["id"]):
+                wanted["task:" + t["id"]] = task_peers[0]
+        for c in self.db.rows("connections"):
+            if self.movable_connection(c) and self.owns("connection:" + c["id"]):
+                wanted["connection:" + c["id"]] = peers[0]
+        if hermes_peers and self.owns(instances.ORCHESTRATOR):
+            wanted[instances.ORCHESTRATOR] = hermes_peers[0]
+        offered = set()
+        while True:
+            for item, peer in wanted.items():
+                if item not in offered and self.instances.offer(item, peer["id"], self.idle):
+                    offered.add(item)
+            self.instances.wake.set()
+            exchange(self.capacity)
+            handed = [i for i in offered if (self.instances.owner(i) or {}).get("owner") != self.instances.id]
+            if len(handed) == len(wanted) or self.now() >= deadline:
+                break
+            time.sleep(0.3)
+        kept = len(wanted) - len(handed)
+        self.db.log("Absence", f"{reason.title()}: handed {len(handed)} items to {peers[0]['name']}"
+                    + (f"; {kept} stayed here" if kept else ""))
+        return len(handed), kept
 
     def close(self):
         if connectors.secret_listener == self.instances.record_secret:
@@ -429,11 +595,18 @@ class Engine:
         for request in self.db.rows("dispatch_requests"):
             if not request.get("done") and request.get("connection") in owned:
                 submit("dispatch:" + request["id"], self.mcp_tools.fulfil, request["id"], self.pool)
-        for t in self.db.rows("tasks"):
+        if now >= self.next_balance:
+            self.next_balance = now + 5
+            self.balance()
+        running, slots, absent = self.running_tasks(), self.slots(), self.absent()
+        for t in sorted(self.db.rows("tasks"), key=lambda t: t.get("created", 0)):
             if not self.owns("task:" + t["id"]):
                 continue
             if t["status"] in {"queued", "scheduled"} and t.get("due", 0) <= now:
-                submit("task:" + t["id"], self.process, t["id"], self.pool)
+                # At most the slot count at once; nothing new while preparing for sleep or stop.
+                if "task:" + t["id"] not in self.jobs and not absent and running < slots:
+                    submit("task:" + t["id"], self.process, t["id"], self.pool)
+                    running += 1
             if t["status"] == "review" and t.get("approved_version") == t["version"]:
                 submit("send:" + t["id"], self.approved_send, (t["id"], t["version"]), self.sync_pool)
             elif t["status"] == "review" and self.auto(t):
@@ -1639,6 +1812,14 @@ class Engine:
                     if d["orchestrator_subscription"] not in agents.SUBSCRIPTIONS:
                         raise ValueError("Choose the Claude or ChatGPT subscription for the orchestrator.")
                     s["orchestrator_subscription"] = d["orchestrator_subscription"]
+                if "slots" in d:
+                    if type(d["slots"]) is not int or not 0 <= d["slots"] <= 64:
+                        raise ValueError("Enter between 0 and 64 agent slots, or 0 for the default.")
+                    s["slots"] = d["slots"]
+                if "preference" in d:
+                    if d["preference"] not in {"first", "overflow", "never"}:
+                        raise ValueError("Choose where tasks should run.")
+                    s["preference"] = d["preference"]
                 s["dry"] = d.get("dry", s["dry"])
                 self.db.put("config", s)
                 self.agents.cache = None
@@ -1864,13 +2045,15 @@ class Engine:
             to = required(d, "to", 64)
             items = d.get("items")
             if items == "connections":
-                items = ["connection:" + c["id"] for c in self.db.rows("connections")
-                         if not c.get("workspace_profile") and not c.get("github_parent") and not c.get("slack_parent")
-                         and not c.get("auth_method", "").startswith("gh_")]
+                items = ["connection:" + c["id"] for c in self.db.rows("connections") if self.movable_connection(c)]
             elif items == "orchestrator":
                 items = [instances.ORCHESTRATOR]
             elif not isinstance(items, list) or not all(isinstance(i, str) for i in items):
                 raise ValueError("Choose what to move.")
+            for item in items:
+                t = self.db.get("tasks", item[5:]) if item.startswith("task:") else None
+                if t and t.get("worktree"):
+                    raise ValueError("A task with a worktree stays on its instance until worktree handoff exists.")
             results = {item: sync.request_move(item, to) for item in items}
             sync.wake.set()
             return {"requested": sum(1 for r in results.values() if r == "requested")}

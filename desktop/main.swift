@@ -1,4 +1,5 @@
 import AppKit
+import IOKit.pwr_mgt
 import WebKit
 import UniformTypeIdentifiers
 
@@ -13,6 +14,12 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
     private var origin: URL?
     private var quitting = false
     private var restartRequested = false
+    // Sleep is held for up to 25 seconds while the service hands work to a paired instance.
+    private var powerPort: io_connect_t = 0
+    private var powerNotify: IONotificationPortRef?
+    private var powerNotifier: io_object_t = 0
+    private var pendingSleep: Int?
+    private var sleepAck: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMenus()
@@ -54,6 +61,48 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         startService()
+        registerPower()
+    }
+
+    private func registerPower() {
+        signal(SIGUSR1, SIG_IGN)
+        let ack = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+        ack.setEventHandler { [weak self] in self?.allowSleep() }
+        ack.resume()
+        sleepAck = ack
+        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        powerPort = IORegisterForSystemPower(refcon, &powerNotify, { refcon, _, type, argument in
+            guard let refcon = refcon else { return }
+            Unmanaged<Desktop>.fromOpaque(refcon).takeUnretainedValue().power(type, argument)
+        }, &powerNotifier)
+        if powerPort != 0, let port = powerNotify {
+            CFRunLoopAddSource(CFRunLoopGetMain(), IONotificationPortGetRunLoopSource(port).takeUnretainedValue(),
+                               .commonModes)
+        }
+    }
+
+    private func power(_ type: natural_t, _ argument: UnsafeMutableRawPointer?) {
+        let canSleep: natural_t = 0xE000_0270, willSleep: natural_t = 0xE000_0280
+        let id = Int(bitPattern: argument)
+        if type == canSleep {
+            IOAllowPowerChange(powerPort, id)
+        } else if type == willSleep {
+            guard let process = service, process.isRunning else {
+                IOAllowPowerChange(powerPort, id)
+                return
+            }
+            allowSleep()
+            pendingSleep = id
+            kill(process.processIdentifier, SIGUSR2)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [weak self] in self?.allowSleep() }
+        }
+    }
+
+    private func allowSleep() {
+        if let id = pendingSleep {
+            pendingSleep = nil
+            IOAllowPowerChange(powerPort, id)
+        }
     }
 
     private func installMenus() {

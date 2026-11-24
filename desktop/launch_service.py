@@ -18,6 +18,8 @@ def watch_desktop():
 
 
 if __name__ == "__main__":
+    # The service signals the host back once work is handed over before sleep.
+    os.environ["MEMYSELFAI_HOST_PID"] = str(os.getppid())
     threading.Thread(target=watch_desktop, daemon=True).start()
     resources = Path(__file__).resolve().parent
     sys.path.insert(0, str(resources))

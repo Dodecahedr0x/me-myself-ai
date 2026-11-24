@@ -33,7 +33,7 @@ else:
     target.unlink(missing_ok=True)
 PY
 xcrun swiftc -target "$(uname -m)-apple-macosx12.0" -swift-version 5 -O -module-cache-path "$root/build/ModuleCache" \
-    -framework AppKit -framework WebKit desktop/main.swift -o "$contents/MacOS/MeMyselfAI"
+    -framework AppKit -framework IOKit -framework WebKit desktop/main.swift -o "$contents/MacOS/MeMyselfAI"
 test -x "$contents/MacOS/MeMyselfAI"
 plutil -lint "$contents/Info.plist" >/dev/null
 codesign --force --sign - "$bundle"

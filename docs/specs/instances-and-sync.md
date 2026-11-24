@@ -1,6 +1,6 @@
 # Instances, sync and sharing work
 
-**Status** — Draft. Phase 1 (headless Linux service) and phase 2 (pairing, sync and ownership) are implemented as described in [phase 2 design](#phase-2-design). See [phase 1 status](#phase-1-status), [phase 2 status](#phase-2-status) and the [VPS guide](../vps.md). Phase 3 is planned. Covers [US-25 through US-29](../user-stories.md). Changes the "one process owns a data directory" rule in the [desktop runtime](desktop-runtime.md). That rule still holds per instance, but several instances can now share one workspace.
+**Status** — Draft. Phase 1 (headless Linux service), phase 2 (pairing, sync and ownership) and most of phase 3 (capacity scheduling, planned absence, **Run on…**) are implemented as described in [phase 2 design](#phase-2-design) and [phase 3 design](#phase-3-design). Worktree bundles and **Take over** are still planned. See the status sections and the [VPS guide](../vps.md). Covers [US-25 through US-29](../user-stories.md). Changes the "one process owns a data directory" rule in the [desktop runtime](desktop-runtime.md). That rule still holds per instance, but several instances can now share one workspace.
 
 ## Intent
 
@@ -249,6 +249,46 @@ An offer is pending until it is answered `cancel_ack` or the receiver's owner re
 
 **Left to phase 3:** capacity-based handoffs, planned absence, worktree bundles, **Run on…** and **Take over**. Phase 2 also does not sign handoff records with the instance key. Paired instances trust each other fully, and records arrive only over mutual TLS from a paired peer. A refresh token rotated by a non-owner during a send is a known risk until owners refresh on request.
 
+## Phase 3 design
+
+This section fixes how phase 3 splits work and hands it over before an absence. Where it narrows the sections above, it wins.
+
+**Capacity on every exchange.** Each exchange carries the sender's capacity: slots, free slots, preference, state (`active`, `sleeping` or `stopping`), whether it runs on battery, whether its task CLI is ready, and whether Hermes is ready. A peer's capacity counts as fresh for 60 seconds after its last exchange. Slots and preference are per-instance settings in Settings → Agent settings, and they do not sync. The default is 2 slots on a Mac and the CPU count minus one elsewhere. An instance now runs at most its slot count of tasks at once. Before phase 3, up to 6 ran at once.
+
+**Pinned tasks.** Some tasks stay with their owner, for scheduling and for absences alike:
+
+- tasks with local evidence, such as a folder or a desktop chat,
+- tasks from a Google browser-profile connection,
+- app self-checks and app findings,
+- coding and bug tasks, and tasks with a worktree or repository. Worktree bundles are not built yet, so moving them would lose local edits.
+
+The user can still move a pinned task with **Run on…**, except a task with a worktree.
+
+**Scheduling, run by each owner about every 5 seconds.** For each queued task it owns, unpinned, due, and not offered in the last 60 seconds:
+
+1. It keeps the task if it is eligible (preference not *Never run agents*, task CLI ready) and has a free slot. The exception is an *Overflow only* instance: it offers the task when a fresh *Run here first* peer is eligible and has a free slot.
+2. Otherwise it offers the task to the best fresh eligible peer with a free slot. Peers rank *Run here first* before *Overflow only*, then not on battery, then most free slots, then lowest instance ID.
+3. Otherwise the task stays queued.
+
+**Pulling.** An instance that is eligible, active and has free slots after its own work asks for queued, unpinned tasks owned by a fresh peer that has no free slot or is not eligible. It asks at most once per task every 60 seconds. The request goes through the log, and the owner offers the task only while it is idle.
+
+**Planned absence.** The service prepares for an absence on these triggers:
+
+- **Sleep on a Mac.** The desktop host registers for system power notifications. On "will sleep" it sends the service `SIGUSR2` and holds the sleep for up to 25 seconds, or until the service signals back with `SIGUSR1`.
+- **Quit or stop.** `SIGTERM` comes from quitting the Mac app, `systemctl stop` or `docker stop`. The service prepares, then exits. Systemd waits up to 60 seconds and Docker up to 30.
+
+While preparing, the instance reports `sleeping` or `stopping`, starts no new task, and pulls nothing. For up to 20 seconds, it waits for running agents and sends to finish. It hands each idle item to the best fresh peer:
+
+- unpinned tasks that are not closed, including tasks awaiting approval or an answer, so the user can still act from the other instance,
+- connections the peer can poll: not browser-profile Google, not `gh` sign-ins,
+- the orchestrator, if the peer's Hermes is ready.
+
+It exchanges every 0.3 seconds until every offer is confirmed or time is up. An offer still unanswered at the deadline stays pending, and the normal 10-minute cancellation applies. Work still running at the deadline stays with its owner and is requeued at restart, as before. After waking, the instance resumes normally. It wins back tasks only through pulling, and connections stay with the peer until the user takes them back.
+
+**Run on….** The task detail offers **Run on <instance>** for each paired instance. It records a move request for that task.
+
+**Left out of phase 3 for now:** worktree bundles (so coding tasks are pinned) and **Take over** for an owner that is gone.
+
 ## Phase 2 status
 
 Implemented in `sync.py`, with checks in the engine, the app MCP server and the dashboard:
@@ -267,6 +307,31 @@ Verified:
 - End to end between this Mac and the Docker image: pairing with a refused wrong code, matching fingerprints, a task in each direction (the first exchange took 10.7 seconds, later ones about 5), a login arriving in the VPS encrypted store with no plaintext in `vault.json`, and a connection polled by the VPS right after it took ownership at epoch 2.
 
 Not verified yet: pairing across the internet to a real VPS, sync behaviour on large workspaces (the baseline sends every record and activity entry), and the Instances view in a browser.
+
+## Phase 3 status
+
+Implemented: capacity in every exchange, per-instance slots and preference, the slot limit, pinned tasks, scheduling and pulling in `Engine.balance`, planned absence in `Engine.prepare_absence`, the sleep hook in the desktop host, and `SIGTERM` handling with longer stop timeouts for systemd and Docker. The UI adds **Run on…** in the task detail, peer state and preference in Instances, and slots and preference in Agent settings.
+
+Verified:
+
+- `tests/test_sync.py`, `CapacityTests`:
+  - a laptop with no free slot hands a new task to the VPS,
+  - an *Overflow only* VPS leaves work on a laptop with free slots and sends its own new task to that laptop,
+  - pinned tasks never move,
+  - an idle VPS pulls from a full laptop,
+  - the slot limit holds,
+  - an absence hands tasks awaiting approval, queued tasks, a mail connection and the orchestrator to the VPS, while keeping a local-evidence task and a `gh` connection,
+  - nothing new starts while preparing, and work resumes after waking,
+  - with no peer, work stays,
+  - **Run on…** works but refuses a task with a worktree.
+  The scheduling and absence tests fail when the offer step or the connection filter is removed.
+- End to end between a laptop service process on this Mac and the Docker image:
+  - `SIGUSR2` handed a connection to the VPS and signalled the host back after 3.8 seconds,
+  - a task stayed on the laptop because the VPS had no ready task CLI,
+  - `docker compose stop` handed the connection back to the running laptop at epoch 3 and finished in 8.6 seconds.
+- The desktop host compiles and links with the power hook.
+
+Not verified yet: an actual Mac sleep through the desktop app (the host code is built but was not run through a real sleep), and battery detection on a laptop running on battery.
 
 ## Future work: organisation gateway
 

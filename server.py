@@ -246,6 +246,35 @@ def main():
 
         if hasattr(signal, "SIGUSR1"):
             signal.signal(signal.SIGUSR1, new_link)
+
+        # Planned absence: hand work to a paired instance before sleep (SIGUSR2 from the desktop host)
+        # or before stopping (SIGTERM from quitting, systemctl stop or docker stop).
+        absence = threading.Lock()
+
+        def prepare(reason, then):
+            if not absence.acquire(blocking=False):
+                return  # already preparing; repeated signals do not cut the handoff short
+            def run():
+                try:
+                    engine.prepare_absence(reason)
+                except Exception as exc:
+                    engine.db.log("Absence", f"Handoff before {reason} failed: {exc}")
+                finally:
+                    absence.release()
+                    then()
+            threading.Thread(target=run, daemon=True, name="absence").start()
+
+        def host_ack():
+            host = os.environ.get("MEMYSELFAI_HOST_PID", "")
+            if host.isdigit():
+                try:
+                    os.kill(int(host), signal.SIGUSR1)
+                except OSError:
+                    pass
+
+        signal.signal(signal.SIGTERM, lambda *_: prepare("stopping", server.shutdown))
+        if hasattr(signal, "SIGUSR2"):
+            signal.signal(signal.SIGUSR2, lambda *_: prepare("sleeping", host_ack))
         try:
             server.serve_forever()
         finally:

@@ -363,7 +363,7 @@ function instancesSection() {
   const peers=inst.peers.map(p=>{
     const id='data-peer="'+esc(p.id)+'"', cap=p.capacity||{};
     const ready=Object.entries(cap.agents||{}).filter(([,v])=>v==="ready").map(([k])=>titleCase(k)).join(", ");
-    const detail=[titleCase(p.platform),p.trusted?(p.state||"Not contacted yet"):"Waiting for your confirmation",p.last_seen?"Last seen "+relativeDate(p.last_seen):"",cap.slots?(cap.free??0)+" of "+cap.slots+" agent slots free":"",ready?"Ready: "+ready:"","Fingerprint "+shortPrint(p.fingerprint),p.owns+" items owned"].filter(Boolean).join(" · ");
+    const detail=[titleCase(p.platform),p.trusted?(p.state||"Not contacted yet"):"Waiting for your confirmation",cap.state&&cap.state!=="active"?titleCase(cap.state):"",cap.preference?preferenceNames[cap.preference]:"",cap.battery?"On battery":"",p.last_seen?"Last seen "+relativeDate(p.last_seen):"",cap.slots?(cap.free??0)+" of "+cap.slots+" agent slots free":"",ready?"Ready: "+ready:"","Fingerprint "+shortPrint(p.fingerprint),p.owns+" items owned"].filter(Boolean).join(" · ");
     const controls=!p.trusted
       ? button("Confirm","instance-confirm",null,"primary",id)+button("Reject","instance-reject",null,"quiet",id)
       : button("Hand over connections","instance-move",null,"secondary",id+' data-items="connections"')+button("Take connections back","instance-move-back",null,"quiet",id)+button("Hand over orchestrator","instance-move",null,"quiet",id+' data-items="orchestrator"')+button("Remove","instance-remove",null,"quiet",id);
@@ -371,6 +371,13 @@ function instancesSection() {
   }).join("");
   return section("Instances","",self+(peers||'<p class="section-note">Run MeMyselfAI on a VPS too and pair it here. Paired instances share tasks, logins and work, and talk to each other directly.</p>'));
 }
+function runOn(t) {
+  const inst=state.instances;
+  if (!inst?.peers.length || t.worktree || ["done","dismissed","skipped","sending","uncertain"].includes(t.status)) return "";
+  const targets=[...(t.owner?[{id:inst.id,name:inst.name+" (here)"}]:[]),...inst.peers.filter(p=>p.trusted&&p.name!==t.owner)];
+  return targets.map(p=>button("Run on "+p.name,"run-on",null,"quiet",'data-id="'+esc(t.id)+'" data-peer="'+esc(p.id)+'"')).join("");
+}
+const preferenceNames={first:"Run here first",overflow:"Overflow only",never:"Never run agents"};
 async function pairingCode() {
   try {
     const r=await request("/api/action",{op:"instance_code"});
@@ -547,7 +554,8 @@ function detailTask(t) {
     (t.status==="uncertain"?button("Record delivery outcome","reconcile","review","secondary",id):"")+
     (t.status==="failed"?button("Retry preparation","retry","sync","secondary",id):"")+
     (["queued","review","question","failed","working","scheduled"].includes(t.status)?button("Give feedback","feedback",null,"secondary",id):"")+
-    (["queued","review","question","failed","working","scheduled"].includes(t.status)?button("Dismiss","dismiss",null,"quiet",id):"");
+    (["queued","review","question","failed","working","scheduled"].includes(t.status)?button("Dismiss","dismiss",null,"quiet",id):"")+
+    runOn(t);
   return '<div id="stale" class="policy-note" hidden>This task changed. '+button("View latest","detail","sync","secondary",id)+'</div>'+detail+(t.evidence?group("Supporting activity",evidenceList(t.evidence)):"")+recovery+actionPreview+
     (actions?'<div class="detail-actions">'+actions+'</div>':"")+
     (activity.length?group("Task activity",timeline(activity)):"");
@@ -773,6 +781,7 @@ function handleAction(el) {
     case "orchestrator-toggle": void mutate({op:"orchestrator_settings",enabled:!state.orchestrator.enabled},state.orchestrator.enabled?"Orchestrator paused.":"Orchestrator resumed."); return;
     case "agent-sign-in": void signInAgent(el.dataset.agent); return;
     case "instance-code": void pairingCode(); return;
+    case "run-on": void mutate({op:"move",items:["task:"+el.dataset.id],to:el.dataset.peer},"Move requested. It happens once the task is idle and the instances sync."); return;
     case "instance-join": openForm("instance_join","Join another instance",input("address","Address of the other instance",{required:true,placeholder:"vps.example.com:8802"})+input("code","Pairing code",{required:true,placeholder:"XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"}),"Pair",{},"Pair only machines you control. Paired instances share your logins."); return;
     case "instance-rename": openForm("instance_rename","Rename this instance",input("name","Name",{required:true,value:state.instances.name}),"Save"); return;
     case "instance-confirm": void mutate({op:"instance_confirm",peer:el.dataset.peer},"Instance confirmed."); return;
@@ -780,7 +789,7 @@ function handleAction(el) {
     case "instance-move": void mutate({op:"move",items:el.dataset.items,to:el.dataset.peer},"Handoff requested. It completes after the next sync."); return;
     case "instance-move-back": void mutate({op:"move",items:"connections",to:state.instances.id},"Handoff requested. It completes after the next sync."); return;
     case "instance-remove": openForm("instance_remove","Remove instance",'<p>'+esc(state.instances.peers.find(p=>p.id===el.dataset.peer)?.name||"This instance")+' stops syncing and the workspace key is rotated. It keeps the logins it already has. Reconnect each account afterwards to revoke them.</p>',"Remove",{peer:el.dataset.peer}); return;
-    case "settings": void loadProviders(); openForm("settings","Agent settings",selectField("dry","Delivery mode",[["true","Dry mode — review every external write"],["false","Live mode — follow project rules"]],String(!!state.settings.dry))+providerField()+selectField("orchestrator_subscription","Orchestrator subscription",Object.entries(subscriptionNames),state.settings.orchestrator_subscription||(state.settings.provider==="codex"?"codex":"claude")),"Save settings",{},"In live mode the agent may deliver work without asking when all applicable rules allow it."); return;
+    case "settings": void loadProviders(); openForm("settings","Agent settings",selectField("dry","Delivery mode",[["true","Dry mode — review every external write"],["false","Live mode — follow project rules"]],String(!!state.settings.dry))+providerField()+selectField("orchestrator_subscription","Orchestrator subscription",Object.entries(subscriptionNames),state.settings.orchestrator_subscription||(state.settings.provider==="codex"?"codex":"claude"))+(state.instances?.peers.length?selectField("preference","Tasks on this instance",Object.entries(preferenceNames),state.settings.preference||"first")+input("slots","Agent slots on this instance",{type:"number",value:String(state.settings.slots||""),placeholder:"Default",help:"How many tasks run here at once. Leave empty for the default."}):""),"Save settings",{},"In live mode the agent may deliver work without asking when all applicable rules allow it."); return;
     case "connect": {
       const c=state.connections.find(k=>String(k.id)===id), provider=c?.kind||kind, schema=schemas[provider];
       if (!schema) { showError("Connector setup is unavailable. Reload connection details and try again."); return; }
@@ -910,7 +919,7 @@ document.addEventListener("submit",event=>{
   if (op==="project") {delete payload.repo;payload.repos=new FormData(form).getAll("repo").map(p=>p.trim()).filter(Boolean);}
   if (op==="chat_source_config") payload={op,provider:dialogState.kind,enabled:true,folder:fields.folder||""};
   if (op==="suggestion_config") payload={op,foreground:fields.foreground==="true",folders:new FormData(form).getAll("repo").map(p=>p.trim()).filter(Boolean)};
-  if (op==="settings") payload.dry=fields.dry==="true";
+  if (op==="settings") { payload.dry=fields.dry==="true"; if ("slots" in fields) payload.slots=Number(fields.slots||0); }
   if (ctx.peer) payload.peer=ctx.peer;
   if (op==="connect") {
     payload={op,kind:ctx.kind,label:fields.label,secret:fields.secret,config:{}};

@@ -24,13 +24,14 @@ from pathlib import Path
 
 PROTOCOL = 1
 LOCAL_BUCKETS = {"local", "peers"}
-LOCAL_FIELDS = {("config", "settings"): {"provider", "orchestrator_subscription"}}
+LOCAL_FIELDS = {("config", "settings"): {"provider", "orchestrator_subscription", "slots", "preference"}}
 OWNED = {"tasks": "task:", "connections": "connection:"}
 ORCHESTRATOR = "orchestrator"
 CODE_TTL = 600
 CODE_ATTEMPTS = 5
 HANDOFF_TIMEOUT = 600
 EXCHANGE_SECONDS = 5
+FRESH_SECONDS = 60
 BATCH = 500
 MAX_BODY = 16 * 1024 * 1024
 DELETED = {"$deleted": True}
@@ -764,6 +765,7 @@ class Sync:
                         if not peer:
                             raise PermissionError("This instance is not paired.")
                         result = sync.handle_exchange(peer["id"], body, capacity())
+                        sync.wake.set()  # answer handoff offers promptly
                     else:
                         raise FileNotFoundError(self.path)
                     status = 200
