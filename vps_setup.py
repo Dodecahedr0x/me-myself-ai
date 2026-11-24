@@ -245,7 +245,7 @@ class Remote:
 
 def pairing_code(remote):
     """Ask the server's own dashboard for a pairing code, the way a browser would, through SSH."""
-    script = (f"f={LAUNCH_FILE}; old=$(cat \"$f\" 2>/dev/null); systemctl kill -s USR1 {SERVICE_USER} || exit 1; "
+    script = (f"f={LAUNCH_FILE}; old=$(cat \"$f\" 2>/dev/null); systemctl kill --kill-whom=main -s USR1 {SERVICE_USER} || exit 1; "
               "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do sleep 0.5; "
               "new=$(cat \"$f\" 2>/dev/null); if [ -n \"$new\" ] && [ \"$new\" != \"$old\" ]; then "
               "echo \"$new\"; exit 0; fi; done; exit 1")
@@ -279,7 +279,7 @@ def pairing_code(remote):
 class VpsSetup:
     """One background setup run at a time, with progress the dashboard can show."""
 
-    def __init__(self, instances, settings, log, source, ssh="ssh", home=None, open_terminal=None):
+    def __init__(self, instances, settings, log, source, ssh="ssh", home=None, open_terminal=None, on_done=None):
         self.instances = instances
         self.settings = settings
         self.log = log
@@ -287,6 +287,7 @@ class VpsSetup:
         self.ssh = ssh
         self.home = home
         self.open_terminal = open_terminal
+        self.on_done = on_done
         self.lock = threading.Lock()
         self.need_password = threading.Event()
         self.answered = threading.Event()
@@ -337,18 +338,32 @@ class VpsSetup:
         self.cancelled.set()
         self.answered.set()
 
-    def sign_in(self):
-        """Open Terminal on the Mac with the agent sign-in for the service user on the server."""
+    def sign_in(self, host=None):
+        """Open Terminal on the Mac with the agent sign-in for the service user on the server.
+
+        Uses this session's finished run, or the host remembered from an earlier one."""
         with self.lock:
             run = self.run_state
-        if not run or run["status"] != "done":
+        if run and run["status"] == "done":
+            host = run["host"]
+        if not host:
             raise ValueError("Set up the server first.")
-        agent = run.get("agent") or self.provider()
-        command = (f"ssh -t {shlex.quote(run['host'])} "
+        agent = self.provider()
+        command = (f"ssh -t {shlex.quote(valid_host(host))} "
                    + shlex.quote(f"sudo -u {SERVICE_USER} -i {SIGN_IN[agent]}"))
         if self.open_terminal and self.open_terminal(command):
             return {"command": command, "opened": True}
         return {"command": command, "opened": False}
+
+    def host_for(self, address):
+        """The SSH host in the user's config that reaches a paired server's address, if any."""
+        for host in self.hosts():
+            try:
+                if f"{resolve(host, self.ssh)['hostname']}:{SYNC_PORT}" == address:
+                    return host
+            except (SetupError, ValueError):
+                continue
+        return None
 
     def provider(self):
         provider = (self.settings() or {}).get("provider")
@@ -361,6 +376,10 @@ class VpsSetup:
             for step in self.run_state["steps"]:
                 if step["id"] == key:
                     step.update(status=status, detail=detail)
+                    if status == "running":
+                        step["started"] = time.time()
+                    elif step.get("started") and status in {"done", "failed"}:
+                        step["seconds"] = round(time.time() - step["started"], 1)
 
     def _set(self, **fields):
         with self.lock:
@@ -383,6 +402,8 @@ class VpsSetup:
                 detail = getattr(self, "_" + current)(remote, target)
                 self._step(current, "done", detail or "")
             self._set(status="done")
+            if self.on_done:
+                self.on_done(host)
             self.log("Server set up", f"{host} is installed and paired. Sign in its task agent to let it run tasks.")
         except Cancelled:
             self._step(current, "pending")

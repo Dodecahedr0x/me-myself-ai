@@ -10,7 +10,9 @@ A new user should reach a working agent without reading the README. The app work
 
 **Setup** is a page in the sidebar. While setup is incomplete, Home opens with a short card that names the next step and links to the page. A workspace with no connections, projects or tasks opens on Setup the first time. Dismissing the card hides it until a required step stops being ready again.
 
-The guide shows one row per step. Each row has a state the app works out itself on every refresh, a one-line explanation, and at most two actions.
+The page opens with the overall progress: how many required steps are done, a bar with one segment per step, the numbered flow of all six steps (each one jumps to its step), and a **Next** box naming the single next step with its action. The next step is the first required step that isn't ready, else the first optional step that isn't set up, or an *Almost ready* server. When nothing is left, the box says so. A collapsed **How work flows once set up** list explains the loop from accounts to tasks to approval.
+
+The guide shows one row per step, numbered in flow order. Each row has a state the app works out itself on every refresh (*Ready*, *Almost ready*, *Setting up*, *Needs you*, *Not set up* or *Skipped*), its current status, one line on what the step unlocks, and at most two actions. Home's card shows the same progress bar, the count of required steps done and the next step.
 
 | Step | Ready when | What the app does on its own | What it asks the user |
 | --- | --- | --- | --- |
@@ -42,6 +44,8 @@ Choosing **Set up** on a host runs these steps in the background. The guide show
 
 After pairing, connections and the orchestrator move to the server by themselves, as the instances spec describes.
 
+Once paired, the server row is a live checklist built from the synced instance records: installed and paired (address), online and syncing (last seen, any sync error), task agent signed in on the server (free agent slots), where the orchestrator runs, and how many connections the server and this Mac poll. Connections whose login stays on this Mac, such as GitHub CLI accounts, are counted and explained. The row is *Almost ready* while the server is silent or its task agent is signed out. **Sign in on server** uses the host of the last setup, remembered in local settings, or else the SSH host whose resolved address matches the paired server. While a run is in progress, the row shows *step N of 6*, a progress bar, and each step's result and duration.
+
 ### Failures
 
 Each failure stops the run, keeps the completed steps' results, and shows what went wrong and the one thing to do about it. **Retry** starts the run again from the first step. Re-running is safe, because the installer is idempotent and pairing is skipped once done.
@@ -72,5 +76,9 @@ Each failure stops the run, keeps the completed steps' results, and shows what w
 - A server that needs a sudo password pauses the run and resumes with the password on standard input. The password does not appear in the stored run state, activity log or command arguments.
 - A non-Linux server, a failed SSH connection and an unreachable sync port each stop the run with the message above. Retry starts again.
 - An already-paired server at the same address skips pairing.
+- The Setup page shows the required-step count, the step bar and a Next box with the next step's action. Each flow chip jumps to its step.
+- A paired server whose task agent is signed out shows *Almost ready* and a **Sign in on server** action, including after an app restart.
+- The server checklist reports last seen, free slots, where the orchestrator runs, and connections polled on each side, including those that stay on this Mac.
+- Asking the server for a dashboard link signals only the service's main process, never a running agent.
 
-Verified with fixture tests and a fake `ssh` executable, and once against a real Ubuntu 26.04 VPS reached over Tailscale: every step completed in about a minute and the two instances exchanged a sync round.
+Verified with fixture tests and a fake `ssh` executable, and once against a real Ubuntu 26.04 VPS reached over Tailscale: every step completed in about a minute and the two instances exchanged a sync round. The user then signed in the server's task agent, and the paired Mac reported it ready.

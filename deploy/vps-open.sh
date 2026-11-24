@@ -15,7 +15,7 @@ fi
 if [ "${2:-}" = "--docker" ]; then
     URL=$(ssh "$HOST" "cd '$COMPOSE_DIR' && docker compose kill -s USR1 memyselfai >/dev/null && sleep 1 && docker compose exec -T memyselfai cat /data/workspace/launch-url")
 else
-    URL=$(ssh -t "$HOST" "sudo systemctl kill -s USR1 memyselfai && sleep 1 && sudo cat /var/lib/memyselfai/workspace/launch-url" | tr -d '\r')
+    URL=$(ssh -t "$HOST" "sudo systemctl kill --kill-whom=main -s USR1 memyselfai && sleep 1 && sudo cat /var/lib/memyselfai/workspace/launch-url" | tr -d '\r')
 fi
 
 echo "$URL"

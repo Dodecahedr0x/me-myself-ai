@@ -246,6 +246,20 @@ class VpsSetupTest(unittest.TestCase):
         self.assertEqual(run["status"], "failed")
         self.assertIn("Allow TCP port 8802", run["error"])
 
+    def test_steps_record_how_long_they_took_and_the_host_is_remembered(self):
+        remembered = []
+        setup = self.setup(FakePeers([dict(name="vps", address="203.0.113.5:8802", trusted=True)]), nopasswd=True)
+        setup.on_done = remembered.append
+        setup.start("OVH-VPS")
+        run = self.wait(setup)
+        self.assertTrue(all(isinstance(s.get("seconds"), float) for s in run["steps"]))
+        self.assertEqual(remembered, ["OVH-VPS"])
+        fresh = self.setup(FakePeers(), nopasswd=True)
+        self.assertIn("OVH-VPS", fresh.sign_in("OVH-VPS")["command"])
+        (self.dir / ".ssh").mkdir()
+        (self.dir / ".ssh" / "config").write_text("Host other\nHost OVH-VPS\n")
+        self.assertEqual(fresh.host_for("203.0.113.5:8802"), "other")  # the fake resolves every host alike
+
     def test_sign_in_command_targets_the_service_user(self):
         setup = self.setup(FakePeers([dict(name="vps", address="203.0.113.5:8802", trusted=True)]), nopasswd=True)
         with self.assertRaises(ValueError):
@@ -337,6 +351,22 @@ class SetupGuideTest(unittest.TestCase):
         peer["info"]["capacity"]["task_ready"] = True
         server = self.steps()[1]["server"]
         self.assertTrue(server["ready"] and server["peers"][0]["agent_ready"])
+
+    def test_server_step_says_what_runs_where(self):
+        import time as clock
+        peer = dict(id="p1", name="vps", platform="linux", address="100.127.118.82:8802", trusted=True,
+                    last_seen=clock.time(), state="connected",
+                    info={"capacity": {"task_ready": True, "hermes_ready": False, "slots": 5, "free": 4}})
+        self.engine.instances.peers = lambda: [peer]
+        self.engine.action({"op": "setup_connect_github"})
+        server = self.steps()[1]["server"]
+        p = server["peers"][0]
+        self.assertTrue(p["online"] and p["agent_ready"])
+        self.assertEqual((p["slots"], p["free"], p["connections"], p["orchestrator"]), (5, 4, 0, False))
+        self.assertEqual(server["placement"]["total"], 1)
+        self.assertEqual(server["placement"]["local_only"], 1)  # the GitHub CLI login stays on this Mac
+        peer["last_seen"] = clock.time() - 3600
+        self.assertFalse(self.steps()[1]["server"]["peers"][0]["online"])
 
     def test_vps_actions_validate_input(self):
         with self.assertRaises(ValueError):

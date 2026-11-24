@@ -108,7 +108,8 @@ class Engine:
         self.orchestrator = orchestrator.Orchestrator(self)
         # Guided setup and VPS setup over SSH. See docs/specs/guided-setup.md.
         self.vps = vps_setup.VpsSetup(self.instances, self.settings, self.db.log,
-                                      Path(__file__).resolve().parent, open_terminal=agents.open_in_terminal)
+                                      Path(__file__).resolve().parent, open_terminal=agents.open_in_terminal,
+                                      on_done=self.remember_server)
         self.gh_login_cache = (0.0, None)
         with self.db.atomic():
             settings = self.db.get("config", "settings")
@@ -2777,12 +2778,32 @@ class Engine:
         projects = [p for p in self.db.rows("projects") if p.get("repos")]
         agent = harness.get(provider, {})
         hermes = harness.get("hermes", {})
+        # Who owns what, so the guide can say what runs where.
+        owned = {}
+        for record in self.db.rows("owners"):
+            owned.setdefault(record["owner"], []).append(record["id"])
         peers = []
         for p in self.instances.peers():
             if p.get("trusted"):
                 capacity = (p.get("info") or {}).get("capacity") or {}
-                peers.append(dict(name=p["name"], platform=p.get("platform", ""), address=p.get("address", ""),
-                                  agent_ready=bool(capacity.get("task_ready"))))
+                theirs = owned.get(p["id"], [])
+                peers.append(dict(
+                    name=p["name"], platform=p.get("platform", ""), address=p.get("address", ""),
+                    state=p.get("state", ""), error=p.get("error", ""), last_seen=p.get("last_seen"),
+                    online=bool(p.get("last_seen")) and self.now() - p["last_seen"] <= instances.FRESH_SECONDS,
+                    agent_ready=bool(capacity.get("task_ready")), hermes_ready=bool(capacity.get("hermes_ready")),
+                    slots=capacity.get("slots", 0), free=capacity.get("free", 0),
+                    connections=sum(1 for i in theirs if i.startswith("connection:")),
+                    tasks=sum(1 for i in theirs if i.startswith("task:")),
+                    orchestrator=instances.ORCHESTRATOR in theirs))
+        all_connections = self.db.rows("connections")
+        placement = dict(
+            here=sum(1 for c in all_connections if self.owns("connection:" + c["id"])),
+            total=len(all_connections),
+            # GitHub CLI and browser-profile logins live on this machine and don't sync.
+            local_only=sum(1 for c in all_connections if not self.movable_connection(c)),
+            orchestrator_here=self.owns(instances.ORCHESTRATOR),
+        )
         steps = [
             dict(id="agent", required=True, ready=agent.get("state") == "ready", state=agent.get("state", "unknown"),
                  agent=provider, label=agent.get("label", provider), sign_in=agent.get("sign_in", ""),
@@ -2793,7 +2814,7 @@ class Engine:
                  skipped="projects" in local.get("skipped", [])),
             dict(id="orchestrator", required=False, ready=hermes.get("state") == "ready",
                  state=hermes.get("state", "unknown"), sign_in=hermes.get("sign_in", "")),
-            dict(id="server", required=False, ready=bool(peers), peers=peers),
+            dict(id="server", required=False, ready=bool(peers), peers=peers, placement=placement),
             dict(id="delivery", required=False, ready=True, dry=settings.get("dry", True)),
         ]
         missing = [s["id"] for s in steps if s["required"] and not s["ready"]]
@@ -2804,6 +2825,13 @@ class Engine:
             first_run=not connections and not projects and not self.db.rows("tasks"),
             vps=self.vps.state(),
         )
+
+    def remember_server(self, host):
+        """The SSH host of the last server set up, so its agent sign-in works after a restart."""
+        with self.db.atomic():
+            local = self.db.get("local", "setup") or {"id": "setup", "dismissed": [], "skipped": []}
+            local["server_host"] = host
+            self.db.put("local", local)
 
     def setup_action(self, op, d):
         if op == "setup_connect_github":
@@ -2834,7 +2862,13 @@ class Engine:
             self.vps.cancel()
             return
         if op == "vps_sign_in":
-            return self.vps.sign_in()
+            host = (self.db.get("local", "setup") or {}).get("server_host")
+            if not host:
+                address = next((p.get("address") for p in self.instances.peers() if p.get("trusted")), "")
+                host = self.vps.host_for(address) if address else None
+                if host:
+                    self.remember_server(host)
+            return self.vps.sign_in(host)
         raise ValueError("Unknown action")
 
     def instance_action(self, op, d):

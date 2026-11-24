@@ -489,9 +489,17 @@ function settingsPage() {
     section("Sample workspace","",entry("stack","Load sample work","Add fixture tasks and activity to explore the workspace.",button("Load sample","demo",null)));
 }
 // Guided setup. See docs/specs/guided-setup.md.
-const stepTitles={agent:"Task agent",accounts:"Accounts",projects:"Projects",orchestrator:"Orchestrator",server:"Always-on server",delivery:"Delivery"};
+const stepInfo={
+  agent:{title:"Task agent",glyph:"working",why:"Prepares every task: reads the context, drafts replies and edits code. It runs on this Mac with your own Claude or ChatGPT sign-in."},
+  accounts:{title:"Accounts",glyph:"connections",why:"Where work comes from. The app reads new activity every minute and turns requests and follow-ups into tasks."},
+  projects:{title:"Projects",glyph:"projects",why:"Groups repositories so coding tasks get their own private copy, the right rules and the right reviewers."},
+  orchestrator:{title:"Orchestrator",glyph:"stack",why:"Sweeps your accounts on a schedule, starts tasks on its own and posts a daily summary."},
+  server:{title:"Always-on server",glyph:"sync",why:"Keeps discovery and tasks going while this Mac sleeps or is closed. Both share one workspace."},
+  delivery:{title:"Delivery",glyph:"shield",why:"Decides what may leave without you. Every send and repository write waits for your approval until you change it."}
+};
 const pill=(kind,label)=>'<span class="status '+kind+'"><i></i>'+esc(label)+'</span>';
 const vpsActive=()=>["running","needs_password"].includes(setup?.vps?.run?.status);
+const ago=stamp=>{ const text=stamp?relativeDate(stamp):"never"; return text==="Just now"?"just now":text; };
 async function loadSetup(force=false) {
   const wait=vpsActive()?1500:force?0:20000;
   if (setupPending || Date.now()-setupChecked<wait) return;
@@ -505,30 +513,48 @@ async function loadSetup(force=false) {
   }
   if (["overview","setup"].includes(activeView)) render();
 }
+// One state per step, used by the progress bar, the flow and the cards.
+function stepState(s) {
+  if (s.id==="server" && vpsActive()) return "active";
+  if (s.ready) return s.id==="server" && s.peers.some(p=>!p.agent_ready||!p.online) ? "partial" : "done";
+  if (s.id==="projects" && s.skipped) return "skipped";
+  return s.required ? "needed" : "optional";
+}
+const stateLabels={done:"Ready",partial:"Almost ready",active:"Setting up",needed:"Needs you",optional:"Not set up",skipped:"Skipped"};
+const stateKinds={done:"complete",partial:"attention",active:"progress",needed:"attention",optional:"neutral",skipped:"neutral"};
+function setupProgress() {
+  const steps=setup.steps, required=steps.filter(s=>s.required), optional=steps.filter(s=>!s.required&&s.id!=="delivery");
+  const done=list=>list.filter(s=>["done","skipped"].includes(stepState(s))).length;
+  const next=steps.find(s=>s.required&&!s.ready) || steps.find(s=>["optional","partial","active"].includes(stepState(s)));
+  return {required:done(required),requiredTotal:required.length,optional:done(optional),optionalTotal:optional.length,next,total:done(steps),count:steps.length};
+}
+function progressBar(compact=false) {
+  return '<div class="setup-bar'+(compact?' compact':'')+'" role="img" aria-label="'+esc(setupProgress().total+" of "+setup.steps.length+" steps done")+'">'+
+    setup.steps.map(s=>'<span class="seg '+stepState(s)+'" title="'+esc(stepInfo[s.id].title+": "+stateLabels[stepState(s)])+'"></span>').join("")+'</div>';
+}
 function setupCard() {
   if (!setup || !setup.missing.length || setup.dismissed) return "";
-  const next=setup.steps.find(s=>s.id===setup.missing[0]);
-  const left=setup.missing.length===1?"One step needs you":setup.missing.length+" steps need you";
-  return '<section class="setup-card"><div class="entry-text"><strong>Finish setting up · '+esc(left)+'</strong><p>Next: '+esc(stepTitles[next.id])+'. '+esc(stepSummary(next))+'</p></div><div class="entry-actions">'+
+  const p=setupProgress();
+  return '<section class="setup-card"><div class="entry-text"><strong>Setup · '+p.required+' of '+p.requiredTotal+' required steps done</strong>'+progressBar(true)+
+    '<p>Next: '+esc(stepInfo[p.next.id].title)+'. '+esc(stepSummary(p.next))+'</p></div><div class="entry-actions">'+
     '<a class="btn primary" href="#setup">Continue setup</a>'+button("Dismiss","setup-dismiss",null,"quiet")+'</div></section>';
 }
 function stepSummary(s) {
   const agent=providerNames[s.agent]||s.label;
   switch (s.id) {
-    case "agent": return s.ready?agent+" is installed and signed in.":s.state==="sign_in"?agent+" needs you to sign in once.":s.state==="not_installed"?"Install "+agent+" on this Mac, then choose Check again.":agent+": "+(agentStates[s.state]||"status unavailable")+".";
-    case "accounts": return s.ready?s.count+(s.count===1?" account":" accounts")+" connected.":s.github_login?"Your GitHub CLI is signed in as @"+s.github_login+". Connect it in one click.":"Connect where your work arrives: mail, Slack or GitHub.";
-    case "projects": return s.ready?s.count+(s.count===1?" project has":" projects have")+" repositories.":s.skipped?"Skipped. Tasks go to Global until you add a project.":"Group repositories under a project so coding tasks get their own worktrees.";
-    case "orchestrator": return s.ready?"Hermes is ready and runs discovery sweeps.":s.state==="sign_in"?"Hermes needs you to sign in once.":"Optional. Install Hermes to let an orchestrator sweep your accounts on a schedule.";
-    case "server": return s.ready?"Paired with "+s.peers.map(p=>p.name+(p.agent_ready?"":" (task agent not signed in yet)")).join(", ")+".":"Optional. Keep working while this Mac sleeps: pick one of your SSH hosts and the app installs and pairs it.";
-    case "delivery": return s.dry?"Dry mode: every send and repository write waits for your approval.":"Live mode: project decision rules govern delivery.";
+    case "agent": return s.ready?agent+" is installed and signed in.":s.state==="sign_in"?agent+" is installed. Sign in once.":s.state==="not_installed"?"Install "+agent+" on this Mac, then choose Check again.":agent+": "+(agentStates[s.state]||"status unavailable")+".";
+    case "accounts": return s.ready?s.count+(s.count===1?" account":" accounts")+" connected.":s.github_login?"Your GitHub CLI is signed in as @"+s.github_login+". Connect it in one click.":"Connect mail, Slack or GitHub.";
+    case "projects": return s.ready?s.count+(s.count===1?" project has":" projects have")+" repositories.":s.skipped?"Skipped. Tasks go to Global until you add a project.":"Add a project with its repository folders, or skip for now.";
+    case "orchestrator": return s.ready?"Hermes is ready.":s.state==="sign_in"?"Hermes is installed. Sign in once.":"Install Hermes to turn this on. Until then, tasks start from new activity only.";
+    case "server": {
+      if (vpsActive()) return "Setting up "+setup.vps.run.host+"…";
+      if (!s.ready) return "Pick one of your SSH hosts. The app installs, starts and pairs it.";
+      const p=s.peers[0], left=[!p.online&&"it has been silent since "+ago(p.last_seen),!p.agent_ready&&"its task agent needs a sign-in"].filter(Boolean);
+      return "Paired with "+p.name+(left.length?". Left: "+left.join(", ")+".":", online and syncing.");
+    }
+    case "delivery": return s.dry?"Dry mode. You approve each send and repository write.":"Live mode. Project decision rules govern delivery.";
   }
   return "";
-}
-function stepPill(s) {
-  if (s.ready) return pill("complete","Ready");
-  if (s.id==="projects" && s.skipped) return pill("neutral","Skipped");
-  if (s.id==="server" && vpsActive()) return pill("progress","Setting up");
-  return s.required?pill("attention","Needs you"):pill("neutral","Optional");
 }
 function stepActions(s) {
   switch (s.id) {
@@ -536,42 +562,72 @@ function stepActions(s) {
     case "accounts": return s.ready?'<a class="btn quiet" href="#connections">Manage</a>':(s.github_login?button("Connect GitHub as @"+s.github_login,"setup-github","github","primary"):"")+'<a class="btn secondary" href="#connections">Other accounts</a>';
     case "projects": return s.ready?'<a class="btn quiet" href="#projects">Manage</a>':button("Add project","project","add","secondary")+(s.skipped?"":button("Skip","setup-skip",null,"quiet",'data-step="projects"'));
     case "orchestrator": return s.state==="sign_in"?button("Sign in","agent-sign-in",null,"secondary",'data-agent="hermes"'):"";
-    case "server": {
-      const run=setup.vps.run, unsigned=s.peers.some(p=>!p.agent_ready);
-      return run?.status==="done"&&unsigned?button("Sign in on server","vps-sign-in",null,"primary"):"";
-    }
+    case "server": return s.ready&&s.peers.some(p=>!p.agent_ready)?button("Sign in on server","vps-sign-in",null,"primary"):"";
+    case "delivery": return '<a class="btn quiet" href="#settings">Change</a>';
   }
   return "";
 }
-function vpsForm() {
+const check=(ok,label,detail="",action="")=>'<li class="'+(ok===true?"ok":ok===false?"todo":"info")+'"><span class="mark">'+(ok===true?icon("check",14):ok===false?"":icon("dot",10))+'</span><span><strong>'+esc(label)+'</strong>'+(detail?'<small>'+esc(detail)+'</small>':"")+'</span>'+action+'</li>';
+function serverChecklist(s) {
+  if (!s.ready) return "";
+  const place=s.placement||{};
+  return s.peers.map(p=>{
+    const items=[
+      check(true,"Installed and paired",p.address),
+      check(p.online,p.online?"Online and syncing":"Not heard from recently","Last seen "+ago(p.last_seen)+(p.error?" · "+p.error:"")),
+      check(p.agent_ready,p.agent_ready?"Task agent signed in on the server":"Sign in the task agent on the server",p.agent_ready?p.free+" of "+p.slots+" agent slots free. Queued tasks move there when this Mac is full or asleep.":"Without it the server can't run tasks.",p.agent_ready?"":button("Sign in on server","vps-sign-in",null,"secondary")),
+      check(p.hermes_ready?true:null,p.orchestrator?"Orchestrator runs on the server":p.hermes_ready?"Orchestrator moves to the server":"Orchestrator runs on this Mac",p.hermes_ready||p.orchestrator?"":"Install Hermes on the server to keep sweeps going while this Mac sleeps."),
+      check(null,"Polling: "+p.connections+" on the server, "+place.here+" on this Mac",place.local_only?place.local_only+(place.local_only===1?" uses a login":" use logins")+" that stay on this Mac, such as the GitHub CLI, so this Mac keeps polling "+(place.local_only===1?"it":"them")+". While it sleeps, they wait until it wakes.":"Connections move to the server by themselves.")
+    ];
+    return '<ul class="setup-checklist" aria-label="'+esc(p.name)+' status">'+items.join("")+'</ul>';
+  }).join("");
+}
+function vpsForm(open) {
   const options=setup.vps.hosts.map(h=>'<option value="'+esc(h)+'"></option>').join("");
   const value=hostDraft||setup.vps.run?.host||setup.vps.hosts.find(h=>/vps|server/i.test(h))||setup.vps.hosts[0]||"";
-  return '<form class="vps-form" id="vps-form"><label class="field"><span>SSH host</span><input id="vps-host" name="host" list="ssh-hosts" autocomplete="off" spellcheck="false" required value="'+esc(value)+'" placeholder="A Host from ~/.ssh/config, or user@host"><datalist id="ssh-hosts">'+options+'</datalist>'+
-    '<small>'+(setup.vps.hosts.length?setup.vps.hosts.length+" hosts found in your SSH config. ":"No hosts found in ~/.ssh/config. ")+'The app installs the service with systemd, opens port 8802 if ufw is on, installs your task agent and pairs the server with this Mac.</small></label>'+
-    '<button type="submit" class="btn primary">'+(setup.vps.run?.status==="failed"?"Retry setup":"Set up server")+'</button></form>';
+  const form='<form class="vps-form" id="vps-form"><label class="field"><span>SSH host</span><input id="vps-host" name="host" list="ssh-hosts" autocomplete="off" spellcheck="false" required value="'+esc(value)+'" placeholder="A Host from ~/.ssh/config, or user@host"><datalist id="ssh-hosts">'+options+'</datalist>'+
+    '<small>'+(setup.vps.hosts.length?setup.vps.hosts.length+" hosts in your SSH config. ":"No hosts in ~/.ssh/config. ")+'The app connects, copies itself, installs the service, opens the sync port in ufw, installs your task agent and pairs. Running it again updates the server.</small></label>'+
+    '<button type="submit" class="btn primary">'+(setup.vps.run?.status==="failed"?"Retry setup":open?"Set up server":"Update or add server")+'</button></form>';
+  return open?form:'<details class="vps-more"><summary>Update this server or set up another</summary>'+form+'</details>';
 }
 function vpsProgress() {
   const run=setup?.vps?.run;
   if (!run) return "";
   const mark={done:"complete",running:"progress",failed:"attention",pending:"neutral"};
   const names={done:"Done",running:"Working",failed:"Failed",pending:"Waiting"};
-  const steps=run.steps.map(st=>'<li>'+pill(mark[st.status],names[st.status])+'<span><strong>'+esc(st.label)+'</strong>'+(st.detail?'<small>'+esc(st.detail)+'</small>':"")+'</span></li>').join("");
-  const head={running:"Setting up "+run.host+"…",needs_password:run.host+" needs your sudo password",failed:"Setup of "+run.host+" stopped",done:run.host+" is set up",cancelled:"Setup of "+run.host+" cancelled"}[run.status]||run.host;
+  const finished=run.steps.filter(st=>st.status==="done").length, total=run.steps.length;
+  const current=run.steps.find(st=>st.status==="running"||st.status==="failed");
+  const steps=run.steps.map(st=>'<li>'+pill(mark[st.status],names[st.status])+'<span><strong>'+esc(st.label)+'</strong>'+((st.detail||st.seconds!=null)?'<small>'+esc([st.detail,st.seconds!=null?st.seconds+" s":""].filter(Boolean).join(" · "))+'</small>':"")+'</span></li>').join("");
+  const head={running:"Setting up "+run.host+": step "+Math.min(finished+1,total)+" of "+total+(current?", "+current.label.toLowerCase():""),needs_password:run.host+" needs your sudo password",failed:"Setup of "+run.host+" stopped at step "+(finished+1)+" of "+total,done:run.host+" is set up",cancelled:"Setup of "+run.host+" cancelled"}[run.status]||run.host;
   const password=run.status==="needs_password"?'<form class="vps-form" id="vps-password-form"><label class="field"><span>Sudo password for '+esc(run.host)+'</span><input id="vps-password" type="password" autocomplete="current-password" required>'+
     '<small>'+esc(run.password_error||"Used once for this setup and never saved.")+'</small></label><button type="submit" class="btn primary">Continue</button>'+button("Cancel","vps-cancel",null,"quiet")+'</form>':"";
   const cancel=run.status==="running"?button("Cancel","vps-cancel",null,"quiet"):"";
-  const after=run.status==="done"?'<p class="section-note">Connections and the orchestrator move to the server by themselves. Sign in its task agent once so it can run tasks while this Mac sleeps.</p>':"";
-  return '<div class="vps-run"><div class="section-title"><h3>'+esc(head)+'</h3>'+cancel+'</div>'+(run.error?'<p class="vps-error" role="alert">'+esc(run.error)+'</p>':"")+password+'<ol class="vps-steps">'+steps+'</ol>'+after+'</div>';
+  const bar='<div class="run-bar"><span style="width:'+Math.round(100*finished/total)+'%"></span></div>';
+  return '<div class="vps-run"><div class="section-title"><h3>'+esc(head)+'</h3>'+cancel+'</div>'+bar+(run.error?'<p class="vps-error" role="alert">'+esc(run.error)+'</p>':"")+password+'<ol class="vps-steps">'+steps+'</ol></div>';
 }
 function setupPage() {
   if (!setup) return empty("Checking your setup…");
-  const glyphs={agent:"working",accounts:"connections",projects:"projects",orchestrator:"stack",server:"sync",delivery:"shield"};
-  const rows=setup.steps.map(s=>{
-    const extra=s.id==="server"?(!vpsActive()?vpsForm():"")+'<div id="vps-progress">'+vpsProgress()+'</div>':"";
-    return '<div class="setup-step'+(s.ready?' ready':'')+'"><div class="entry"><div class="source-icon">'+icon(s.ready?"check":glyphs[s.id])+'</div><div class="entry-text"><strong>'+esc(stepTitles[s.id])+' '+stepPill(s)+'</strong><p>'+esc(stepSummary(s))+'</p></div><div class="entry-actions">'+stepActions(s)+'</div></div>'+extra+'</div>';
+  const p=setupProgress();
+  const headline=setup.missing.length?p.required+" of "+p.requiredTotal+" required steps done":"Ready to work";
+  const sub=setup.missing.length?"The app checks each step itself and does what it can. The rest is marked Needs you.":"Required steps are done. "+p.optional+" of "+p.optionalTotal+" optional steps are set up.";
+  const next=p.next?'<div class="setup-next"><span class="eyebrow">Next</span><strong>'+esc(stepInfo[p.next.id].title)+'</strong><p>'+esc(stepSummary(p.next))+'</p><div class="entry-actions">'+(stepActions(p.next)||"")+button("Go to step","setup-jump",null,"quiet",'data-step="'+p.next.id+'"')+'</div></div>':
+    '<div class="setup-next done"><span class="eyebrow">All set</span><strong>Everything is set up</strong><p>New activity becomes tasks on its own. You only approve what leaves.</p></div>';
+  const flow='<ol class="setup-flow">'+setup.steps.map((s,i)=>'<li><button type="button" class="flow-step '+stepState(s)+'" data-action="setup-jump" data-step="'+s.id+'"><span class="num">'+(stepState(s)==="done"?icon("check",12):i+1)+'</span>'+esc(stepInfo[s.id].title)+(s.required||s.id==="delivery"?'':' <small>optional</small>')+'</button></li>').join("")+'</ol>';
+  const header='<div class="setup-head"><div><h2>'+esc(headline)+'</h2><p class="section-note">'+esc(sub)+'</p></div>'+button("Check again","setup-refresh","sync","quiet")+'</div>'+progressBar()+flow+next;
+  const cards=setup.steps.map((s,i)=>{
+    const st=stepState(s);
+    const extra=s.id==="server"?serverChecklist(s)+(!vpsActive()?vpsForm(!s.ready):"")+'<div id="vps-progress">'+vpsProgress()+'</div>':"";
+    return '<article class="setup-step '+st+'" id="step-'+s.id+'"><div class="step-num">'+(st==="done"?icon("check",14):i+1)+'</div><div class="step-body">'+
+      '<div class="step-head"><h3>'+esc(stepInfo[s.id].title)+'</h3>'+pill(stateKinds[st],stateLabels[st])+(s.required||s.id==="delivery"?"":'<span class="optional-tag">Optional</span>')+'<div class="entry-actions">'+stepActions(s)+'</div></div>'+
+      '<p class="step-status">'+esc(stepSummary(s))+'</p><p class="step-why">'+esc(stepInfo[s.id].why)+'</p>'+extra+'</div></article>';
   }).join("");
-  const intro=setup.missing.length?"The app checks each step itself and does what it can. "+(setup.missing.length===1?"One step needs you.":setup.missing.length+" steps need you."):"Everything required is ready. The optional steps below add more.";
-  return section("Set up MeMyselfAI",button("Check again","setup-refresh","sync","quiet"),'<p class="section-note">'+esc(intro)+'</p>'+rows);
+  const how='<details class="setup-how"><summary>How work flows once set up</summary><ol>'+
+    '<li>Connected accounts are read every minute, on this Mac or the server.</li>'+
+    '<li>Requests and follow-ups become tasks, each in its project.</li>'+
+    '<li>A fresh task agent prepares each one: a reply, an answer or a code change in a private copy.</li>'+
+    '<li>Anything that would leave, such as a reply or a pull request, waits for your approval in dry mode.</li>'+
+    '<li>The task stays open until its outcome is verified.</li></ol></details>';
+  return '<section class="block setup-page">'+header+cards+how+'</section>';
 }
 async function vpsStart(host) {
   try { await request("/api/action",{op:"vps_setup",host}); hostDraft=""; setupChecked=0; await loadSetup(); }
@@ -1093,6 +1149,7 @@ function handleAction(el) {
     case "orchestrator-run": void mutate({op:"orchestrator_settings",run_now:true},"Sweep requested."); return;
     case "orchestrator-toggle": void mutate({op:"orchestrator_settings",enabled:!state.orchestrator.enabled},state.orchestrator.enabled?"Orchestrator paused.":"Orchestrator resumed."); return;
     case "agent-sign-in": void signInAgent(el.dataset.agent); return;
+    case "setup-jump": document.getElementById("step-"+el.dataset.step)?.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"start"}); return;
     case "setup-refresh": setupChecked=0; void loadSetup(true); return;
     case "setup-github": void setupMutate({op:"setup_connect_github"},r=>"Connected GitHub as @"+r.account+"."); return;
     case "setup-skip": void setupMutate({op:"setup_skip",step:el.dataset.step}); return;

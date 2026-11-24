@@ -41,7 +41,7 @@ From your computer:
 
 The script opens an SSH tunnel from local port 8801 to the server's loopback port 8801. It then asks the service for a fresh one-time link and opens it in your browser. Use the same port on both ends, because the dashboard rejects requests addressed to another host or port. Each link works once. Run the script again for another browser.
 
-Doing it by hand: `ssh -L 8801:127.0.0.1:8801 you@your-server`. Then, on the server, run `sudo systemctl kill -s USR1 memyselfai` and open the link in `/var/lib/memyselfai/workspace/launch-url`.
+Doing it by hand: `ssh -L 8801:127.0.0.1:8801 you@your-server`. Then, on the server, run `sudo systemctl kill --kill-whom=main -s USR1 memyselfai` and open the link in `/var/lib/memyselfai/workspace/launch-url`.
 
 ## Signing in the agents
 
