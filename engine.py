@@ -25,6 +25,7 @@ import workspace_bridge
 import google_workspace
 from signin import SignIns
 from suggestions import Suggestions
+from context import Context
 import worker
 from store import Store, uid
 
@@ -85,6 +86,7 @@ class Engine:
         connectors.secret_listener = self.instances.record_secret
         self.signins = SignIns(self)
         self.suggestions = Suggestions(self)
+        self.context = Context(self)
         self.now = clock
         self.wake = threading.Event()
         self.repository_recheck = threading.Event()
@@ -441,6 +443,7 @@ class Engine:
                 rules=self.db.rows("rules"),
                 settings=self.settings(),
                 ignorelist=self.scope.config,
+                **self.context.state(),
                 skills=self.db.rows("skills")[::-1],
                 suggestions=self.suggestions.state(),
                 orchestrator=self.orchestrator.state(),
@@ -528,6 +531,9 @@ class Engine:
                 kind: (self.db.root / "skills" / (kind + ".md")).read_text() for kind in ("style", "workflow")
             }
             rules = [r for r in self.db.rows("rules") if r["project"] == project]
+        if role in {"task", "discovery", "decision"}:
+            request = json.dumps(payload, ensure_ascii=False, default=str)[:4000]
+            payload = {**payload, "context": self.context.for_agent(project, request, task)}
         provider = self.settings()["provider"]
         directory = self.agent_directory(role, project, task, initial)
         self.db.log("Agent started", f"{role} · {provider} · {directory} · skills {', '.join(revisions)}", project, task)
@@ -1024,6 +1030,7 @@ class Engine:
             self.repository_recheck.clear()
             self.next_repository_probe = now + 60
             self.jobs["repository-checks"] = self.pool.submit(self.resume_repository_questions)
+        self.context.due()
         if self.suggestions.next_scan <= now:
             submit("activity-suggestions", self.suggestions.run, None, self.pool)
         owned = set()
@@ -2147,6 +2154,44 @@ class Engine:
                 skipped["project"],
                 t["id"],
             )
+        # A revision must keep accepting work the user already accepted.
+        accepted = [
+            e for e in (
+                self.db.get("events", x.get("event", ""))
+                for x in sorted(self.db.rows("tasks"), key=lambda x: -x["created"])
+                if x["status"] == "done" and x.get("event") and x["event"] != candidate["id"]
+            )
+            if e
+        ][:2]
+        for example in accepted:
+            check = self.infer(
+                "discovery",
+                dict(
+                    event=example["raw"],
+                    proposed_workflow=response["body"],
+                    instruction="Classify this previously accepted example using the proposed workflow.",
+                ),
+                example["project"],
+                t["id"],
+            )
+            if not check.get("relevant"):
+                failure = f"Rejected accepted example: {example['raw']['title']} · {check.get('reason', '')}"
+                self.db.log("Skill check failed", failure, example["project"], t["id"])
+                with self.db.atomic():
+                    self.db.put("skills", dict(
+                        id=uid(), kind="workflow", body=response["body"], active=False,
+                        status="failed check", at=self.now(), reason=failure,
+                    ))
+                return {
+                    **self.decision(
+                        t,
+                        failure + ". The current discovery revision stays active. "
+                        "Which behavior should the revision change, and which should it keep?",
+                    ),
+                    "result": failure,
+                    "recovered": [],
+                }
+            self.db.log("Skill check passed", example["raw"]["title"], example["project"], t["id"])
         with self.db.atomic():
             if self.db.get("tasks", t["id"])["version"] != t["version"]:
                 raise ValueError("The investigation changed before activation.")
@@ -2359,6 +2404,11 @@ class Engine:
             return self.orchestrator.configure(d)
         if op == "agent_sign_in":
             return self.agents.open_sign_in(required(d, "agent", 16))
+        if op == "hermes_install":
+            self.agents.hermes.ensure_async()
+            return
+        if op == "hermes_dashboard":
+            return self.agents.open_dashboard()
         if op.startswith("setup_") or op.startswith("vps_"):
             return self.setup_action(op, d)
         if op == "check_folder_access":
@@ -2447,6 +2497,12 @@ class Engine:
         if op == "connect":
             self.connect(d)
             self.wake.set()
+            return
+        if op in {"context_retire", "context_restore"}:
+            self.context.retire(key, d.get("reason") or "Retired in the dashboard", "user", op == "context_restore")
+            return
+        if op == "schedule_cancel":
+            self.context.cancel_schedule(key, d.get("reason"), "user")
             return
         with self.dispatch_lock, self.db.atomic():
             if op in {"ignorelist", "set_exclusion"}:

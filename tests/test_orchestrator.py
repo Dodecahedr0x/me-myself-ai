@@ -24,6 +24,22 @@ toolsets = args[args.index("-t") + 1].split(",")
 assert "memyselfai" in toolsets and not {"terminal", "file", "browser", "web", "messaging"} & set(toolsets)
 home = os.environ["HERMES_HOME"]
 mode = json.load(open(os.path.join(home, "fake.json")))
+if mode.get("dump"):
+    # Hermes driven as a subprocess records the provider's refusal in a request dump.
+    os.makedirs(os.path.join(home, "sessions"), exist_ok=True)
+    with open(os.path.join(home, "sessions", "request_dump_x.json"), "w") as dump:
+        json.dump({"reason": "non_retryable_client_error", "error": {"message": "Error code: 400 - {'type': 'error', "
+                   "'error': {'type': 'invalid_request_error', 'message': 'Add more at claude.ai/settings/usage'}}"}}, dump)
+    sys.exit(0)
+if mode.get("silent"):
+    # Like Hermes 0.13 one-shot mode: errors go to its log, nothing to stdout, exit 0.
+    import datetime
+    os.makedirs(os.path.join(home, "logs"), exist_ok=True)
+    with open(os.path.join(home, "logs", "errors.log"), "a") as log:
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,000")
+        log.write(stamp + " ERROR [s] root: Non-retryable client error: Error code: 400 - {'type': 'error', "
+                  "'error': {'type': 'invalid_request_error', 'message': 'Third-party apps now draw from your extra usage'}}\n")
+    sys.exit(0)
 if mode.get("fail"):
     sys.stderr.write("model unavailable\n")
     sys.exit(1)
@@ -41,7 +57,8 @@ def call(name, arguments):
                                    "params": {"name": name, "arguments": arguments}}) + "\n")
     bridge.stdin.flush()
     result = json.loads(bridge.stdout.readline())["result"]
-    return json.loads(result["content"][0]["text"]), result["isError"]
+    out = json.loads(result["content"][0]["text"])
+    return out, result["isError"] or "refused" in out
 bridge.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}}) + "\n")
 bridge.stdin.flush()
 bridge.stdout.readline()
@@ -162,6 +179,16 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(self.orch.messages()[-1]["role"], "app")
         self.assertIsNone(self.orch.due(self.now + 10))
         self.assertEqual(self.engine.mcp_sessions.active, {})
+
+    def test_a_silent_hermes_failure_shows_the_logged_provider_error(self):
+        self.mode({"silent": True})
+        self.orch.run("sweep")
+        config = self.orch.config()
+        self.assertEqual(config["status"], "failed")
+        self.assertEqual(config["error"], "Third-party apps now draw from your extra usage")
+        self.mode({"dump": True})
+        self.orch.run("sweep")
+        self.assertEqual(self.orch.config()["error"], "Add more at claude.ai/settings/usage")
 
     def test_waits_when_hermes_is_not_ready(self):
         with patch.object(self.engine.agents, "inventory",

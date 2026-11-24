@@ -99,6 +99,22 @@ LockPersonality=yes
 WantedBy=multi-user.target
 EOF
 
+# MeMyselfAI's own Hermes, pinned and checksum-verified, in the workspace with its own home. Any other
+# Hermes on this server is left alone. The service also retries this on every start.
+echo "Installing Hermes for MeMyselfAI (a few minutes the first time)..."
+if runuser -u memyselfai -- env HOME="$HOME_DIR" PATH="$HOME_DIR/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+        python3 -B "$APP/hermes_runtime.py" --data "$DATA"; then
+    # Direct access for the server's admin, for example: memyselfai-hermes dashboard --no-open
+    cat > /usr/local/bin/memyselfai-hermes <<EOF2
+#!/bin/sh
+# MeMyselfAI's own Hermes, run as the service user with its private home.
+exec runuser -u memyselfai -- env HOME="$HOME_DIR" "$DATA/hermes-runtime/memyselfai-hermes" "\$@"
+EOF2
+    chmod 755 /usr/local/bin/memyselfai-hermes
+else
+    echo "Hermes could not be installed now. The service retries on start; see Settings -> Agents." >&2
+fi
+
 if [ -n "${MEMYSELFAI_NO_SYSTEMD:-}" ]; then
     echo "Installed without starting systemd (MEMYSELFAI_NO_SYSTEMD is set)."
     exit 0
@@ -115,6 +131,9 @@ Paired instances reach it on port $SYNC_PORT. Allow that port in your firewall t
 
 From your computer:
   ./deploy/vps-open.sh <user>@<this-server>
+
+Open MeMyselfAI's own Hermes directly, for example its dashboard (then tunnel port 9119 over SSH):
+  sudo memyselfai-hermes dashboard --no-open
 
 Sign in to an agent CLI on this server (once per CLI), for example:
   sudo -u memyselfai -i npm install -g @anthropic-ai/claude-code && sudo -u memyselfai -i claude auth login

@@ -17,6 +17,8 @@ import time
 import urllib.error
 import urllib.request
 
+import context
+
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 SESSION_SECONDS = 3600
 MAX_TEXT = 20000
@@ -132,6 +134,10 @@ TOOLS = {
     "comment": ({TASK}, "Post the exact comment text on this task's GitHub issue or pull request. "
                 "The app decides whether it needs the user's review first.", _schema(["text"], text=_S)),
 }
+# Shared context and schedules, curated by the orchestrator. See docs/specs/context-and-schedules.md.
+CONTEXT_TOOLS = tuple(name for name in context.TOOLS if name != "activity_recent")
+for _name in CONTEXT_TOOLS:
+    TOOLS[_name] = ({ORCHESTRATOR}, *context.TOOLS[_name])
 
 
 def _text(args, key, limit=MAX_TEXT, empty=False):
@@ -187,6 +193,11 @@ class Tools:
             raise Refused(f"{name} is not allowed for this task type.")
         if not isinstance(args, dict):
             raise Refused("Arguments must be an object.")
+        if name in CONTEXT_TOOLS:
+            try:
+                return self.engine.context.call(name, args)
+            except ValueError as exc:
+                raise Refused(str(exc)) from None
         return getattr(self, name)(session, args)
 
     def own_task(self, session, key=None):
@@ -453,20 +464,30 @@ def handle(tools, session, message):
             error = False
         except Refused as exc:
             tools.db.log("Agent tool refused", f"{name}: {exc}", task=session.task)
-            result, error = {"refused": str(exc)}, True
+            # Hermes counts every error result against the server and stops calling it after three in
+            # a row, so a few refused dispatches would cut a sweep off from every tool. A refusal is an
+            # answer, not a fault: the orchestrator gets it as a plain result with a "refused" field.
+            result, error = {"refused": str(exc)}, session.role != ORCHESTRATOR
         return ok({"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
                    "isError": error})
     return {"jsonrpc": "2.0", "id": ident, "error": {"code": -32601, "message": "Method not found"}}
 
 
 def bridge(stdin=sys.stdin.buffer, stdout=sys.stdout.buffer):
-    """Relay MCP stdio to the service. The token is read from a private file, never from argv."""
+    """Relay MCP stdio to the service. The token is read from a private file, never from argv.
+
+    The file is read again for every call: Hermes keeps its gateway, and so this bridge, running
+    between orchestrator runs, and each run writes a new token to the same file.
+    """
     url = os.environ["MEMYSELFAI_MCP_URL"]
-    with open(os.environ["MEMYSELFAI_MCP_TOKEN_FILE"], encoding="utf-8") as handle:
-        token = handle.read().strip()
     for line in stdin:
         if not line.strip():
             continue
+        try:
+            with open(os.environ["MEMYSELFAI_MCP_TOKEN_FILE"], encoding="utf-8") as handle:
+                token = handle.read().strip()
+        except OSError:
+            token = ""  # Between runs: the service refuses the call.
         request = urllib.request.Request(
             url, data=line, method="POST",
             headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},

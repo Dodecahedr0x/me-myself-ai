@@ -4,7 +4,7 @@ const $ = selector => document.querySelector(selector);
 const esc = (value = "") => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const plain = value => typeof value === "string" ? value : value == null ? "" : JSON.stringify(value, null, 2);
 const titleCase = text => String(text ?? "").replace(/[_-]/g, " ").replace(/^./, c => c.toUpperCase());
-const viewNames = {inbox:"Inbox", overview:"Overview", tasks:"Tasks", activity:"Activity", connections:"Connections", projects:"Projects", policies:"Decision rules", skills:"Skills & style", setup:"Setup", settings:"Configuration"};
+const viewNames = {inbox:"Inbox", overview:"Overview", tasks:"Tasks", activity:"Activity", connections:"Connections", projects:"Projects", context:"Context", policies:"Decision rules", skills:"Skills & style", setup:"Setup", settings:"Configuration"};
 const paths = {
   ignore:'<circle cx="12" cy="12" r="9"/><path d="m6 6 12 12"/>',
   overview:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
@@ -41,6 +41,7 @@ const paths = {
   play:'<path d="M7 4.5v15l12-7.5Z"/>', send:'<path d="M4 12 20 4l-5 16-3-7Z"/><path d="m12 13 8-9"/>', bars:'<path d="M6 20v-6m6 6V5m6 15v-9"/>',
   more:'<path fill="currentColor" d="M5 13.3a1.3 1.3 0 1 0 0-2.6 1.3 1.3 0 0 0 0 2.6Zm7 0a1.3 1.3 0 1 0 0-2.6 1.3 1.3 0 0 0 0 2.6Zm7 0a1.3 1.3 0 1 0 0-2.6 1.3 1.3 0 0 0 0 2.6Z"/>',
   up:'<path d="m6 15 6-6 6 6"/>', down:'<path d="m6 9 6 6 6-6"/>', back:'<path d="M20 12H5m6-6-6 6 6 6"/>', expand:'<path d="M14 4h6v6m0-6-7 7M10 20H4v-6m0 6 7-7"/>',
+  context:'<circle cx="12" cy="12" r="3"/><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="20" r="2"/><path d="m7 7 3 3m7-3-3 3m-2 2v5"/>',
   flag:'<path d="M5 22V4m0 0c6-4 8 4 15 0v11c-7 4-9-4-15 0"/>', dot:'<circle cx="12" cy="12" r="4"/>', monitor:'<rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 21h8m-4-3v3"/>'
 };
 function icon(name, size = 18) {
@@ -100,7 +101,7 @@ function shell(view) {
     (key==="inbox" && waiting?'<b class="badge" aria-label="'+waiting+' need you">'+waiting+'</b>':"")+'</a>';
   const who=providerNames[state.settings.provider]||"Choose an agent";
   const account='<a class="account" href="#settings" aria-label="Configuration: '+esc(who)+'"><span class="avatar" aria-hidden="true">'+esc(who[0])+'</span><span><strong>'+esc(who)+'</strong><small>'+(loaded?(state.settings.dry?"Dry mode":"Live mode"):"Connecting…")+'</small></span>'+icon("chevron",14)+'</a>';
-  setIfChanged($("#sidebar"), '<div class="brand">'+mark+'<span><strong>MeMyselfAI</strong><small>AI agent workspace</small></span></div><nav><div class="navgroup">'+["overview","inbox","tasks","activity","projects","connections"].map(nav).join("")+'</div><div class="navgroup">'+["policies","skills","setup","settings"].map(nav).join("")+'</div></nav><div class="sidebar-foot">'+account+'</div>');
+  setIfChanged($("#sidebar"), '<div class="brand">'+mark+'<span><strong>MeMyselfAI</strong><small>AI agent workspace</small></span></div><nav><div class="navgroup">'+["overview","inbox","tasks","activity","projects","connections"].map(nav).join("")+'</div><div class="navgroup">'+["context","policies","skills","setup","settings"].map(nav).join("")+'</div></nav><div class="sidebar-foot">'+account+'</div>');
   document.body.dataset.view=view;
   const buttons = {
     overview:["New task","task","add"], tasks:["New task","task","add"],
@@ -398,9 +399,39 @@ function parentField(project) {
 function projectsPage() {
   return section("Projects",button("Manage ignore list","ignorelist","ignore"),state.projects.map(p=>entry("projects",p.name,[p.global?"Workspace-wide":p.parent?"Under "+p.parent:null,...(p.repos||[])].filter(Boolean).join(" · ")||"No linked repositories",projectControls(p))).join("")||empty("No projects yet."));
 }
+const dayNames=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+function timing(s) {
+  if (s.once_at) return "Once at "+fullDate(s.once_at);
+  const days=s.days?.length && s.days.length<7 ? s.days.map(d=>dayNames[d]).join(", ") : "Every day";
+  return days+" at "+s.time;
+}
+function scheduleState(s) {
+  if (s.status==="active") return s.next?"Next "+fullDate(s.next):"Active";
+  if (s.status==="cancelled") return "Cancelled by "+(s.cancelled_by==="user"?"you":"Hermes")+": "+(s.cancel_reason||"");
+  return "Finished";
+}
+function contextPage() {
+  const hermes = state.hermes?.last_call ? "Hermes last worked on context and schedules "+relativeDate(state.hermes.last_call)+"." :
+    "Hermes hasn't worked on context yet. Once the app's Hermes is installed and signed in (Settings → Agents), it updates context and schedules during its sweeps.";
+  const rank = (active,first) => active ? (first?0:1) : 2;
+  const schedules = [...(state.schedules||[])].sort((a,b)=>rank(a.status==="active")-rank(b.status==="active")).map(s=>entry("clock",s.title,
+    [timing(s),s.project,(s.origin==="inferred"?"Inferred: ":"You asked: ")+s.reason,scheduleState(s)].join(" · "),
+    s.status==="active"?button("Cancel","schedule_cancel",null,"secondary",'data-id="'+esc(s.id)+'"'):"")).join("");
+  // Stale entries first (Hermes reviews them next), then active, then retired.
+  const entries = [...(state.context||[])].sort((a,b)=>rank(a.status==="active",a.stale)-rank(b.status==="active",b.stale)).map(e=>entry("context",e.subject,
+    [titleCase(e.kind),e.project,e.status==="retired"?"Retired: "+(e.retired_reason||""):e.stale?"Stale, withheld from agents until Hermes reviews it":"Review "+compactDate(e.review_at),e.body].join(" · "),
+    e.status==="retired"?button("Restore","context_restore",null,"quiet",'data-id="'+esc(e.id)+'"'):button("Retire","context_retire",null,"secondary",'data-id="'+esc(e.id)+'"'))).join("");
+  return '<div class="policy-note">'+icon("context")+'<span>'+esc(hermes)+'</span></div>'+
+    section("Schedules","",schedules||empty("No schedules yet. Ask for recurring work in a task, for example “every Friday, summarize open pull requests”."))+
+    section("What agents know","",entries||empty("No context yet."));
+}
 const modes = {auto:"Allow autonomous handling",review:"Require review",user:"Leave to me"};
 function policiesPage() {
+  const ready = (state.handoffs||[]).map(h=>entry("shield",titleCase(h.kind)+" in "+h.project,
+    h.delivered+" delivered in 30 days, none corrected, no missed work reported",
+    button("Allow autonomous handling","handoff",null,"secondary",'data-project="'+esc(h.project)+'" data-kind="'+esc(h.kind)+'"'))).join("");
   return '<div class="policy-note">'+icon("shield")+'<span>'+esc(state.settings.dry?"Dry mode requires approval for every external write.":"Live mode follows the rules below.")+'</span></div>'+
+    (ready?section("Ready to hand off","",ready):"")+
     (state.rules.length?state.rules.map(r=>entry("policies",titleCase(r.kind),r.project, '<span class="rule-mode">'+esc(modes[r.mode]||r.mode)+'</span>'+button("Edit","rule",null,"secondary",'data-project="'+esc(r.project)+'" data-kind="'+esc(r.kind)+'"'))).join(""):empty("No decision rules yet."));
 }
 function skillsPage() {
@@ -451,13 +482,34 @@ async function loadAgents(force=false) {
   finally { agentsPending=false; }
   if (activeView==="settings") render();
 }
+// MeMyselfAI installs its own Hermes, separate from any other Hermes. See docs/specs/hermes-orchestrator.md#install.
+function hermesDetail(a,detail) {
+  const install=a.install||{};
+  if (install.status==="installing") return a.role+" · Installing: "+(install.step||"starting")+"…";
+  if (install.status==="failed" && !a.installed) return a.role+" · Install failed: "+(install.error||"unknown error");
+  if (!a.installed) return a.role+" · Installing on first start…";
+  return detail+" · Open it directly with "+(a.command||"memyselfai-hermes")+(install.status==="failed"?" · Update failed: "+install.error:"");
+}
+function hermesControls(a) {
+  const install=a.install||{};
+  if (install.status==="installing") return "";
+  return (a.installed?button("Open dashboard","hermes-dashboard",null,"secondary"):"")+(install.status==="failed"||!a.installed?button("Retry install","hermes-install","sync","quiet"):"");
+}
+async function hermesAction(op) {
+  try {
+    const result=await request("/api/action",{op});
+    if (op==="hermes_install") { notify("Installing Hermes. This takes a few minutes."); agentsChecked=0; setTimeout(()=>loadAgents(true),3000); }
+    else notify(result.opened?"The Hermes dashboard is starting in Terminal. Close that window to stop it.":"Run this on this machine, then open http://127.0.0.1:9119: "+result.command);
+  } catch(e) { showError(e.message); }
+}
 function agentsSection() {
   if (agentSetup===null) return section("Agents","",empty("Checking agents…"));
   const rows=(agentSetup.harnesses||[]).map(a=>{
     const uses=a.id==="hermes"?" · Uses your "+(subscriptionNames[a.uses]||a.uses):"";
     const detail=a.role+" · "+(agentStates[a.state]||"Status unavailable")+(a.version?" · "+a.version:"")+uses+(a.state==="sign_in"?" · Run: "+a.sign_in:"")+(a.detail?" · "+a.detail:"");
-    const controls=a.state==="sign_in"?button("Sign in","agent-sign-in",null,"secondary",'data-agent="'+esc(a.id)+'"'):"";
-    return entry(a.id==="hermes"?"stack":"working",a.label,detail,controls);
+    let controls=a.state==="sign_in"?button("Sign in","agent-sign-in",null,"secondary",'data-agent="'+esc(a.id)+'"'):"";
+    if (a.id==="hermes") return entry("stack",a.label,hermesDetail(a,detail),controls+hermesControls(a));
+    return entry("working",a.label,detail,controls);
   }).join("");
   return section("Agents",button("Check again","agents","sync","quiet"),rows||empty("Agent status unavailable.",button("Retry","agents","sync")));
 }
@@ -558,7 +610,7 @@ function stepSummary(s) {
     case "agent": return s.ready?agent+" is installed and signed in.":s.state==="sign_in"?agent+" is installed. Sign in once.":s.state==="not_installed"?"Install "+agent+" on this Mac, then choose Check again.":agent+": "+(agentStates[s.state]||"status unavailable")+".";
     case "accounts": return s.ready?s.count+(s.count===1?" account":" accounts")+" connected.":s.github_login?"Your GitHub CLI is signed in as @"+s.github_login+". Connect it in one click.":"Connect mail, Slack or GitHub.";
     case "projects": return s.ready?s.count+(s.count===1?" project has":" projects have")+" repositories.":s.skipped?"Skipped. Tasks go to Global until you add a project.":"Add a project with its repository folders, or skip for now.";
-    case "orchestrator": return s.ready?"Hermes is ready.":s.state==="sign_in"?"Hermes is installed. Sign in once.":"Install Hermes to turn this on. Until then, tasks start from new activity only.";
+    case "orchestrator": return s.ready?"Hermes is ready.":s.state==="sign_in"?"Hermes is installed. Sign in once.":"The app is installing its own Hermes. Until it is ready, tasks start from new activity only.";
     case "server": {
       if (vpsActive()) return "Setting up "+setup.vps.run.host+"…";
       if (!s.ready) return "Pick one of your SSH hosts. The app installs, starts and pairs it.";
@@ -888,7 +940,7 @@ async function retryGroup(key) {
   notify(done===members.length?done+" tasks queued for retry.":done+" of "+members.length+" tasks queued. Retry the rest one by one.");
   await refresh();
 }
-const pages = {inbox:()=>inboxSkeleton,setup:setupPage,overview,tasks:tasksPage,activity:activityPage,connections:connectionsPage,projects:projectsPage,policies:policiesPage,skills:skillsPage,settings:settingsPage};
+const pages = {inbox:()=>inboxSkeleton,setup:setupPage,overview,tasks:tasksPage,activity:activityPage,connections:connectionsPage,projects:projectsPage,context:contextPage,policies:policiesPage,skills:skillsPage,settings:settingsPage};
 function closeMenu() {
   document.body.classList.remove("menu-open"); $("#scrim").hidden=true;
   $(".menu-toggle")?.setAttribute("aria-expanded","false");
@@ -1407,6 +1459,8 @@ function handleAction(el) {
     case "orchestrator-run": void mutate({op:"orchestrator_settings",run_now:true},"Sweep requested."); return;
     case "orchestrator-toggle": void mutate({op:"orchestrator_settings",enabled:!state.orchestrator.enabled},state.orchestrator.enabled?"Orchestrator paused.":"Orchestrator resumed."); return;
     case "agent-sign-in": void signInAgent(el.dataset.agent); return;
+    case "hermes-install": void hermesAction("hermes_install"); return;
+    case "hermes-dashboard": void hermesAction("hermes_dashboard"); return;
     case "setup-jump": document.getElementById("step-"+el.dataset.step)?.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"start"}); return;
     case "setup-refresh": setupChecked=0; void loadSetup(true); return;
     case "setup-github": void setupMutate({op:"setup_connect_github"},r=>"Connected GitHub as @"+r.account+"."); return;
@@ -1489,6 +1543,10 @@ function handleAction(el) {
     case "reject_skill": void mutate({op:action,id},"Style suggestion declined."); return;
     case "accept_skill": void mutate({op:action,id},"Style guidance approved."); return;
     case "retry": void mutate({op:action,id},"Preparation queued."); return;
+    case "schedule_cancel": void mutate({op:action,id},"Schedule cancelled."); return;
+    case "context_retire": void mutate({op:action,id},"Context retired. Agents will no longer receive it."); return;
+    case "context_restore": void mutate({op:action,id},"Context restored."); return;
+    case "handoff": void mutate({op:"rule",project,kind,mode:"auto"},"Autonomous handling allowed. Dry mode still applies while it is on."); return;
     case "sync": void mutate({op:action},"Source sync requested."); return;
   }
 }

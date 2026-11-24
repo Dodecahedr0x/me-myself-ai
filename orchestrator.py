@@ -8,6 +8,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -19,6 +20,7 @@ SWEEP_SECONDS = 15 * 60
 SETTLE_SECONDS = 60
 MIN_GAP_SECONDS = 2 * 60
 DIGEST_TIME = (8, 30)
+CLEANUP_TIME = (7, 0)
 RUN_TIMEOUT = 10 * 60
 DEFAULT_BUDGET = 50
 BACKOFF = (60, 300, 1800, 3600)
@@ -42,7 +44,21 @@ How to act:
 
 PURPOSES = {
     "sweep": """Sweep: search recent activity for unanswered requests, promises the user made, and
-deadlines. Dispatch each one as above.""",
+deadlines. Dispatch each one as above.
+Then keep the shared context current. Task agents receive it, so record only what lasts: people (role,
+relation to the user), projects, open commitments the user made with their due dates, stated preferences,
+and durable facts. Check context_search first and update an existing entry rather than duplicating it.
+Cite the activity or task titles you used as sources.
+Manage schedules. When the user asks for recurring or future work in a task, its feedback or a message
+to you ("every Friday, send me..."), call schedule_create with origin user. When an open commitment
+implies recurring work, create one with origin inferred and a reason that cites the evidence. Check
+schedule_list first. Cancel a schedule with schedule_cancel when the user asks to stop it, or when an
+inferred schedule's reason no longer holds.""",
+    "cleanup": """Context cleanup: call context_stale. For each stale entry, look for current evidence
+with search_activity and list_tasks. Refresh an entry that still holds with context_save. Retire one
+that is finished, contradicted or no longer relevant with context_retire and say why. Retire commitments
+whose work is done. Then call schedule_list and cancel inferred schedules whose reason no longer holds.
+Leave schedules with origin user unless the user asked to stop them. Answer with a one-line summary.""",
     "digest": """Morning digest: review today's tasks and recent activity. Write a short update for the
 user: what you dispatched, what finished, and what is stuck. Mention only what genuinely needs them,
 such as a reply waiting for their approval. Post it with post_update and also return it as your answer.""",
@@ -122,6 +138,9 @@ class Orchestrator:
         local = datetime.datetime.fromtimestamp(now).astimezone()
         if (local.hour, local.minute) >= DIGEST_TIME and c["last_digest"] != local.date().isoformat():
             return "digest"
+        if ((local.hour, local.minute) >= CLEANUP_TIME and c.get("last_cleanup") != local.date().isoformat()
+                and any(self.engine.context.stale(e) for e in self.db.rows("context"))):
+            return "cleanup"
         if now - c["last_sweep"] < MIN_GAP_SECONDS or self.signature() == c["signature"]:
             return None
         newest = max((e["raw"].get("timestamp", 0) for e in self.db.rows("events")), default=0)
@@ -171,7 +190,8 @@ class Orchestrator:
         if not self.lock.acquire(blocking=False):
             return
         try:
-            self.running = {"sweep": "sweeping", "digest": "writing digest", "prompt": "answering"}[purpose]
+            self.running = {"sweep": "sweeping", "digest": "writing digest", "cleanup": "cleaning context",
+                            "prompt": "answering"}[purpose]
             self._run(purpose)
         finally:
             self.running = ""
@@ -193,15 +213,21 @@ class Orchestrator:
                 self.save(pending="")
             return
         token = self.engine.mcp_sessions.issue(app_mcp.ORCHESTRATOR)
-        token_file = self.engine.db.root / "hermes" / ("run-" + uuid.uuid4().hex)
+        # One path for every run: Hermes' gateway may keep the MCP bridge from an earlier run, and the
+        # bridge reads this file on each call. Runs are serial, and the file is removed after each.
+        token_file = self.engine.db.root / "hermes" / "mcp-token"
         try:
             token_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            temporary = token_file.with_name("mcp-token." + uuid.uuid4().hex)
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(token)
+            os.replace(temporary, token_file)
             entry = app_mcp.launch_config(self.engine.mcp_url, token_file)
             self.engine.agents.write_hermes_config([entry["command"], *entry["args"]], entry["env"])
             command, env = self.engine.agents.hermes_command(self.prompt(purpose, c))
+            self.engine.agents.hermes.stop_gateway()  # Left from an earlier run or direct use.
+            started = datetime.datetime.now()
             self.db.log("Orchestrator run", purpose)
             with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, env=env, cwd=token_file.parent,
@@ -216,7 +242,9 @@ class Orchestrator:
             answer = out[:MAX_OUTPUT].decode("utf-8", "replace").strip()
             if process.returncode or not answer:
                 tail = err[-2000:].decode("utf-8", "replace").strip().splitlines()
-                raise RuntimeError(tail[-1] if tail else f"Hermes exited with status {process.returncode}.")
+                # One-shot mode hides errors and exits 0; its log keeps the provider's message.
+                reason = (tail[-1] if tail else "") or self.logged_error(started)
+                raise RuntimeError(reason or f"Hermes exited with status {process.returncode} without an answer.")
         except Exception as exc:
             failures = c.get("failures", 0) + 1
             delay = BACKOFF[min(failures, len(BACKOFF)) - 1]
@@ -227,6 +255,7 @@ class Orchestrator:
                 self.save(pending="")
             return
         finally:
+            self.engine.agents.hermes.stop_gateway()
             self.engine.mcp_sessions.revoke(token)
             try:
                 token_file.unlink()
@@ -237,6 +266,10 @@ class Orchestrator:
             # Taken after the run, so the work this sweep dispatched does not trigger another sweep.
             changes.update(last_sweep=self.engine.now(), signature=self.signature())
             self.db.log("Orchestrator sweep", answer[:4000])
+        elif purpose == "cleanup":
+            local = datetime.datetime.fromtimestamp(self.engine.now()).astimezone()
+            changes.update(last_cleanup=local.date().isoformat())
+            self.db.log("Orchestrator cleanup", answer[:4000])
         elif purpose == "digest":
             local = datetime.datetime.fromtimestamp(self.engine.now()).astimezone()
             changes.update(last_digest=local.date().isoformat())
@@ -245,6 +278,38 @@ class Orchestrator:
             changes.update(pending="")
             self.add_message("hermes", answer[:8000])
         self.save(**changes)
+
+    def logged_error(self, since):
+        """The provider error Hermes recorded during this run: a request dump, else its error log."""
+        home = self.engine.db.root / "hermes"
+        dumps = sorted((home / "sessions").glob("request_dump_*.json"), key=lambda p: p.stat().st_mtime)
+        for dump in reversed(dumps[-20:]):
+            if datetime.datetime.fromtimestamp(dump.stat().st_mtime) < since:
+                break
+            try:
+                error = json.loads(dump.read_text(errors="replace")).get("error") or {}
+            except (OSError, ValueError):
+                continue
+            text = error.get("message", "") if isinstance(error, dict) else str(error)
+            match = re.search(r"'message': '([^']+)'", text)
+            if text:
+                return (match.group(1) if match else text)[:500]
+        try:
+            lines = (self.engine.db.root / "hermes" / "logs" / "errors.log").read_text(errors="replace").splitlines()[-200:]
+        except OSError:
+            return ""
+        for line in reversed(lines):
+            try:
+                at = datetime.datetime.strptime(line[:19], "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            if at < since.replace(microsecond=0):
+                return ""
+            if " ERROR " in line:
+                message = line.split(": ", 1)[-1]
+                match = re.search(r"'message': '([^']+)'", message)
+                return (match.group(1) if match else message)[:500]
+        return ""
 
     def close(self):
         process = self.process

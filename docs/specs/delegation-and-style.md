@@ -24,7 +24,7 @@ For example, a dependency slips and the promised Friday delivery is now at risk.
 
 ## Leaving dry mode
 
-The user decides when to enable autonomous delivery after reviewing evidence in three areas. For **coverage**, compare discovered and acted-on tasks with relevant activity the user has reviewed, including missed tasks the user identifies. For **quality**, show deliverables, completion evidence, and substantive corrections. For **style**, compare outgoing drafts with the approved style file and show wording edits the user made. Make this evidence available by project and decision type so the user can grant authority where performance warrants it. A quiet queue or a streak of unchanged drafts alone cannot establish coverage.
+The user decides when to enable autonomous delivery after reviewing evidence in three areas. For **coverage**, compare discovered and acted-on tasks with relevant activity the user has reviewed, including missed tasks the user identifies. For **quality**, show deliverables, completion evidence, and substantive corrections. For **style**, compare outgoing drafts with the approved style file and show wording edits the user made. Make this evidence available by project and decision type so the user can grant authority where performance warrants it. A quiet queue or a streak of unchanged drafts alone cannot establish coverage. Decision rules lists [handoff candidates](context-and-schedules.md#handoff-candidates) with their delivery and correction counts.
 
 ## Acceptance criteria
 

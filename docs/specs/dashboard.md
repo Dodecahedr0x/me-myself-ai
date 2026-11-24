@@ -14,11 +14,13 @@ Connections, projects, decision rules, delivery settings and Markdown revisions 
 
 The sidebar links to agent provider settings. Settings shows the configured CLI and lets the user select Claude Code or Codex CLI independently of delivery mode. Both choices are available even if their executable is missing. The editor shows installation status, explains how to sign in using the CLI, and explains that the CLI may send supplied task context to its configured AI service. The user can recheck installation after installing a CLI. A pending style suggestion can be approved or declined. An investigation report links to each recovered task available in the queue.
 
+**Context** shows when Hermes last used its context tools, every schedule with its timing, origin, reason and next run (with **Cancel**), and every context entry with its kind, project and review state (with **Retire** or **Restore**). Stale entries are labeled as withheld from agents. **Decision rules** lists handoff candidates above the rules. [Context and schedules](context-and-schedules.md)
+
 ## Inbox view
 
 The Inbox is the landing view. It has three columns: the sidebar, the task list and the open task. It follows the reference layout the user supplied on 2026-11-24. The [Home overview](#desktop-workspace) remains available as **Overview**.
 
-- **Sidebar.** Brand, then Overview, Inbox, Tasks, Activity, Projects and Connections. Inbox carries a badge with the number of tasks that need attention. Decision rules, Skills & style, Setup and Configuration (settings) follow. The footer names the agent provider and the delivery mode and links to Configuration.
+- **Sidebar.** Brand, then Overview, Inbox, Tasks, Activity, Projects and Connections. Inbox carries a badge with the number of tasks that need attention. Context, Decision rules, Skills & style, Setup and Configuration (settings) follow. The footer names the agent provider and the delivery mode and links to Configuration.
 - **Header.** "Inbox", one line saying these tasks need the user to keep agents moving, and an **Auto-group** switch. The switch is remembered in the browser.
 - **Summary cards.** Needs attention, In progress, Completed (24h) and Blocked. Each card filters the list or opens Tasks for that group. Completed counts done tasks whose last recorded event is under 24 hours old.
 - **Filter chips.** All, Decision, Failed and Blocked, each with a count. Decision is a proposal awaiting approval or a question. Failed is a failed task. Blocked is a delivery whose outcome is uncertain or a question caused by an inaccessible checkout. **Sort by** offers Priority (failed, decision, blocked, then newest) and Newest.

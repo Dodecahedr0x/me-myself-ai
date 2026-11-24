@@ -16,13 +16,18 @@ import sys
 import threading
 import time
 
+import hermes_runtime
 import worker
 
 HARNESSES = ("claude", "codex", "hermes")
 SUBSCRIPTIONS = ("claude", "codex")
 # Hermes inference provider for each subscription.
 HERMES_PROVIDER = {"claude": "anthropic", "codex": "openai-codex"}
-HERMES_MIN_VERSION = (0, 13, 0)
+# Hermes sends an empty model name unless one is configured, which providers reject.
+HERMES_MODEL = {"claude": "claude-opus-5-5", "codex": "gpt-5.5"}
+HERMES_MIN_VERSION = (0, 23, 3)
+# The config schema of that version. Without it Hermes treats the file as too old to migrate.
+HERMES_CONFIG_VERSION = 54
 # Hermes toolsets the orchestrator may use. Terminal, file, browser, web, code execution,
 # messaging, cron and delegation stay off. The app MCP server is the only way to act.
 HERMES_TOOLSETS = ("memory", "todo", "session_search", "memyselfai")
@@ -48,7 +53,10 @@ def _run(args, env=None):
     return done.returncode, done.stdout.decode("utf-8", "replace"), done.stderr.decode("utf-8", "replace")
 
 
-def executable(name):
+def executable(name, root=None):
+    if name == "hermes":
+        # Only the app's own copy, never a Hermes the user installed. See hermes_runtime.py.
+        return hermes_runtime.Runtime(root).binary() if root else None
     if name in worker.PROVIDERS:
         return worker._executable(name)
     directories = [p for p in os.get_exec_path() if os.path.isabs(p)]
@@ -71,7 +79,7 @@ def hermes_env(root, binary=None):
         "PATH": os.pathsep.join(
             ([str(Path(binary).parent)] if binary else []) + ["/opt/homebrew/bin", "/usr/local/bin", os.defpath]
         ),
-        "HERMES_HOME": str(hermes_home(root)),
+        **hermes_runtime.private_environment(hermes_home(root)),
         "NO_COLOR": "1",
     }
     return env
@@ -115,14 +123,15 @@ def hermes_status(binary, root, subscription, harness_states):
 
 def sign_in_command(name, root, subscription):
     """The interactive command that signs a harness in. It runs in the user's terminal."""
-    binary = executable(name) or name
+    binary = executable(name, root) or name
     if name == "claude":
         return [binary, "auth", "login"]
     if name == "codex":
         return [binary, "login"]
     if subscription == "claude":
         return [executable("claude") or "claude", "auth", "login"]
-    return ["env", "HERMES_HOME=" + str(hermes_home(root)), binary, "auth", "add", HERMES_PROVIDER[subscription]]
+    private = hermes_runtime.private_environment(hermes_home(root))
+    return ["env", *[f"{name}={value}" for name, value in private.items()], binary, "auth", "add", HERMES_PROVIDER[subscription]]
 
 
 def _state(installed, version, minimum, signed_in, error):
@@ -155,6 +164,7 @@ class Agents:
         self.settings = settings
         self.lock = threading.Lock()
         self.cache = None
+        self.hermes = hermes_runtime.Runtime(root)
 
     def subscription(self):
         s = self.settings()
@@ -162,6 +172,27 @@ class Agents:
         return chosen if chosen in SUBSCRIPTIONS else "claude"
 
     def inventory(self, refresh=False):
+        data = self._inventory(refresh)
+        # Install progress changes faster than the readiness cache.
+        install = self.hermes.state()
+        for row in data["harnesses"]:
+            if row["id"] == "hermes":
+                row.update(install=install, command=str(self.hermes.wrapper), dashboard=self.hermes.dashboard_command())
+                if row["state"] != "not_installed" and install.get("status") != "ready":
+                    self.cache = None  # Re-check once the install finishes.
+                elif row["state"] == "not_installed" and install.get("status") == "ready":
+                    self.cache = None
+                    return self.inventory(refresh=True) if not refresh else data
+        return data
+
+    def open_dashboard(self):
+        """Open the private Hermes' own dashboard in Terminal on macOS, or return the command to run."""
+        if not self.hermes.binary():
+            raise ValueError("Hermes is still being installed.")
+        command = self.hermes.dashboard_command()
+        return {"command": command, "opened": open_in_terminal(command)}
+
+    def _inventory(self, refresh=False):
         with self.lock:
             if not refresh and self.cache and time.monotonic() - self.cache[0] < CACHE_SECONDS:
                 return self.cache[1]
@@ -169,7 +200,7 @@ class Agents:
             rows = []
             states = {}
             for name in HARNESSES:
-                binary = executable(name)
+                binary = executable(name, self.root)
                 version = signed_in = None
                 error = ""
                 if binary and name == "claude":
@@ -214,9 +245,12 @@ class Agents:
         """Write Hermes' private config. The app owns this file and rewrites it on every start."""
         home = hermes_home(self.root)
         home.mkdir(mode=0o700, parents=True, exist_ok=True)
-        provider = HERMES_PROVIDER[self.subscription()]
+        subscription = self.subscription()
+        provider = HERMES_PROVIDER[subscription]
+        model = self.settings().get("orchestrator_model") or HERMES_MODEL[subscription]
         config = {
-            "model": {"provider": provider},
+            "_config_version": HERMES_CONFIG_VERSION,
+            "model": {"provider": provider, "default": model},
             "approvals": {"mode": "manual", "cron_mode": "deny", "unattended_mode": "deny",
                           "single_query_mode": "deny"},
             "mcp_servers": {
@@ -233,9 +267,9 @@ class Agents:
         return path
 
     def hermes_command(self, prompt):
-        binary = executable("hermes")
+        binary = executable("hermes", self.root)
         if not binary:
-            raise ValueError("Hermes is not installed.")
+            raise ValueError("Hermes is not installed yet.")
         return [binary, "-z", prompt, "-t", ",".join(HERMES_TOOLSETS), "--ignore-rules"], hermes_env(
             self.root, binary
         )

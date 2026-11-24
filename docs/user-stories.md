@@ -36,10 +36,15 @@
 | US-32 | Be walked through setup, with the app doing whatever it can on its own. | On first launch the app opens on Setup. It already found Claude Code signed in, and connects my GitHub CLI account in one click. Only the steps that need me are marked. [Guided setup](specs/guided-setup.md) |
 | US-33 | Set up my VPS from the desktop app using a host from my SSH config. | I pick OVH-VPS and choose Set up server. The app installs the service, installs Claude Code there and pairs the server with my Mac. It asks only for a sudo password, and for one sign-in in Terminal. [VPS setup over SSH](specs/guided-setup.md#vps-setup-over-ssh) |
 | US-34 | Manage what the agent works on. | I can read a formatted issue description, exclude projects or repositories from agent work, and close a task when I have handled it myself. [Dashboard](specs/dashboard.md) · [Task workflow](specs/task-workflow.md) |
+| US-35 | Have agents share what earlier work taught them, without seeing what isn't theirs. | A reply agent in a project knows the client's preferred contact and an open promise. It never sees another project's context. Stale context is held back until Hermes reviews it. [Context and schedules](specs/context-and-schedules.md) |
+| US-36 | Get recurring work done on a schedule that follows what I ask for and what I've committed to. | I write "every Friday, summarize open PRs" in a task. Hermes creates the schedule, and each Friday a task appears. Cancelling it stops it for good. [Context and schedules](specs/context-and-schedules.md) |
+| US-37 | Know which work is ready to hand off. | Decision rules shows that status replies in one project had 5 uncorrected deliveries. I allow autonomous handling in one click. [Context and schedules](specs/context-and-schedules.md) |
 
 Workspace-wide Slack and Google account connections extend US-01 and US-03. [Workspace accounts](specs/account-wide-connections.md)
 
 US-01 through US-05 are covered by the [task workflow](specs/task-workflow.md), US-07 through US-09 by [task agents and completion](specs/task-execution.md), and US-06 and US-10 through US-12 by [decision rules, writing style, and trust](specs/delegation-and-style.md).
+
+US-35 through US-37 are specified in [shared context and schedules](specs/context-and-schedules.md).
 
 US-13 extends the [task workflow](specs/task-workflow.md). US-14 extends [decision handling](specs/delegation-and-style.md). US-15 and US-16 are specified in [reviewing activity and learning from missed work](specs/activity-and-improvement.md).
 
