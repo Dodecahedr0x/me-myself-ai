@@ -20,7 +20,7 @@ fi
 
 if command -v apt-get >/dev/null 2>&1; then
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        python3 python3-cryptography git ca-certificates curl nodejs npm openssl
+        python3 python3-cryptography git ca-certificates curl nodejs npm openssl bubblewrap
 fi
 python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))' || {
     echo "Python 3.9 or newer is required." >&2; exit 1; }
@@ -90,7 +90,8 @@ PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=$HOME_DIR
-ProtectKernelTunables=yes
+# No ProtectKernelTunables: it stops bubblewrap mounting a private /proc for task commands, and this
+# unprivileged user cannot change kernel settings anyway. See "Command sandbox" in docs/specs/local-agent.md.
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes

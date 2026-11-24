@@ -259,6 +259,47 @@ class WorktreeTests(unittest.TestCase):
         self.assertIn("fixture result 3", result["output"])
         self.assertEqual((self.first / "result.txt").read_text(), "ran")
 
+    @unittest.skipUnless(sys.platform.startswith("linux") and worker.shutil.which("bwrap"), "Linux bubblewrap")
+    def test_linux_command_runs_with_private_files_and_without_external_access(self):
+        (self.root / "private-note").write_text("private fixture")
+        (self.first / "outside").symlink_to(self.root / "private-note")
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "fixture"}):
+            result = worker.run_command(self.first, """
+                set -e
+                test -z "$GITHUB_TOKEN"
+                printf 'ran' > result.txt
+                if cat outside 2>/dev/null; then exit 40; fi
+                if echo changed >> .git/config 2>/dev/null; then exit 41; fi
+                if python3 -c 'import socket; socket.create_connection(("1.1.1.1", 53), 3)' 2>/dev/null; then exit 42; fi
+                if cat /etc/shadow 2>/dev/null; then exit 43; fi
+                test -d /proc/self
+                python3 -c 'print("fixture result", 1 + 2)'
+                exit 7
+                """)
+        self.assertEqual(result["exit_code"], 7, result["output"])
+        self.assertIn("fixture result 3", result["output"])
+        self.assertEqual((self.first / "result.txt").read_text(), "ran")
+
+    def test_linux_sandbox_arguments(self):
+        work = self.first
+        temp = self.root / "temp"
+        with patch.object(worker.sys, "platform", "linux"), patch.object(worker.shutil, "which", return_value="/usr/bin/bwrap"):
+            args = worker._sandbox_args(work, temp, "make test")
+        self.assertEqual(args[0], "/usr/bin/bwrap")
+        self.assertIn("--unshare-all", args)
+        self.assertIn("--die-with-parent", args)
+        joined = " ".join(args)
+        self.assertIn(f"--bind {work} {work}", joined)
+        self.assertIn(f"--ro-bind {work / '.git'} {work / '.git'}", joined)
+        self.assertIn(f"--bind {temp} {temp}", joined)
+        self.assertNotIn("--share-net", args)
+        self.assertNotIn(str(Path.home()), joined.replace(str(work), "").replace(str(temp), ""))
+        self.assertEqual(args[-3:], ["/bin/sh", "-c", "make test"])
+        with patch.object(worker.sys, "platform", "linux"), patch.object(worker.shutil, "which", return_value=None):
+            with self.assertRaises(worker.WorkerError) as missing:
+                worker._sandbox_args(work, temp, "make test")
+        self.assertIn("bubblewrap", str(missing.exception))
+
     def test_task_owns_git_objects_and_can_resume_without_source(self):
         self.assertEqual(worker._location(self.first, "--git-common-dir"), self.first / ".git")
         self.assertEqual(worker._git(self.repo, "branch", "--list", "memyselfai/*"), b"")

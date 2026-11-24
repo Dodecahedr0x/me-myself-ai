@@ -12,6 +12,7 @@ import selectors
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import unicodedata
@@ -686,6 +687,39 @@ _COMMAND_PROFILE = """
 """
 
 
+def _sandbox_args(workdir, temp, command):
+    """The kernel-enforced sandbox for a task command: sandbox-exec on macOS, bubblewrap on Linux. Both allow
+    reading system toolchains, writing only the task folder and a disposable temp folder, keep the clone's Git
+    metadata read-only and deny the network. See "Command sandbox" in docs/specs/local-agent.md."""
+    workdir, temp = Path(workdir), Path(temp)
+    if sys.platform == "darwin":
+        return ["/usr/bin/sandbox-exec", "-D", "WORK=" + str(workdir),
+                "-D", "TEMP=" + str(temp), "-D", "METADATA=" + str(workdir / ".git"),
+                "-D", "XCRUN_CACHE=" + str(temp.parent / "xcrun_db"),
+                "-p", _COMMAND_PROFILE, "/bin/sh", "-c", command]
+    bwrap = shutil.which("bwrap", path="/usr/bin:/bin:/usr/local/bin")
+    if not bwrap:
+        raise WorkerError("Task commands on Linux need bubblewrap. Install it with apt-get install bubblewrap, "
+                          "then retry.")
+    # A fresh user, network, PID, IPC and UTS namespace. Only /usr and the dynamic loader's links are visible
+    # from the host, so the service's home, data folder, credentials and other processes are not.
+    args = [bwrap, "--unshare-all", "--die-with-parent", "--new-session", "--ro-bind", "/usr", "/usr"]
+    for name in ("bin", "sbin", "lib", "lib32", "lib64"):
+        path = Path("/" + name)
+        if path.is_symlink():
+            args += ["--symlink", os.readlink(path), str(path)]
+        elif path.is_dir():
+            args += ["--ro-bind", str(path), str(path)]
+    for path in ("/etc/alternatives", "/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/ld.so.conf.d", "/etc/ssl/certs",
+                 "/etc/ca-certificates", "/etc/localtime", "/opt"):
+        args += ["--ro-bind-try", path, path]
+    args += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+             "--bind", str(temp), str(temp), "--bind", str(workdir), str(workdir)]
+    if (workdir / ".git").exists():
+        args += ["--ro-bind", str(workdir / ".git"), str(workdir / ".git")]
+    return args + ["--chdir", str(workdir), "/bin/sh", "-c", command]
+
+
 def run_command(workdir, command):
     """Run a local preparation command, retaining the tail of its combined output."""
     _string(command, "local command", limit=8192)
@@ -695,10 +729,7 @@ def run_command(workdir, command):
     truncated = False
     with tempfile.TemporaryDirectory(prefix="memyselfai-command-") as scratch:
         temp = Path(scratch).resolve()
-        args = ["/usr/bin/sandbox-exec", "-D", "WORK=" + str(workdir),
-                "-D", "TEMP=" + str(temp), "-D", "METADATA=" + str(workdir / ".git"),
-                "-D", "XCRUN_CACHE=" + str(temp.parent / "xcrun_db"),
-                "-p", _COMMAND_PROFILE, "/bin/sh", "-c", command]
+        args = _sandbox_args(workdir, temp, command)
         env = {"HOME": str(temp), "TMPDIR": str(temp), "PATH": "/opt/homebrew/bin:/usr/local/bin:" + os.defpath,
                "LANG": "en_US.UTF-8", "OPENSSL_CONF": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
                "GIT_TERMINAL_PROMPT": "0"}
@@ -706,7 +737,7 @@ def run_command(workdir, command):
             process = subprocess.Popen(args, cwd=workdir, env=env, stdin=subprocess.DEVNULL,
                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
         except OSError as exc:
-            raise WorkerError("Could not launch the macOS sandbox for this task command.") from exc
+            raise WorkerError("Could not launch the sandbox for this task command.") from exc
         deadline = time.monotonic() + AGENT_TIMEOUT
         timed_out = False
         with process, selectors.DefaultSelector() as selector:
@@ -729,8 +760,11 @@ def run_command(workdir, command):
             finally:
                 with contextlib.suppress(ProcessLookupError):
                     os.killpg(process.pid, signal.SIGKILL)
-        return dict(exit_code=process.returncode, timed_out=timed_out, truncated=truncated,
-                    output=output.decode("utf-8", errors="replace"))
+        text = output.decode("utf-8", errors="replace")
+        if args[0].endswith("bwrap") and process.returncode == 1 and text.startswith("bwrap: "):
+            # bubblewrap itself failed before the command ran, for example under a container's seccomp policy.
+            raise WorkerError("Could not start the Linux sandbox for this task command: " + text.strip()[:200])
+        return dict(exit_code=process.returncode, timed_out=timed_out, truncated=truncated, output=text)
 
 
 def _git(repo, *args, env=None):

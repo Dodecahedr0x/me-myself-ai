@@ -18,7 +18,7 @@ Claude Code uses its existing sign-in in safe mode. Codex uses its default file-
 
 The caller supplies the task's source, applicable rules, approved style, progress and receipts. Connected text and repository contents are evidence. An agent may prepare a proposal but cannot authorize or dispatch it. Invalid JSON, malformed records, oversized inputs, a missing or signed-out CLI, timeouts and failed processes produce retryable errors. The app owns scheduling, authorization, delivery, evidence checks and durable progress.
 
-A coding task gets a separate named Git branch and worktree under app-managed storage outside the source repository. Retries verify and reuse that checkout. File context comes from a bounded selection of small UTF-8 files. Credentials, Git metadata, hidden paths, symlinks and special files are excluded. A fixed list of project configuration dotfiles is the exception: CI directories such as `.github`, `.gitlab` and `.circleci`, and files such as `.gitignore`, `.gitattributes` and `.editorconfig` can be read and edited, so a task can add a CI workflow. Other hidden names, including `.git`, `.env`, `.npmrc` and `.ssh`, stay excluded. The worker accepts bounded whole-file replacements at relative paths under the task worktree. Replacing an existing file requires its complete original text in the supplied context and matching content at application time. A failed write leaves earlier completed replacements available for inspection and retry. For a local command request the app launches a separate macOS sandbox in the task directory. The command can read and write working files and use installed toolchains. The app owns the clone’s Git metadata. Each inference sequence can request up to four commands. Each command has a three-minute deadline and returns the last 12 KiB of combined output. It receives a disposable home and temporary directory. The sandbox denies access to other workspaces, Keychain services and outbound network connections. The worker returns bounded command output and exit status to the selected provider. A timeout or launch failure is recorded as evidence.
+A coding task gets a separate named Git branch and worktree under app-managed storage outside the source repository. Retries verify and reuse that checkout. File context comes from a bounded selection of small UTF-8 files. Credentials, Git metadata, hidden paths, symlinks and special files are excluded. A fixed list of project configuration dotfiles is the exception: CI directories such as `.github`, `.gitlab` and `.circleci`, and files such as `.gitignore`, `.gitattributes` and `.editorconfig` can be read and edited, so a task can add a CI workflow. Other hidden names, including `.git`, `.env`, `.npmrc` and `.ssh`, stay excluded. The worker accepts bounded whole-file replacements at relative paths under the task worktree. Replacing an existing file requires its complete original text in the supplied context and matching content at application time. A failed write leaves earlier completed replacements available for inspection and retry. For a local command request the app launches a separate [command sandbox](#command-sandbox) in the task directory. The command can read and write working files and use installed toolchains. The app owns the clone’s Git metadata. Each inference sequence can request up to four commands. Each command has a three-minute deadline and returns the last 12 KiB of combined output. It receives a disposable home and temporary directory. The sandbox denies access to other workspaces, Keychain services and outbound network connections. The worker returns bounded command output and exit status to the selected provider. A timeout or launch failure is recorded as evidence.
 
 ## Acceptance criteria
 
@@ -41,3 +41,25 @@ The task worker receives a bounded list of available paths. It prioritizes named
 - Drafting and applying local changes can be verified with a fixture CLI and temporary Git repositories without provider accounts.
 
 A task waiting on a question may identify independent local steps. Each gets a child agent and its own task record. A shared decision can block several steps in the same project. Answering that decision resumes each dependent task. The parent receives child outcomes as context. A project rule set to “Leave to me” pauses that decision for the user.
+
+## Command sandbox
+
+Task commands run in a kernel-enforced sandbox on every instance, with the same boundary on each platform:
+
+- **Writable:** the task folder and a disposable home and temporary folder. The clone's `.git` metadata stays read-only, and the task folder itself cannot be removed.
+- **Readable:** system toolchains. On macOS, the system, Xcode command-line tools and Homebrew. On Linux, `/usr`, the loader links, CA certificates and `/opt`.
+- **Denied:** outbound network, other workspaces, the app's data folder and credentials, Keychain services on macOS, and the provider's environment.
+
+**macOS** uses `sandbox-exec` with the app's profile.
+
+**Linux** uses bubblewrap (`bwrap`). Each command gets new user, network, PID, IPC and UTS namespaces, a private `/proc`, `/dev` and `/tmp`, and bind mounts of only the paths above. The VPS installer and the Docker image install `bubblewrap`. The systemd unit keeps its hardening, except `ProtectKernelTunables`: that setting stops bubblewrap mounting a private `/proc`, and the unprivileged service user cannot change kernel settings anyway. Ubuntu's AppArmor rule for unprivileged user namespaces allows `/usr/bin/bwrap`.
+
+A missing bubblewrap, or bubblewrap refused by the host (for example a container's seccomp policy), fails the command with a message that names the cause. It does not report it as the command's own exit status.
+
+Acceptance, verified by `tests/test_worker.py` on macOS, and on Ubuntu 26.04 as the service user under the unit's hardening:
+
+- A command writes a file in the task folder, exits with its own status and returns its output.
+- It cannot read a file outside the task folder through a symlink, write `.git/config`, open a network connection, read `/etc/shadow`, or see a provider token from the service environment.
+- On Linux, `/proc` is available inside the sandbox.
+- Without bubblewrap, the command fails with an install instruction.
+
