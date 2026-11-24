@@ -178,3 +178,25 @@ class GitHubAccountTests(unittest.TestCase):
         self.engine.discover(key)
         self.assertEqual(self.engine.db.get("tasks", key)["status"], "skipped")
         self.assertEqual(len(self.engine.db.rows("events")), 1)
+
+
+class SyncedCliLoginTests(unittest.TestCase):
+    """Where the GitHub CLI is missing, as on a VPS, the login synced from the Mac stands in for it."""
+
+    def test_falls_back_to_the_synced_login(self):
+        import connectors, github_signin
+        from unittest.mock import patch
+        secrets = {"github-cli:octo": "gho_synced"}
+        with patch.object(github_signin, "token_for", side_effect=RuntimeError("Install GitHub CLI")), \
+                patch.object(connectors, "_secret", side_effect=secrets.get):
+            self.assertEqual(connectors.github_credential(dict(auth_method="gh_account", identity="Octo")), "gho_synced")
+            self.assertEqual(connectors.github_credential(dict(github_parent="a", identity="Octo")), "gho_synced")
+            with self.assertRaises(RuntimeError):
+                connectors.github_credential(dict(auth_method="gh_account", identity="Other"))
+
+    def test_prefers_the_local_cli(self):
+        import connectors, github_signin
+        from unittest.mock import patch
+        with patch.object(github_signin, "token_for", return_value="gho_local"), \
+                patch.object(connectors, "_secret", return_value="gho_synced"):
+            self.assertEqual(connectors.github_credential(dict(auth_method="gh_account", identity="Octo")), "gho_local")

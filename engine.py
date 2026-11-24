@@ -30,8 +30,8 @@ import worker
 from store import Store, uid
 
 
-# The GitHub CLI login of a gh_account connection, copied into the app's store so peers can clone and fetch.
-GITHUB_CLI_LOGIN = "github-cli:"
+# The GitHub CLI login of a gh_account connection, copied into the app's store so peers can use it.
+GITHUB_CLI_LOGIN = connectors.GITHUB_CLI_LOGIN
 
 
 class SyncedSecrets:

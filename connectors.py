@@ -211,11 +211,25 @@ def _secret(identity):
     return _store().access("read", identity)
 
 
+# A GitHub CLI login copied into the app's store by the instance that has it, so peers can use it.
+GITHUB_CLI_LOGIN = "github-cli:"
+
+
 def github_credential(conn):
     if conn.get("unavailable"):
         raise Rejected("This repository is no longer available to the connected GitHub account.")
     if conn.get("github_parent") or conn.get("auth_method") in {"gh_account", "gh_repository"}:
-        return github_signin.token_for(conn["identity"])
+        try:
+            return github_signin.token_for(conn["identity"])
+        except RuntimeError:
+            # No GitHub CLI login here, as on a VPS: use the login synced from the instance that has one.
+            try:
+                synced = _secret(GITHUB_CLI_LOGIN + conn["identity"].casefold())
+            except Exception:
+                synced = None
+            if synced:
+                return synced
+            raise
     return _secret(conn["id"])
 
 
