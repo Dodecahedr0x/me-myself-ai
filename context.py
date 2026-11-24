@@ -1,4 +1,4 @@
-"""Shared context, schedules and the curator tools Hermes uses through the MCP bridge.
+"""Shared context, schedules and the curator tools Hermes uses through the app MCP server.
 
 The app owns these records. Hermes decides what to keep, refresh, retire and schedule.
 Task agents only receive the scoped entries selected here; nothing in this module sends.
@@ -6,9 +6,7 @@ Task agents only receive the scoped entries selected here; nothing in this modul
 
 import datetime
 import json
-import os
 import re
-import secrets
 
 from store import uid
 
@@ -107,24 +105,6 @@ class Context:
     def __init__(self, engine):
         self.engine = engine
         self.db = engine.db
-
-    # --- Access token for the Hermes bridge -------------------------------------------------
-
-    def token(self):
-        config = self.db.get("config", "hermes") or {}
-        if not config.get("token"):
-            config = {"id": "hermes", "token": secrets.token_urlsafe(32), "last_call": 0}
-            self.db.put("config", config)
-        return config["token"]
-
-    def publish(self, port):
-        """Tell the stdio bridge where to find this launch. Only the user can read the file."""
-        path = self.db.root / "hermes.json"
-        tmp = path.with_suffix(".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump({"port": port, "token": self.token()}, f)
-        os.replace(tmp, path)
 
     # --- Context entries --------------------------------------------------------------------
 
@@ -298,10 +278,7 @@ class Context:
     def call(self, name, args):
         if name not in TOOLS or not isinstance(args, dict):
             raise ValueError("Unknown tool.")
-        self.token()
-        config = self.db.get("config", "hermes")
-        config["last_call"] = self.engine.now()
-        self.db.put("config", config)
+        self.db.put("config", {"id": "hermes", "last_call": self.engine.now()})
         if name == "activity_recent":
             return self.recent(args.get("hours", 24))
         if name == "context_search":

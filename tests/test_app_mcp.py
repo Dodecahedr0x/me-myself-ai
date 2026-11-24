@@ -298,7 +298,7 @@ class AgentSetupTests(unittest.TestCase):
             name = Path(args[0]).name
             key = (name, *args[1:3])
             return outputs.get(key, (0, "", ""))
-        return (patch("agents.executable", side_effect=lambda n: "/bin/" + n if n in installed else None),
+        return (patch("agents.executable", side_effect=lambda n, root=None: "/bin/" + n if n in installed else None),
                 patch("agents._run", side_effect=run))
 
     def states(self):

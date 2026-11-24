@@ -16,6 +16,8 @@ services:
       - "127.0.0.1:8801:8801"
       # Sync with your paired instances. Mutual TLS; only paired instances get past pairing.
       - "8802:8802"
+      # The app's own Hermes dashboard, when you start it. Loopback only, like the app dashboard.
+      - "127.0.0.1:9119:9119"
     volumes:
       - memyselfai-data:/data
     environment:

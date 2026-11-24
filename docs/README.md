@@ -53,7 +53,7 @@ flowchart LR
     CLI -->|Proposed action| Executor
     Executor -->|Authorized write| Sources["Connected Slack, mail or GitHub account"]
     Executor -->|Delivered commitment creates follow-up| Tasks
-    Hermes[Hermes agent] <-->|MCP bridge: context and schedule tools| ContextStore[Context store and schedules]
+    HermesCurator[Hermes orchestrator] <-->|App MCP: context and schedule tools| ContextStore[Context store and schedules]
     ContextStore -->|Due schedule| Tasks
     ContextStore -->|Scoped, fresh context| CLI
     Checks[MeMyselfAI fixture tests or maintainer report] --> Findings[Self-improvement findings]
@@ -61,7 +61,7 @@ flowchart LR
     Tasks -->|Issue, fix branch, linked PR and code review| Executor
 ```
 
-Hermes keeps a shared context store current through an MCP bridge and manages recurring tasks. It cannot send anything. The executor applies dry mode and the user's rules for each project and decision type. A promise in a delivered message creates a task of its own. Each task agent checks its completion criteria and records evidence in the dashboard.
+The app's own Hermes keeps a shared context store current through the app MCP server and manages recurring tasks. It cannot send anything. The executor applies dry mode and the user's rules for each project and decision type. A promise in a delivered message creates a task of its own. Each task agent checks its completion criteria and records evidence in the dashboard.
 
 ## Planned direction: an inbox for a proactive agent you host
 

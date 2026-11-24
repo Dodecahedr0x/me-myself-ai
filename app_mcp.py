@@ -17,6 +17,8 @@ import time
 import urllib.error
 import urllib.request
 
+import context
+
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 SESSION_SECONDS = 3600
 MAX_TEXT = 20000
@@ -132,6 +134,10 @@ TOOLS = {
     "comment": ({TASK}, "Post the exact comment text on this task's GitHub issue or pull request. "
                 "The app decides whether it needs the user's review first.", _schema(["text"], text=_S)),
 }
+# Shared context and schedules, curated by the orchestrator. See docs/specs/context-and-schedules.md.
+CONTEXT_TOOLS = tuple(name for name in context.TOOLS if name != "activity_recent")
+for _name in CONTEXT_TOOLS:
+    TOOLS[_name] = ({ORCHESTRATOR}, *context.TOOLS[_name])
 
 
 def _text(args, key, limit=MAX_TEXT, empty=False):
@@ -187,6 +193,11 @@ class Tools:
             raise Refused(f"{name} is not allowed for this task type.")
         if not isinstance(args, dict):
             raise Refused("Arguments must be an object.")
+        if name in CONTEXT_TOOLS:
+            try:
+                return self.engine.context.call(name, args)
+            except ValueError as exc:
+                raise Refused(str(exc)) from None
         return getattr(self, name)(session, args)
 
     def own_task(self, session, key=None):

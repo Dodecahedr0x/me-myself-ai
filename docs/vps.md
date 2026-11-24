@@ -57,7 +57,21 @@ docker compose exec memyselfai npm install -g @anthropic-ai/claude-code @openai/
 docker compose exec -it memyselfai claude auth login
 ```
 
-Install Hermes with its own installer as the same user, then use the **Sign in** command shown in Settings → Agents. On Linux, Claude Code stores its login in `~/.claude/.credentials.json`, which Hermes also reads. Logins on the VPS are separate from your Mac's.
+The installer and the service install MeMyselfAI's own Hermes into `/var/lib/memyselfai/workspace/hermes-runtime`, with its own home, so a Hermes already on the server is left alone. With Docker it installs into the `/data` volume on first start. Then use the **Sign in** command shown in Settings → Agents. On Linux, Claude Code stores its login in `~/.claude/.credentials.json`, which Hermes also reads. Logins on the VPS are separate from your Mac's.
+
+## Opening Hermes directly
+
+The app's Hermes is an ordinary Hermes install with a private home. To use it yourself, for example to see its dashboard:
+
+```sh
+# systemd: the installer adds this command for the server's admin
+sudo memyselfai-hermes dashboard --no-open
+ssh -L 9119:127.0.0.1:9119 you@your-server   # then open http://127.0.0.1:9119 on your computer
+# Docker: port 9119 is published on the host's loopback only
+docker compose exec memyselfai /data/workspace/hermes-runtime/memyselfai-hermes dashboard --no-open --host 0.0.0.0 --insecure
+```
+
+The first `dashboard` on a server builds Hermes' web interface with the server's Node.js. The app rewrites Hermes' `config.yaml` on every start, so change settings through MeMyselfAI rather than in Hermes.
 
 ## Pairing with your laptop
 

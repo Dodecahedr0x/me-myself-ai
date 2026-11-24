@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 
+import hermes_runtime
 import worker
 
 HARNESSES = ("claude", "codex", "hermes")
@@ -48,7 +49,10 @@ def _run(args, env=None):
     return done.returncode, done.stdout.decode("utf-8", "replace"), done.stderr.decode("utf-8", "replace")
 
 
-def executable(name):
+def executable(name, root=None):
+    if name == "hermes":
+        # Only the app's own copy, never a Hermes the user installed. See hermes_runtime.py.
+        return hermes_runtime.Runtime(root).binary() if root else None
     if name in worker.PROVIDERS:
         return worker._executable(name)
     directories = [p for p in os.get_exec_path() if os.path.isabs(p)]
@@ -115,7 +119,7 @@ def hermes_status(binary, root, subscription, harness_states):
 
 def sign_in_command(name, root, subscription):
     """The interactive command that signs a harness in. It runs in the user's terminal."""
-    binary = executable(name) or name
+    binary = executable(name, root) or name
     if name == "claude":
         return [binary, "auth", "login"]
     if name == "codex":
@@ -155,6 +159,7 @@ class Agents:
         self.settings = settings
         self.lock = threading.Lock()
         self.cache = None
+        self.hermes = hermes_runtime.Runtime(root)
 
     def subscription(self):
         s = self.settings()
@@ -162,6 +167,27 @@ class Agents:
         return chosen if chosen in SUBSCRIPTIONS else "claude"
 
     def inventory(self, refresh=False):
+        data = self._inventory(refresh)
+        # Install progress changes faster than the readiness cache.
+        install = self.hermes.state()
+        for row in data["harnesses"]:
+            if row["id"] == "hermes":
+                row.update(install=install, command=str(self.hermes.wrapper), dashboard=self.hermes.dashboard_command())
+                if row["state"] != "not_installed" and install.get("status") != "ready":
+                    self.cache = None  # Re-check once the install finishes.
+                elif row["state"] == "not_installed" and install.get("status") == "ready":
+                    self.cache = None
+                    return self.inventory(refresh=True) if not refresh else data
+        return data
+
+    def open_dashboard(self):
+        """Open the private Hermes' own dashboard in Terminal on macOS, or return the command to run."""
+        if not self.hermes.binary():
+            raise ValueError("Hermes is still being installed.")
+        command = self.hermes.dashboard_command()
+        return {"command": command, "opened": open_in_terminal(command)}
+
+    def _inventory(self, refresh=False):
         with self.lock:
             if not refresh and self.cache and time.monotonic() - self.cache[0] < CACHE_SECONDS:
                 return self.cache[1]
@@ -169,7 +195,7 @@ class Agents:
             rows = []
             states = {}
             for name in HARNESSES:
-                binary = executable(name)
+                binary = executable(name, self.root)
                 version = signed_in = None
                 error = ""
                 if binary and name == "claude":
@@ -233,9 +259,9 @@ class Agents:
         return path
 
     def hermes_command(self, prompt):
-        binary = executable("hermes")
+        binary = executable("hermes", self.root)
         if not binary:
-            raise ValueError("Hermes is not installed.")
+            raise ValueError("Hermes is not installed yet.")
         return [binary, "-z", prompt, "-t", ",".join(HERMES_TOOLSETS), "--ignore-rules"], hermes_env(
             self.root, binary
         )

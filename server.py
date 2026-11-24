@@ -238,6 +238,8 @@ def main():
         engine = Engine(args.data)
         server = HTTP(engine, args.port, args.bind)
         engine.start()
+        # The app's own Hermes. Installs on first start and after an app update. See hermes_runtime.py.
+        engine.agents.hermes.ensure_async()
         if args.sync_port:
             port = engine.instances.listen(args.sync_bind, args.sync_port, capacity=engine.capacity)
             print(f"Sync listener on {args.sync_bind}:{port}, fingerprint {engine.instances.fingerprint}",

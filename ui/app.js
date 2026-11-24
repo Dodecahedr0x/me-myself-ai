@@ -467,13 +467,34 @@ async function loadAgents(force=false) {
   finally { agentsPending=false; }
   if (activeView==="settings") render();
 }
+// MeMyselfAI installs its own Hermes, separate from any other Hermes. See docs/specs/hermes-orchestrator.md#install.
+function hermesDetail(a,detail) {
+  const install=a.install||{};
+  if (install.status==="installing") return a.role+" · Installing: "+(install.step||"starting")+"…";
+  if (install.status==="failed" && !a.installed) return a.role+" · Install failed: "+(install.error||"unknown error");
+  if (!a.installed) return a.role+" · Installing on first start…";
+  return detail+" · Open it directly with "+(a.command||"memyselfai-hermes")+(install.status==="failed"?" · Update failed: "+install.error:"");
+}
+function hermesControls(a) {
+  const install=a.install||{};
+  if (install.status==="installing") return "";
+  return (a.installed?button("Open dashboard","hermes-dashboard",null,"secondary"):"")+(install.status==="failed"||!a.installed?button("Retry install","hermes-install","sync","quiet"):"");
+}
+async function hermesAction(op) {
+  try {
+    const result=await request("/api/action",{op});
+    if (op==="hermes_install") { notify("Installing Hermes. This takes a few minutes."); agentsChecked=0; setTimeout(()=>loadAgents(true),3000); }
+    else notify(result.opened?"The Hermes dashboard is starting in Terminal. Close that window to stop it.":"Run this on this machine, then open http://127.0.0.1:9119: "+result.command);
+  } catch(e) { showError(e.message); }
+}
 function agentsSection() {
   if (agentSetup===null) return section("Agents","",empty("Checking agents…"));
   const rows=(agentSetup.harnesses||[]).map(a=>{
     const uses=a.id==="hermes"?" · Uses your "+(subscriptionNames[a.uses]||a.uses):"";
     const detail=a.role+" · "+(agentStates[a.state]||"Status unavailable")+(a.version?" · "+a.version:"")+uses+(a.state==="sign_in"?" · Run: "+a.sign_in:"")+(a.detail?" · "+a.detail:"");
-    const controls=a.state==="sign_in"?button("Sign in","agent-sign-in",null,"secondary",'data-agent="'+esc(a.id)+'"'):"";
-    return entry(a.id==="hermes"?"stack":"working",a.label,detail,controls);
+    let controls=a.state==="sign_in"?button("Sign in","agent-sign-in",null,"secondary",'data-agent="'+esc(a.id)+'"'):"";
+    if (a.id==="hermes") return entry("stack",a.label,hermesDetail(a,detail),controls+hermesControls(a));
+    return entry("working",a.label,detail,controls);
   }).join("");
   return section("Agents",button("Check again","agents","sync","quiet"),rows||empty("Agent status unavailable.",button("Retry","agents","sync")));
 }
@@ -574,7 +595,7 @@ function stepSummary(s) {
     case "agent": return s.ready?agent+" is installed and signed in.":s.state==="sign_in"?agent+" is installed. Sign in once.":s.state==="not_installed"?"Install "+agent+" on this Mac, then choose Check again.":agent+": "+(agentStates[s.state]||"status unavailable")+".";
     case "accounts": return s.ready?s.count+(s.count===1?" account":" accounts")+" connected.":s.github_login?"Your GitHub CLI is signed in as @"+s.github_login+". Connect it in one click.":"Connect mail, Slack or GitHub.";
     case "projects": return s.ready?s.count+(s.count===1?" project has":" projects have")+" repositories.":s.skipped?"Skipped. Tasks go to Global until you add a project.":"Add a project with its repository folders, or skip for now.";
-    case "orchestrator": return s.ready?"Hermes is ready.":s.state==="sign_in"?"Hermes is installed. Sign in once.":"Install Hermes to turn this on. Until then, tasks start from new activity only.";
+    case "orchestrator": return s.ready?"Hermes is ready.":s.state==="sign_in"?"Hermes is installed. Sign in once.":"The app is installing its own Hermes. Until it is ready, tasks start from new activity only.";
     case "server": {
       if (vpsActive()) return "Setting up "+setup.vps.run.host+"…";
       if (!s.ready) return "Pick one of your SSH hosts. The app installs, starts and pairs it.";
@@ -1178,6 +1199,8 @@ function handleAction(el) {
     case "orchestrator-run": void mutate({op:"orchestrator_settings",run_now:true},"Sweep requested."); return;
     case "orchestrator-toggle": void mutate({op:"orchestrator_settings",enabled:!state.orchestrator.enabled},state.orchestrator.enabled?"Orchestrator paused.":"Orchestrator resumed."); return;
     case "agent-sign-in": void signInAgent(el.dataset.agent); return;
+    case "hermes-install": void hermesAction("hermes_install"); return;
+    case "hermes-dashboard": void hermesAction("hermes_dashboard"); return;
     case "setup-jump": document.getElementById("step-"+el.dataset.step)?.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"start"}); return;
     case "setup-refresh": setupChecked=0; void loadSetup(true); return;
     case "setup-github": void setupMutate({op:"setup_connect_github"},r=>"Connected GitHub as @"+r.account+"."); return;

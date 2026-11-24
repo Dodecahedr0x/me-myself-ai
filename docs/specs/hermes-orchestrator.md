@@ -26,7 +26,7 @@ flowchart LR
 
 | Concern | Behavior |
 | --- | --- |
-| Install | On first run and on each new instance, the app installs a Hermes version it pins, into its own data directory. It verifies the download's checksum and uses a private home (`HERMES_HOME`), so it never touches a `~/.hermes` the user already has. Progress and failures appear in Settings → Agents, with a retry. |
+| Install | On first run and on each new instance, the app installs a Hermes version it pins, into its own data directory. It verifies the download's checksum and uses a private home (`HERMES_HOME`), so it never touches a `~/.hermes` the user already has. Progress and failures appear in Settings → Agents, with a retry. See [Install](#install). |
 | Configuration | The app writes Hermes' `config.yaml` from workspace settings. It overwrites any drift on start. |
 | Model | Hermes uses the user's Claude or ChatGPT subscription, the same one the task agents use. With the Claude subscription, Hermes (provider `anthropic`) reuses Claude Code's own login. On macOS it reads the Keychain item `Claude Code-credentials`, which can show a one-time macOS access prompt. It writes refreshed tokens back to Claude Code. With the ChatGPT subscription, Hermes needs its own one-time device sign-in into the app's private home (`hermes auth add openai-codex`). It does not reuse `~/.codex/auth.json` automatically. The app offers both from Settings → Agents. An API key is an alternative. Sign-ins belong to each instance and do not sync. See [shared agent setup](agents-and-app-mcp.md#shared-agent-setup). |
 | Process | The app runs Hermes one prompt at a time: `hermes -z <prompt> -t memory,todo,session_search,mcp-memyselfai`, resuming the orchestrator's session. In Hermes 0.13, ACP mode always enables its coding toolset (terminal, file writing, browser, code execution), and configuration cannot remove it. ACP is therefore not used until it can be limited. After three failed runs in 10 minutes, the app shows the error on the orchestrator row and retries with backoff: 1, 5, 30 seconds, then every 5 minutes. |
@@ -34,6 +34,28 @@ flowchart LR
 | Updates | The app updates Hermes only to a version a MemyselfAI release has tested. It never runs `hermes update`. A failed update rolls back to the previous version. |
 | Memory and skills | Hermes' `MEMORY.md`, `USER.md`, `SOUL.md` and skills live in the workspace Markdown store. They have revision history and sync between instances. Skill changes Hermes makes follow the existing [improvement review](activity-and-improvement.md). |
 | One active copy | Every instance has Hermes installed. Only the instance that owns the orchestrator runs it, under the [ownership protocol](instances-and-sync.md#ownership-protocol). |
+
+## Install
+
+Implemented in `hermes_runtime.py` and tested in `tests/test_hermes_runtime.py`.
+
+- **Where.** Everything is under `<data>/hermes-runtime`: a pinned uv, a uv-managed Python 3.11, the Hermes source and its environment. Hermes' home is `<data>/hermes`. The app looks for Hermes only there, never on `PATH`, so a Hermes the user installed and its `~/.hermes` are neither used nor changed.
+- **Pinned and verified.** Hermes 0.13.0 comes from the GitHub release archive of tag `v2026.5.7`, and uv 0.13.9 from its release for the platform. Both are checked against SHA-256 values in the code before anything is unpacked. Dependencies come from Hermes' own `uv.lock` (`uv sync --frozen`) with the `mcp` and `web` extras. uv ignores the user's uv configuration and keeps its cache and Python under the runtime folder. It deletes the cache after a successful install. Archives with paths or links outside their folder are refused.
+- **When.** On every start the app checks the install in the background and installs when the pinned version is missing. That covers the first launch and app updates. The VPS installer runs the same step as the service user before starting the service. In Docker it happens on first start into the `/data` volume.
+- **Updates and rollback.** A new version is installed next to the old one, and `current` switches only after the new `hermes --version` reports the pinned version. A failed install or update keeps the previous version running and shows the error in Settings → Agents with **Retry install**.
+- **Platforms.** macOS on Apple silicon and Intel, and Linux on x86_64 and arm64.
+
+### Direct access
+
+The app writes a `memyselfai-hermes` command that runs its Hermes with its private home, for example `memyselfai-hermes dashboard` or `memyselfai-hermes sessions list`. On a Mac it is linked from `~/.local/bin` unless another file has that name. On a VPS the installer adds `/usr/local/bin/memyselfai-hermes`, which runs as the service user. **Settings → Agents → Open dashboard** starts the dashboard in Terminal on a Mac, or shows the command elsewhere. The macOS app ships the dashboard prebuilt from the pinned source (`scripts/bundle-hermes-dashboard.sh`), so it needs no Node.js. On a VPS, Hermes builds it with the server's Node.js on first use. The dashboard binds to loopback only. Using Hermes directly is the user acting; the app's dry mode does not apply there. The app rewrites `config.yaml` on start, so settings changed through Hermes directly can be replaced.
+
+Verified on 2026-11-24:
+- A real install on macOS (Apple silicon) took 11 seconds. It reported `Hermes Agent v0.13.0` on Python 3.11.18 and used 339 MB before the cache cleanup. Starting the app on an empty workspace installed it automatically, and Settings → Agents reported it as installed.
+- `memyselfai-hermes dashboard` served its page.
+- In a clean Debian 12 arm64 container, `deploy/install-vps.sh` installed it as the service user (302 MB), and `memyselfai-hermes --version` worked for root.
+- In every case `~/.hermes` was untouched.
+
+Not verified: the Docker image start path and Linux x86_64 (same code, different uv build), and the app bundle build with the prebuilt dashboard.
 
 ## What Hermes can and cannot do
 
@@ -98,6 +120,7 @@ Implemented in `orchestrator.py` and tested in `tests/test_orchestrator.py`. The
 - **Each run** gets a fresh orchestrator session token, written to a private file that is deleted afterwards. The app rewrites Hermes' config and runs `hermes -z` with the `memory`, `todo`, `session_search` and `memyselfai` toolsets. In one-shot mode, an MCP server's toolset is named after the server itself. Runs time out after 10 minutes. Failures retry after 1, 5, 30 and then 60 minutes.
 - **Autonomy.** The orchestrator never asks the user to decide whether to act. It has no tool to propose or ask. Its prompt tells it to dispatch anything that plausibly needs action and to let the task agent skip what does not.
 - **Safety limit.** `dispatch_task` stops at a daily limit of new tasks (default 50, adjustable up to 500). It counts tasks the orchestrator created since local midnight. Returning an existing task costs nothing.
+- **Context.** Sweeps also curate the [shared context and schedules](context-and-schedules.md). A cleanup run follows once a day after 07:00 when an entry is stale.
 - **Conversation.** Home shows an Orchestrator section with status, new tasks today against the limit, the latest messages, and **Ask**, **Sweep now** and **Pause**. Sweep summaries go to the activity log. Digests and replies go to the thread.
 - When Hermes is not ready, runs wait and a prompt gets an answer explaining what to fix.
 

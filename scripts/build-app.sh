@@ -19,6 +19,7 @@ cp tests/test_bug_integration.py tests/test_http.py "$resources/tests/"
 mkdir -p "$resources/vendor/google-workspace"
 cp vendor/google-workspace/darwin-v0.0.8.tar.gz vendor/google-workspace/LICENSE vendor/google-workspace/account-email.cjs "$resources/vendor/google-workspace/"
 sh scripts/bundle-google-runtime.sh "$root/build/runtime-cache" "$contents"
+sh scripts/bundle-hermes-dashboard.sh "$root/build/runtime-cache" "$contents"
 cp -R ui/. "$resources/ui/"
 python3 - "$resources/oauth-clients.json" <<'PY'
 import json

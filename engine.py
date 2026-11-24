@@ -2404,6 +2404,11 @@ class Engine:
             return self.orchestrator.configure(d)
         if op == "agent_sign_in":
             return self.agents.open_sign_in(required(d, "agent", 16))
+        if op == "hermes_install":
+            self.agents.hermes.ensure_async()
+            return
+        if op == "hermes_dashboard":
+            return self.agents.open_dashboard()
         if op.startswith("setup_") or op.startswith("vps_"):
             return self.setup_action(op, d)
         if op == "check_folder_access":

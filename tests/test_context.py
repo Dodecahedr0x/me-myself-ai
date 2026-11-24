@@ -1,22 +1,14 @@
 """Context store, schedules, the Hermes bridge and handoff evidence. See docs/specs/context-and-schedules.md."""
 
 import datetime
-from io import BytesIO
 import json
-from pathlib import Path
-import subprocess
-import sys
 import tempfile
-import threading
 import unittest
 from unittest.mock import patch
 
 from context import DAY, next_run
 from engine import Engine, digest
-import hermes_mcp
-import server
-
-ROOT = Path(__file__).resolve().parent.parent
+import app_mcp
 
 
 def local(year, month, day, hour, minute=0):
@@ -60,7 +52,7 @@ class ContextTests(unittest.TestCase):
             self.save(entry["subject"], entry["project"])
         seen = {}
 
-        def model(role, payload, provider):
+        def model(role, payload, provider, *rest, **options):
             seen.update(payload)
             return dict(outcome="done", kind="task", text="ok", commitments=[])
 
@@ -157,7 +149,7 @@ class ContextTests(unittest.TestCase):
         def poll(c, start, stop):
             return [dict(accepted, key="new", timestamp=start + 1, title="Missed request")]
 
-        def model(role, payload, provider):
+        def model(role, payload, provider, *rest, **options):
             if role == "improvement":
                 return dict(body="Only flag direct mentions.", reason="Narrower")
             if role == "decision":
@@ -174,70 +166,50 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(self.db.get("tasks", report["id"])["status"], "question")
 
 
-class HermesBridgeTests(unittest.TestCase):
+class OrchestratorContextToolTests(unittest.TestCase):
+    """Hermes reaches context and schedules only through the app MCP server's orchestrator session."""
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.data = Path(self.directory.name)
+        self.now = local(2026, 11, 20, 10)
+        self.engine = Engine(self.directory.name, lambda: self.now)
+        self.addCleanup(self.engine.close)
+        self.tools = app_mcp.Tools(self.engine)
 
-    def test_tool_endpoint_requires_token_host_and_no_browser_origin(self):
-        engine = Engine(self.data)
-        self.addCleanup(engine.close)
-        http = server.HTTP(engine)
-        self.addCleanup(http.server_close)
-        good = {"Host": f"127.0.0.1:{http.server_port}", "Authorization": "Bearer " + engine.context.token()}
-        for headers, expected in [
-            ({**good, "Authorization": "Bearer wrong"}, 403),
-            ({**good, "Host": "example.net"}, 403),
-            ({**good, "Origin": "https://example.net"}, 403),
-            (good, 200),
-        ]:
-            body = json.dumps({"name": "schedule_list", "arguments": {}}).encode()
-            req = server.Handler.__new__(server.Handler)
-            req.server, req.path, req.rfile = http, "/hermes/tool", BytesIO(body)
-            req.headers = {**headers, "Content-Length": str(len(body))}
-            calls = []
-            req.output = lambda status, *rest, **kw: calls.append(status)
-            req.do_POST()
-            self.assertEqual(calls, [expected])
+    def call(self, session, name, arguments):
+        reply = app_mcp.handle(self.tools, session, {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments}})
+        result = reply["result"]
+        return json.loads(result["content"][0]["text"]), result["isError"]
 
-    def test_stdio_bridge_lists_tools_and_reports_a_closed_app(self):
-        messages = [
-            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26"}},
-            {"jsonrpc": "2.0", "method": "notifications/initialized"},
-            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
-            {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "schedule_list", "arguments": {}}},
-        ]
-        result = subprocess.run(
-            [sys.executable, "-B", str(ROOT / "hermes_mcp.py"), "--data", str(self.data)],
-            input="".join(json.dumps(m) + "\n" for m in messages), capture_output=True, text=True, timeout=30,
-        )
-        replies = [json.loads(line) for line in result.stdout.splitlines()]
-        self.assertEqual([r["id"] for r in replies], [1, 2, 3])
-        self.assertEqual(replies[0]["result"]["protocolVersion"], "2025-03-26")
-        self.assertIn("context_save", {t["name"] for t in replies[1]["result"]["tools"]})
-        self.assertTrue(replies[2]["result"]["isError"])
-        self.assertIn("not running", replies[2]["result"]["content"][0]["text"])
-
-    def test_bridge_reaches_a_running_app(self):
-        engine = Engine(self.data)
-        self.addCleanup(engine.close)
-        http = server.HTTP(engine)
-        self.addCleanup(http.server_close)
-        engine.context.publish(http.server_port)
-        self.assertEqual((self.data / "hermes.json").stat().st_mode & 0o777, 0o600)
-        threading.Thread(target=http.serve_forever, daemon=True).start()
-        self.addCleanup(http.shutdown)
-        call = lambda name, args: hermes_mcp.handle(  # noqa: E731
-            self.data, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args}}
-        )["result"]
-        saved = call("context_save", {"kind": "person", "subject": "Dana", "body": "Design lead"})
-        self.assertFalse(saved["isError"], saved)
-        found = json.loads(call("context_search", {"query": "design"})["content"][0]["text"])
+    def test_only_the_orchestrator_curates_context_and_schedules(self):
+        hermes = app_mcp.Session(app_mcp.ORCHESTRATOR)
+        task = app_mcp.Session(app_mcp.TASK, "t1")
+        names = {t["name"] for t in self.tools.visible(hermes)}
+        self.assertTrue({"context_save", "context_retire", "context_stale", "schedule_create", "schedule_cancel"} <= names)
+        self.assertFalse(names & {"send_email", "send_message", "comment"})
+        self.assertFalse({t["name"] for t in self.tools.visible(task)} & set(app_mcp.CONTEXT_TOOLS))
+        saved, error = self.call(hermes, "context_save", {"kind": "person", "subject": "Dana", "body": "Design lead"})
+        self.assertFalse(error, saved)
+        found, _ = self.call(hermes, "context_search", {"query": "design"})
         self.assertEqual([e["subject"] for e in found["entries"]], ["Dana"])
-        bad = call("schedule_create", {"title": "x", "body": "y", "origin": "user", "reason": "r", "time": "25:00"})
-        self.assertTrue(bad["isError"])
-        self.assertGreater(engine.state()["hermes"]["last_call"], 0)
+        refused, error = self.call(task, "context_save", {"kind": "fact", "subject": "x", "body": "y"})
+        self.assertTrue(error)
+        bad, error = self.call(hermes, "schedule_create", {"title": "x", "body": "y", "origin": "user", "reason": "r", "time": "25:00"})
+        self.assertTrue(error)
+        self.assertIn("HH:MM", bad["refused"])
+        self.assertGreater(self.engine.state()["hermes"]["last_call"], 0)
+
+    def test_cleanup_runs_daily_only_when_context_is_stale(self):
+        orch = self.engine.orchestrator
+        self.engine.mcp_url = "http://127.0.0.1:1/mcp"
+        orch.save(last_sweep=self.now, signature=orch.signature(), last_digest="2026-11-20")
+        self.assertIsNone(orch.due(self.now))
+        self.engine.context.save(dict(kind="fact", subject="Office", body="Closed Friday", review_after_days=1))
+        self.now += 2 * DAY
+        orch.save(last_sweep=self.now, signature=orch.signature(), last_digest="2026-11-22")
+        self.assertEqual(orch.due(self.now), "cleanup")
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ Connections, projects, decision rules, delivery settings and Markdown revisions 
 
 The sidebar links to agent provider settings. Settings shows the configured CLI and lets the user select Claude Code or Codex CLI independently of delivery mode. Both choices are available even if their executable is missing. The editor shows installation status, explains how to sign in using the CLI, and explains that the CLI may send supplied task context to its configured AI service. The user can recheck installation after installing a CLI. A pending style suggestion can be approved or declined. An investigation report links to each recovered task available in the queue.
 
-**Context** shows when Hermes last used the bridge, every schedule with its timing, origin, reason and next run (with **Cancel**), and every context entry with its kind, project and review state (with **Retire** or **Restore**). Stale entries are labeled as withheld from agents. **Decision rules** lists handoff candidates above the rules. [Context and schedules](context-and-schedules.md)
+**Context** shows when Hermes last used its context tools, every schedule with its timing, origin, reason and next run (with **Cancel**), and every context entry with its kind, project and review state (with **Retire** or **Restore**). Stale entries are labeled as withheld from agents. **Decision rules** lists handoff candidates above the rules. [Context and schedules](context-and-schedules.md)
 
 ## Acceptance criteria
 
