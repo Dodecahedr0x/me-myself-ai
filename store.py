@@ -100,7 +100,8 @@ class Store:
             rows = self.conn.execute(
                 """SELECT t.data, json_extract(c.data,'$.kind'),
                           json_extract(e.data,'$.raw.context.google_service'),
-                          json_extract(e.data,'$.raw.account'), json_extract(e.data,'$.raw.context.repository'),
+                          json_extract(e.data,'$.raw.account'), coalesce(nullif(json_extract(e.data,'$.raw.context.repository'),''),
+                              case when json_extract(c.data,'$.kind')='github' then json_extract(c.data,'$.config.repository') end),
                           json_extract(e.data,'$.raw.context.channel'), json_extract(c.data,'$.label'),
                           json_extract(workspace.data,'$.label')
                      FROM records AS t

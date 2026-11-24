@@ -220,7 +220,7 @@ class EngineWiringTests(Fixture):
         task = self.dispatch()
         seen = []
 
-        def agent(role, payload, provider, mcp=None):
+        def agent(role, payload, provider, workdir=None, mcp=None, **_):
             seen.append(mcp)
             if mcp:
                 session = self.sessions.get(mcp["token"])

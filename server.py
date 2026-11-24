@@ -185,7 +185,19 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(size))
             if not isinstance(data, dict):
                 raise ValueError("Expected an action object.")
-            result = choose_repository() if data.get("op") == "choose_repository" else s.engine.action(data)
+            if data.get("op") == "choose_repository":
+                result = choose_repository()
+            elif data.get("op") == "open_folder_settings":
+                if sys.platform != "darwin":
+                    raise ValueError("Folder privacy settings are available on macOS.")
+                try:
+                    subprocess.run(["/usr/bin/open", "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders"],
+                                   check=True, timeout=10, capture_output=True)
+                except (OSError, subprocess.SubprocessError) as exc:
+                    raise ValueError("Open Privacy & Security in System Settings, then choose Files & Folders.") from exc
+                result = None
+            else:
+                result = s.engine.action(data)
             self.output(200, json.dumps({"ok": True, **(result or {})}).encode())
         except (ValueError, RuntimeError, OSError, KeyError) as exc:
             self.output(400, json.dumps({"error": str(exc)}).encode())

@@ -6,6 +6,7 @@ const plain = value => typeof value === "string" ? value : value == null ? "" : 
 const titleCase = text => String(text ?? "").replace(/[_-]/g, " ").replace(/^./, c => c.toUpperCase());
 const viewNames = {overview:"Home", tasks:"Tasks", activity:"Activity", connections:"Connections", projects:"Projects", policies:"Decision rules", skills:"Skills & style", setup:"Setup", settings:"Settings"};
 const paths = {
+  ignore:'<circle cx="12" cy="12" r="9"/><path d="m6 6 12 12"/>',
   overview:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   tasks:'<rect x="5" y="4" width="15" height="17" rx="2"/><path d="M9 4V2m7 2V2M9 10h7m-7 4h5"/>',
   activity:'<path d="M2 12h5l3-7 4 14 3-7h5"/>', connections:'<path d="m9 15 6-6m-4-2 2-2a4.2 4.2 0 0 1 6 6l-3 3m-3 3-2 2a4.2 4.2 0 0 1-6-6l3-3"/>',
@@ -19,8 +20,15 @@ const paths = {
   menu:'<path d="M3 5h18M3 12h18M3 19h18"/>', close:'<path d="m5 5 14 14m0-14L5 19"/>',
   check:'<path d="m4 12 5 5L20 6"/>', clock:'<circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/>',
   review:'<path d="M3 5h18v12H9l-5 4v-4H3Z"/><path d="M7 9h10m-10 4h7"/>',
+  reply:'<path d="m10 5-7 6 7 6v-4c5 0 8 1 11 5-1-7-4-10-11-10Z"/>',
+  inspect:'<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
   working:'<path d="m13 2-9 12h7l-1 8 10-13h-7Z"/>', done:'<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',
-  github:'<path d="M9 20c-3 1-4-1-5-2m10 4v-4c0-1 .2-2-.9-3 3-.3 6-1.5 6-6 0-1.3-.5-2.4-1.3-3.2.2-.8.2-2-.3-3.1 0 0-1.1-.3-3.5 1.2a11 11 0 0 0-6 0C5.7 2.4 4.5 2.7 4.5 2.7c-.5 1.1-.5 2.3-.3 3.1C3.4 6.6 3 7.7 3 9c0 4.5 3 5.7 6 6-1 1-1 1.7-1 3v4" transform="translate(1 0)"/>',
+  github:'<path fill="currentColor" stroke="none" d="M12 .3a12 12 0 0 0-3.79 23.39c.6.11.82-.26.82-.58v-2.24c-3.34.73-4.04-1.42-4.04-1.42-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.74.08-.74 1.21.09 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.5.99.11-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.48 11.48 0 0 1 6 0c2.29-1.55 3.3-1.23 3.3-1.23.66 1.66.24 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.6-2.81 5.62-5.49 5.92.43.37.82 1.1.82 2.22v3.32c0 .32.22.7.83.58A12 12 0 0 0 12 .3Z"/>',
+  google:'<path stroke="none" fill="currentColor" d="M21.8 12.2c0-.7-.1-1.4-.2-2.1H12v4h5.5a4.8 4.8 0 0 1-2.1 3.2 6.2 6.2 0 1 1 1-9.8l3-2.9A10.4 10.4 0 1 0 12 22.4c5.8 0 9.8-4.1 9.8-10.2Z"/>',
+  repository:'<path d="M5 18.5V5a2 2 0 0 1 2-2h12v18H7a2.5 2.5 0 0 1 0-5h12M9 6v6l2-1.5 2 1.5V6"/>',
+  git:'<circle cx="7" cy="5" r="2.5"/><circle cx="7" cy="19" r="2.5"/><circle cx="17" cy="7" r="2.5"/><path d="M7 7.5v9m10-7c0 4-4 5-10 5"/>',
+  file:'<path d="M5 3h9l5 5v13H5zM14 3v6h5"/>',
+  calendar:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 10h18"/>',
   slack:'<path d="M9 3v10m6-2v10M3 9h10m-2 6h10M6 3v2M3 18h2m13 3v-2m3-13h-2"/>',
   email:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 7 9-7"/>',
   sync:'<path d="M20 5v5h-5m-11 9v-5h5M5.5 9a7.5 7.5 0 0 1 12.8-3l1.7 3M4 15l1.7 3A7.5 7.5 0 0 0 18.5 15"/>',
@@ -31,9 +39,17 @@ const paths = {
 function icon(name, size = 18) {
   return '<svg aria-hidden="true" width="'+size+'" height="'+size+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round">'+(paths[name] || paths.dot)+'</svg>';
 }
+const sourceIcons = {github:"github",slack:"slack",email:"email",gmail:"email",google:"google",calendar:"calendar",git:"git",file:"file",local:"monitor","mac app":"monitor"};
+function namedIcon(glyph,label,size=16) {
+  return '<span class="named-icon" role="img" aria-label="'+esc(label)+'" title="'+esc(label)+'">'+icon(glyph,size)+'</span>';
+}
+function sourceMark(name,size=16) {
+  const key=String(name).toLowerCase();
+  return Object.hasOwn(sourceIcons,key)?namedIcon(sourceIcons[key],key==="github"?"GitHub":titleCase(name),size):esc(name);
+}
 const groups = {attention:["review","question","failed","uncertain"], progress:["queued","working","sending","scheduled"], completed:["done"]};
-const statusNames = {queued:"Queued",working:"In progress",review:"Awaiting approval",question:"Needs an answer",done:"Completed",failed:"Failed",skipped:"Skipped",dismissed:"Dismissed",uncertain:"Delivery uncertain",sending:"Sending",scheduled:"Scheduled"};
-const filters = {all:"All tasks",attention:"Needs attention",progress:"In progress",completed:"Completed",closed:"Skipped & dismissed"};
+const statusNames = {queued:"Queued",working:"In progress",review:"Awaiting approval",question:"Needs an answer",done:"Completed",failed:"Failed",skipped:"Skipped",dismissed:"Dismissed",closed:"Closed",paused:"Ignored",uncertain:"Delivery uncertain",sending:"Sending",scheduled:"Scheduled"};
+const filters = {open:"Open",all:"All tasks",attention:"Needs attention",progress:"In progress",completed:"Completed",closed:"Closed",inactive:"Skipped & dismissed"};
 const compactDate = stamp => stamp ? new Date(Number(stamp)*1000).toLocaleDateString(undefined,{month:"short",day:"numeric"}) : "";
 const fullDate = stamp => stamp ? new Date(Number(stamp)*1000).toLocaleString(undefined,{dateStyle:"medium",timeStyle:"short"}) : "";
 function relativeDate(stamp) {
@@ -43,7 +59,7 @@ function relativeDate(stamp) {
 }
 const state = {tasks:[],activity:[],connections:[],rules:[],skills:[],projects:[],settings:{dry:true}};
 let schemas = {}, loaded = false, refreshing = false, running = false, dialogState = null, invoker = null, noticeTimer;
-let filter = "all", projectFilter = "", query = "", activeView = "";
+let filter = "open", projectFilter = "", query = "", activeView = "";
 let activityProject = "", activityQuery = "", activityConnection = "";
 const providerNames = {claude:"Claude Code", codex:"Codex CLI"};
 let providers = null, providersPending = false, providersChecked = 0;
@@ -62,8 +78,11 @@ function setIfChanged(el, html) {
   el.innerHTML = html; el.rendered = html;
   if (active && index >= 0) {
     const controls = [...el.querySelectorAll("a,button,input,select")];
-    const match = controls.find(n => n.id && n.id===active.id || n.dataset.id && n.dataset.id===active.dataset.id && n.dataset.action===active.dataset.action || n.getAttribute("href") && n.getAttribute("href")===active.getAttribute("href"));
-    if (match) match.focus({preventScroll:true});
+    const match = controls.find(n => n.id && n.id===active.id || n.dataset.id && n.dataset.id===active.dataset.id &&
+      n.dataset.action===active.dataset.action && n.dataset.choice===active.dataset.choice && n.dataset.version===active.dataset.version ||
+      n.getAttribute("href") && n.getAttribute("href")===active.getAttribute("href"));
+    const restored=match || (active.closest(".task-entry") && controls.find(n=>n.dataset.action==="detail" && n.dataset.id===active.dataset.id));
+    if (restored) restored.focus({preventScroll:true});
   }
 }
 const recent = (list,key) => [...list].sort((a,b) => Number(b[key]||0)-Number(a[key]||0));
@@ -85,31 +104,79 @@ function shell(view) {
 function empty(message, action = "") {
   return '<div class="empty"><span>'+esc(message)+'</span>'+action+'</div>';
 }
+function taskRepository(t) {
+  const evidence=t.evidence?.[0];
+  return t.origin?.repository || t.github_repository || t.repository || evidence?.repository || (evidence?.source==="Git" && evidence.folder);
+}
 function taskContext(t) {
   const origin = t.origin || {};
   const evidence = t.evidence?.[0];
   const provider = origin.source || evidence?.source || t.source || "Local";
-  const name = provider === "github" ? "GitHub" : titleCase(provider);
-  const source = [name, origin.workspace, origin.channel || origin.account].filter(Boolean).join(" · ");
-  const repository = origin.repository || t.repository || (evidence?.source === "Git" && evidence.folder);
-  return [["Project", t.project], ["Repository", repository], ["Source", source], ["On", t.owner]].filter(([, value])=>value);
+  const name = provider.toLowerCase() === "github" ? "GitHub" : titleCase(provider);
+  const identity = [origin.workspace, origin.channel || origin.account].filter(Boolean).join(" · ");
+  const source = [name, identity].filter(Boolean).join(" · ");
+  const repository = taskRepository(t);
+  return [["Project", t.project], ["Repository", repository], ["Source", source, {name,identity}], ["On", t.owner]].filter(([, value])=>value);
 }
-function contextLine(t) {
-  const fields = taskContext(t).map(([label,value])=>
-    '<span class="context-field"><span class="context-label">'+label+'</span> '+esc(value)+'</span>'
-  );
+function sourceIdentity({name,identity}) { return sourceMark(name)+(identity?" "+esc(identity):""); }
+function contextLine(t,inQueue=false) {
+  const namedProject=state.projects.some(p=>p.name===t.project && !p.global);
+  const fields = taskContext(t).map(([label,value,source])=>{
+    if (source) return '<span class="context-field">'+sourceIdentity(source)+'</span>';
+    const project=label==="Project", scope=project?"project":"repository";
+    const shortcut=inQueue && project===namedProject?' aria-keyshortcuts="I"':"";
+    return '<button type="button" class="context-field scope-link" data-action="'+scope+'-details" data-value="'+esc(value)+'" data-id="'+esc(t.id)+'"'+shortcut+' aria-haspopup="dialog" title="Open '+scope+'">'+
+      icon(project?"projects":"repository",14)+' '+esc(value)+'</button>';
+  });
   return '<span class="task-context">'+fields.join("")+'</span>';
+}
+const taskShortcuts = {
+  "folder-access":["Allow folder access","projects","A"],
+  review_proposal:["Review proposal","inspect","V"], answer:["Answer question","reply","A"],
+  retry:["Retry preparation","sync","R"], feedback:["Give feedback","review","F"],
+  reconcile:["Record delivery outcome","check","O"], close_task:["Close task","close","C"]
+};
+function taskActionNames(t) {
+  const actions=[];
+  if (t.status==="review") actions.push("review_proposal");
+  if (t.status==="question") actions.push(t.checkout_inaccessible?"folder-access":"answer");
+  if (t.status==="uncertain") actions.push("reconcile");
+  if (["failed","question"].includes(t.status)) actions.push("retry");
+  if (["queued","review","question","failed","working","scheduled"].includes(t.status)) actions.push("feedback");
+  if (!["closed","sending","uncertain"].includes(t.status)) actions.push("close_task");
+  return actions;
+}
+function answerChoices(t, detailed=false) {
+  if (t.status!=="question") return "";
+  if (!t.answer_choices?.length || t.checkout_inaccessible) {
+    if (detailed || !t.answer_choices && !t.checkout_inaccessible) return "";
+    const attrs='data-id="'+esc(t.id)+'"';
+    const control=t.checkout_inaccessible?button("Allow folder access","folder-access","projects","secondary",attrs):
+      t.repository_question?button("Choose checkout…","pick-checkout","projects","secondary",attrs+' data-version="'+esc(t.version)+'"'):
+      button("Write an answer…","answer","reply","secondary",attrs);
+    return '<div class="queue-answers">'+control+'</div>';
+  }
+  const choices=t.answer_choices.map((choice,index)=>{
+    const attrs='data-id="'+esc(t.id)+'" data-choice="'+index+'" data-version="'+esc(t.version)+'"';
+    const pick=button(choice.label,"pick-answer",null,"secondary",attrs);
+    return detailed?'<div>'+pick+'<p>'+esc(choice.detail)+'</p></div>':pick;
+  }).join("");
+  return '<div class="'+(detailed?"answer-details":"queue-answers")+'" role="group" aria-label="Suggested answers">'+choices+'</div>';
 }
 function rows(tasks) {
   return tasks.map(t=>{
     const preview = (t.status==="review"?t.draft:t.status==="question"?t.question:"") || t.result || t.reason || t.body || "";
-    return '<button type="button" class="task-row'+(groups.attention.includes(t.status)?' needs-attention':'')+'" data-action="detail" data-id="'+esc(t.id)+'">'+
-      '<span class="row-title"><strong>'+esc(t.title)+'</strong>'+contextLine(t)+'<small>'+esc(plain(preview).slice(0,200))+'</small><span class="row-mobile">'+esc(relativeDate(t.created))+'</span></span>'+
-      status(t.status)+'<time class="task-age" title="'+esc(fullDate(t.created))+'">'+esc(relativeDate(t.created))+'</time></button>';
+    const shortcuts=taskActionNames(t).map(action=>{
+      const [label,glyph,key]=taskShortcuts[action];
+      return '<button type="button" class="iconbtn" data-action="'+action+'" data-id="'+esc(t.id)+'" aria-label="'+esc(label+" · "+t.title)+'" aria-keyshortcuts="'+key+'" title="'+label+' ('+key+')">'+icon(glyph,16)+'</button>';
+    }).join("");
+    return '<div class="task-entry"><div class="task-row'+(groups.attention.includes(t.status)?' needs-attention':'')+'">'+
+      '<div class="row-title"><button type="button" class="task-open" data-action="detail" data-id="'+esc(t.id)+'"><strong>'+esc(t.title)+'</strong></button>'+contextLine(t,true)+'<small'+(t.status==="question" && t.answer_choices?' class="queue-question"':"")+'>'+esc(plain(preview).slice(0,200))+'</small>'+answerChoices(t)+'<span class="row-mobile">'+esc(relativeDate(t.created))+'</span></div>'+
+      status(t.status)+'<time class="task-age" title="'+esc(fullDate(t.created))+'">'+esc(relativeDate(t.created))+'</time></div><div class="row-shortcuts">'+shortcuts+'</div></div>';
   }).join("");
 }
 function taskTable(tasks) {
-  return '<div class="task-columns" aria-hidden="true"><span>Task</span><span>Status</span><span>Created</span></div>'+rows(tasks);
+  return '<div class="task-heading" aria-hidden="true"><div class="task-columns"><span>Task</span><span>Status</span><span>Created</span></div><span>Actions</span></div>'+rows(tasks);
 }
 const logClock = new Intl.DateTimeFormat(undefined,{hour:"2-digit",minute:"2-digit",hourCycle:"h23"});
 function timeline(items) {
@@ -125,7 +192,7 @@ function timeline(items) {
   return '<ol class="timeline">'+events.join("")+'</ol>';
 }
 function evidenceList(records) {
-  return '<ul class="suggestion-evidence">'+records.map(r=>'<li><strong>'+esc(r.source)+'</strong> · '+
+  return '<ul class="suggestion-evidence">'+records.map(r=>'<li>'+sourceMark(r.source)+' '+
     (sourceReference(r.url,r.title)||esc(r.title))+' <small>'+esc([r.authored_by_user?"Written by you":"",r.destination,fullDate(r.at)].filter(Boolean).join(" · "))+'</small>'+
     (r.detail?'<p>'+esc(r.detail)+'</p>':'')+'</li>').join("")+'</ul>';
 }
@@ -153,7 +220,7 @@ function orchestratorSection() {
   return section("Orchestrator",controls,'<p class="section-note">'+esc(detail)+'</p>'+(thread||empty("Ask what is on your plate, or wait for the next sweep.")));
 }
 function overview() {
-  const ordered = recent(state.tasks,"created");
+  const ordered = recent(state.tasks.filter(t=>!["closed","paused"].includes(t.status)),"created");
   const attention = ordered.filter(t=>groups.attention.includes(t.status));
   const active = ordered.filter(t=>groups.progress.includes(t.status));
   const closed = ordered.filter(t=>!groups.attention.includes(t.status) && !groups.progress.includes(t.status));
@@ -163,12 +230,12 @@ function overview() {
   const events = recent(state.activity,"at").slice(0,8);
   const projects = state.projects.map(p=>{
     const count = [...attention,...active].filter(t=>inProject(p.name,t.project)).length;
-    return entry("projects",p.name,[count+" open",p.repos?.length?p.repos.length+(p.repos.length===1?" repository":" repositories"):""].filter(Boolean).join(" · "),button("Edit","project",null,"quiet",'data-project="'+esc(p.name)+'"'));
+    return entry("projects",p.name,[count+" open",p.repos?.length?p.repos.length+(p.repos.length===1?" repository":" repositories"):""].filter(Boolean).join(" · "),projectControls(p));
   }).join("");
   const styleReviews = state.skills.filter(s=>s.kind==="style" && !s.active && s.status==="pending")
     .map(s=>'<button class="skill-row" data-action="skill" data-id="'+esc(s.id)+'"><span class="row-title"><strong>'+esc(s.body)+'</strong></span>'+icon("chevron",14)+'</button>').join("");
   const manage = '<a class="btn secondary" href="#connections">Manage connections</a>';
-  return setupCard()+'<section class="home-queue"><div class="queue-heading"><h2>Task queue</h2><div class="counters">'+summary+'</div>'+link("All tasks","tasks")+'</div>'+queue+'</section>'+orchestratorSection()+taskSuggestions(false)+
+  return setupCard()+'<section class="home-queue"><div class="queue-heading"><h2>Task queue</h2><div class="counters">'+summary+'</div>'+button("Manage ignore list","ignorelist",null,"quiet")+link("All tasks","tasks")+'</div>'+queue+'</section>'+orchestratorSection()+taskSuggestions(false)+
     '<div class="overview-grid">'+section("Recent activity",link("View log","activity"),events.length?timeline(events):empty("No activity yet."))+
     '<div>'+section("Connections",manage,"")+
     (projects?section("Projects",link("View all","projects"),projects):"")+
@@ -185,7 +252,7 @@ function searchInput(id,value,placeholder) {
   return '<label class="search">'+icon("search",16)+'<input type="search" id="'+id+'" placeholder="'+esc(placeholder)+'" aria-label="'+esc(placeholder)+'" value="'+esc(value)+'"></label>';
 }
 function taskList() {
-  const statuses = filter==="closed" ? ["skipped","dismissed"] : groups[filter];
+  const statuses = filter==="open" ? [...groups.attention,...groups.progress] : filter==="closed" ? ["closed"] : filter==="inactive" ? ["skipped","dismissed"] : groups[filter];
   const term = query.trim().toLowerCase();
   const items = recent(state.tasks.filter(t=>{
     if ((statuses && !statuses.includes(t.status)) || !inProject(projectFilter,t.project)) return false;
@@ -202,7 +269,7 @@ function tasksPage() {
   const testing=section("Improve MeMyselfAI","",entry("tasks","App testing","Run the workflow checks or report a problem you observed.",
     button("Run checks","self_check","sync","secondary")+button("Report a finding","app_finding",null,"secondary")+
     (repo && !connected?button("Connect app repository","connect_app_repo",null,"quiet"):"")));
-  return testing+'<div class="filters">'+searchInput("task-search",query,"Search tasks")+projectSelect("task-project",projectFilter)+'</div><div class="tabs">'+Object.entries(filters).map(([key,label])=>'<button type="button" data-action="filter" data-filter="'+key+'" aria-pressed="'+(filter===key)+'">'+label+'</button>').join("")+'</div><div id="task-list">'+taskList()+'</div>'+taskSuggestions();
+  return testing+'<div class="filters">'+searchInput("task-search",query,"Search tasks")+projectSelect("task-project",projectFilter)+button("Manage ignore list","ignorelist",null,"quiet")+'</div><div class="tabs">'+Object.entries(filters).map(([key,label])=>'<button type="button" data-action="filter" data-filter="'+key+'" aria-pressed="'+(filter===key)+'">'+label+'</button>').join("")+'</div><div id="task-list">'+taskList()+'</div>'+taskSuggestions();
 }
 function activityList() {
   const term = activityQuery.trim().toLowerCase();
@@ -222,7 +289,8 @@ function section(title, action, content) {
   return '<section class="block"><div class="section-title"><h2>'+esc(title)+'</h2>'+action+'</div>'+content+'</section>';
 }
 function entry(glyph, title, detail, controls = "") {
-  return '<div class="entry"><div class="source-icon">'+icon(glyph)+'</div><div class="entry-text"><strong>'+esc(title)+'</strong><p>'+esc(detail)+'</p></div><div class="entry-actions">'+controls+'</div></div>';
+  const mark=Object.hasOwn(sourceIcons,glyph)?sourceMark(glyph,20):icon(glyph);
+  return '<div class="entry"><div class="source-icon">'+mark+'</div><div class="entry-text"><strong>'+esc(title)+'</strong>'+(detail?'<p>'+esc(detail)+'</p>':"")+'</div><div class="entry-actions">'+controls+'</div></div>';
 }
 function logLink(id) {
   return link("View log","activity?connection="+esc(encodeURIComponent(id)));
@@ -232,12 +300,17 @@ function connectionsPage() {
   const accounts = state.connections.map(c=>{
     const id='data-id="'+esc(c.id)+'"';
     const browse=c.repositories?button("Browse work","github-work",null,"secondary",id):"";
-    const row=entry(c.kind,c.label||titleCase(c.kind),[c.auth_method==="gh_account"?"":c.identity,c.google_services?.join(", ")||(c.auth_method==="slack_workspace"?(c.channel_count||0)+" channels":titleCase(c.kind)),titleCase(c.status),c.owner?"Polled by "+c.owner:"",c.reconnect_to_revoke?"Reconnect to revoke the login "+c.reconnect_to_revoke+" kept":""].filter(Boolean).join(" · "),
+    const row=entry(c.google_services?.length?"google":c.kind,c.label||c.identity||titleCase(c.kind),[c.auth_method==="gh_account"?"":c.identity,c.google_services?.join(", ")||(c.auth_method==="slack_workspace"?(c.channel_count||0)+" channels":""),titleCase(c.status),c.owner?"Polled by "+c.owner:"",c.reconnect_to_revoke?"Reconnect to revoke the login "+c.reconnect_to_revoke+" kept":""].filter(Boolean).join(" · "),
       logLink(c.id)+browse+button("Configure","connect",null,"secondary",id)+button("Disconnect","disconnect",null,"quiet",id));
     if (!c.repositories) return row;
-    return row+'<details class="github-inventory"><summary>'+c.repositories.length+' repositories</summary>'+c.repositories.map(r=>'<p>'+sourceReference("https://github.com/"+r.name,r.name)+' · '+esc(r.status)+'</p>').join("")+'</details>';
+    return row+'<details class="github-inventory"><summary>'+c.repositories.length+' repositories</summary>'+c.repositories.map(r=>'<p>'+sourceReference("https://github.com/"+r.name,r.name)+' · '+esc(r.status)+' '+exclusionButton("repository",r.name,{inherited:r.status==="Ignored"})+'</p>').join("")+'</details>';
   }).join("");
-  const providers = Object.entries(schemas).map(([key,s])=>entry(key,key==="email"?"Google":s.label||titleCase(key),({email:"Choose your Google account in your browser",slack:"All workspace channels",github:"Repository issues and pull requests"})[key]||"",button(key==="slack"?"Connect Slack":key==="email"?(hasGoogle?"Add Google account":"Connect Google"):"Connect","connect","add","secondary",'data-kind="'+esc(key)+'"'))).join("");
+  const providers = Object.entries(schemas).map(([key,s])=>{
+    const name=key==="email"?"Google":s.label||titleCase(key);
+    const action=key==="email" && hasGoogle?"Add account":"Connect";
+    return entry(key==="email"?"google":key,({email:"Workspace account",slack:"Workspace channels",github:"Repository issues and pull requests"})[key]||name,"",
+      button(action,"connect","add","secondary",'data-kind="'+esc(key)+'" aria-label="'+esc(action==="Connect"?"Connect "+name:"Add "+name+" account")+'"'));
+  }).join("");
   const local=state.suggestions?.config;
   const chats=local?Object.entries({claude:"Claude",chatgpt:"ChatGPT"}).map(([provider,name])=>{
     const active=local.chats?.[provider];
@@ -262,6 +335,25 @@ function inProject(filter,name) {
   const group=state.projects.find(p=>p.name===filter);
   return !group?.global && includesProject(group,state.projects.find(p=>p.name===name));
 }
+function exclusionButton(scope,value,{inherited=false}={}) {
+  if (!value) return "";
+  const list=state.ignorelist||{projects:[],repositories:[]};
+  const project=scope==="project"?state.projects.find(p=>p.name===value):null;
+  if (scope==="project" && (!project || project.global)) return "";
+  const direct=scope==="project"?list.projects.includes(value):list.repositories.includes(value.startsWith("/")?value:value.toLowerCase());
+  const parent=project && list.projects.find(name=>name!==value && inProject(name,value));
+  const managed=!direct && (parent || inherited);
+  const label=managed?(parent?"Ignored via "+parent:"Manage exclusions"):(direct?"Unignore ":"Ignore ")+scope;
+  const action=managed?"ignorelist":"set_exclusion";
+  const attrs='data-scope="'+scope+'" data-value="'+esc(value)+'" data-ignored="'+(!direct)+'"';
+  return button(label,action,"ignore","quiet",attrs+' title="'+esc(label+" · "+value)+'"');
+}
+function taskExclusions(t) {
+  return exclusionButton("project",t.project)+exclusionButton("repository",taskRepository(t));
+}
+function projectControls(p) {
+  return button("Edit","project",null,"secondary",'data-project="'+esc(p.name)+'"')+exclusionButton("project",p.name);
+}
 const workViews=[["assigned","Assigned issues"],["issues","My open issues"],["pulls","My open pull requests"],["reviews","Requested reviews"]];
 async function browseGitHub(connection,view="assigned",page=1) {
   showDialog("github-work",connection.label,selectField("github-view","Open work",workViews,view)+
@@ -270,7 +362,7 @@ async function browseGitHub(connection,view="assigned",page=1) {
   try {
     const data=await request("/api/action",{op:"github_browse",id:connection.id,view,page});
     if (!authOpen(ctx)) return;
-    const monitored=new Set(connection.repositories.map(r=>r.name.toLowerCase()));
+    const monitored=new Set(connection.repositories.filter(r=>r.status!=="Ignored").map(r=>r.name.toLowerCase()));
     $("#github-results").innerHTML=data.items.map(item=>'<div class="github-item"><div>'+sourceReference(item.url,item.title)+
       '<small>'+esc(item.repo+"#"+item.number)+'</small></div>'+
       (monitored.has(item.repo.toLowerCase())?button("Review for work","github-review",null,"quiet",'data-repo="'+esc(item.repo)+'" data-number="'+esc(item.number)+'"'):"")+'</div>').join("")||
@@ -291,7 +383,7 @@ function parentField(project) {
   return selectField("parent","Parent project",options,project?.parent||global?.name);
 }
 function projectsPage() {
-  return (state.projects.length?state.projects.map(p=>entry("projects",p.name,[p.global?"Workspace-wide":p.parent?"Under "+p.parent:null,...(p.repos||[])].filter(Boolean).join(" · ")||"No linked repositories",button("Edit","project",null,"secondary",'data-project="'+esc(p.name)+'"'))).join(""):empty("No projects yet."));
+  return section("Projects",button("Manage ignore list","ignorelist","ignore"),state.projects.map(p=>entry("projects",p.name,[p.global?"Workspace-wide":p.parent?"Under "+p.parent:null,...(p.repos||[])].filter(Boolean).join(" · ")||"No linked repositories",projectControls(p))).join("")||empty("No projects yet."));
 }
 const modes = {auto:"Allow autonomous handling",review:"Require review",user:"Leave to me"};
 function policiesPage() {
@@ -392,6 +484,8 @@ function settingsPage() {
       entry("working","Agent provider",Object.hasOwn(providerNames,state.settings.provider)?providerLabel(state.settings.provider):"Choose a provider to prepare tasks.",button("Choose provider","settings",null)+button("Check again","providers","sync","quiet")))+
     agentsSection()+
     instancesSection()+
+    section("Permissions","",entry("projects","Folder access","Choose which repository folder to check or update its macOS permission.",button("Manage folder access","folder-access",null)))+
+    section("Work exclusions","",entry("projects","Ignore list",[(state.ignorelist?.projects||[]).length+" projects",(state.ignorelist?.repositories||[]).length+" repositories"].join(" · "),button("Edit ignore list","ignorelist",null)))+
     section("Sample workspace","",entry("stack","Load sample work","Add fixture tasks and activity to explore the workspace.",button("Load sample","demo",null)));
 }
 // Guided setup. See docs/specs/guided-setup.md.
@@ -544,7 +638,7 @@ async function refresh() {
     if (!Array.isArray(result.tasks)) throw new Error("The local service returned an incomplete workspace.");
     Object.assign(state,result); loaded=true; $("#network").hidden=true; render();
     if (vpsActive() || !setupOpened) void loadSetup();
-    if (dialogState?.type==="detail") {
+    if (dialogState?.type==="detail" || dialogState?.type==="review_proposal") {
       const fresh=state.tasks.find(t=>String(t.id)===String(dialogState.task.id));
       if (!fresh || JSON.stringify(fresh)!==dialogState.signature) {
         const stale=$("#stale");
@@ -580,11 +674,62 @@ function repositoryFields(paths=[],activity=false) {
     (paths.length?paths:[""]).map(p=>repositoryRow(p,activity)).join("")+'</div><div>'+
     button(activity?"Add folder":"Add repository","add-repository",null,"secondary")+'</div></div>';
 }
+async function pickFolder(path=null) {
+  const picker=window.webkit?.messageHandlers?.chooseRepository;
+  return picker?await picker.postMessage(path):(await request("/api/action",{op:"choose_repository"})).path;
+}
+async function answerWithFolder(id,version) {
+  try {
+    const path=await pickFolder();
+    if (path) await mutate({op:"answer",id,version,text:path,picked_folder:true},"Checkout selected.");
+  } catch(e) {
+    showError(e.message || "Could not open the folder picker.");
+  }
+}
+function folderAccess(task) {
+  const scope=state.projects.find(p=>p.name===task?.project);
+  const projects=scope?state.projects.filter(p=>includesProject(scope,p)):state.projects;
+  const paths=[...new Set(projects.flatMap(p=>p.repos||[]))];
+  const folders=paths.map(path=>{
+    const attrs='data-path="'+esc(path)+'"';
+    return entry("repository",path,"",button("Choose folder…","allow-folder",null,"secondary",attrs)+
+      button("Check access","check-folder","sync","quiet",attrs));
+  }).join("");
+  showDialog("folder-access","Folder access",
+    (folders||empty("Register a checkout under Projects to check its folder access."))+
+    '<p class="form-intro">If you missed or denied the macOS prompt, open Files &amp; Folders and enable the folder for MeMyselfAI. Return here to check access.</p>'+
+    button("Open Files & Folders settings","open-folder-settings","settings")+
+    '<p role="status" id="folder-check-status"></p>');
+}
+async function checkFolder(el) {
+  const path=el.dataset.path, ctx=dialogState, status=$("#folder-check-status");
+  if (!ctx || ctx.checking) return;
+  const controls=[...$("#dialog").querySelectorAll('[data-action="allow-folder"],[data-action="check-folder"]')];
+  ctx.checking=true;
+  controls.forEach(b=>b.disabled=true);
+  $("#form-error").hidden=true;
+  status.textContent="";
+  try {
+    if (el.dataset.action==="allow-folder") {
+      const selected=await pickFolder(path);
+      if (!selected || dialogState!==ctx) return;
+      if (selected!==path) throw new Error("Choose the registered folder shown here: "+path);
+    }
+    status.textContent="Checking Git access to "+path+"…";
+    await request("/api/action",{op:"check_folder_access",path});
+    status.textContent="Git can read "+path+". Waiting tasks will be rechecked.";
+  } catch(e) {
+    status.textContent="";
+    if (dialogState===ctx) showError(e.message || "Could not check folder access.");
+  } finally {
+    ctx.checking=false;
+    controls.forEach(b=>b.disabled=false);
+  }
+}
 async function chooseRepository(button) {
   button.disabled=true;
   try {
-    const picker=window.webkit?.messageHandlers?.chooseRepository;
-    const path=picker?await picker.postMessage(null):(await request("/api/action",{op:"choose_repository"})).path;
+    const path=await pickFolder();
     if (path && button.isConnected) {
       button.closest(".repository-picker").querySelector("input").value=path;
       rememberForm();
@@ -616,9 +761,9 @@ function revisionDiff(before,after) {
   return (removed.length?group("Removed",quote(removed.join("\n"))):"")+(added.length?group("Added",quote(added.join("\n"))):"") || "<p>Revision text is unchanged.</p>";
 }
 function facts(items) {
-  return '<dl class="facts">'+items.filter(([,v])=>v!=null && v!=="").map(([k,v])=>'<div><dt>'+esc(k)+'</dt><dd>'+esc(plain(v))+'</dd></div>').join("")+'</dl>';
+  return '<dl class="facts">'+items.filter(([,v])=>v!=null && v!=="").map(([k,v,source])=>'<div><dt>'+esc(k)+'</dt><dd>'+(source?sourceIdentity(source):esc(plain(v)))+'</dd></div>').join("")+'</dl>';
 }
-function group(label,html) { return '<section class="detail-group"><h3>'+esc(label)+'</h3>'+html+'</section>'; }
+function group(label,html) { return '<section class="detail-group"><h3>'+sourceMark(label)+'</h3>'+html+'</section>'; }
 function draftPreview(t) {
   if (t.operation==="submit PR review") return facts([["Review type","Comment"],["Commit",t.payload?.commit_id]])+quote(t.draft);
   if (t.operation==="calendar_event" && t.calendar_payload) {
@@ -629,41 +774,65 @@ function draftPreview(t) {
   return quote(t.draft);
 }
 const present=v=>v!=null && v!=="" && (!Array.isArray(v)||v.length>0);
+function proposalPreview(t) {
+  const categories = [...new Set([t.kind,...(t.categories||[]),...(present(t.commitments)?["commitment"]:[])].filter(Boolean))];
+  const applicable=categories.map(k=>[titleCase(k),modes[state.rules.find(r=>r.project===t.project&&r.kind===k)?.mode]||"Require review"]);
+  return group("Proposed action",facts([["Operation",t.operation||t.kind||"External write"],["Sending account",t.account||"Unavailable"],["Destination",t.destination||"Unavailable"],["Subject",t.subject],["Version",t.version]])+draftPreview(t)+
+    (present(t.commitments)?group("Commitments",quote(t.commitments)):"")+
+    (applicable.length?'<details><summary>Decision rules</summary>'+facts(applicable)+'</details>':""));
+}
+function approvalButton(t) {
+  const ready=present(t.draft)&&present(t.account)&&present(t.destination)&&t.version!=null;
+  return button("Approve this version","approve","check","primary",'data-id="'+esc(t.id)+'" data-version="'+esc(t.version)+'" '+(ready?"":"disabled"));
+}
+function staleWarning(t,action) {
+  return '<div id="stale" class="policy-note" hidden>This task changed. '+button("View latest",action,"sync","secondary",'data-id="'+esc(t.id)+'"')+'</div>';
+}
 function detailTask(t) {
   const id='data-id="'+esc(t.id)+'"';
-  const detail = '<div class="detail-status">'+status(t.status)+'</div>'+
-    facts([...taskContext(t),["Local checkout",t.origin?.repository && t.repository],["Opened",fullDate(t.created)],["Due",fullDate(t.due)],["Decision type",t.kind],["Worktree",t.worktree]])+
+  const activity=recent(state.activity.filter(a=>a.task!=null&&String(a.task)===String(t.id)),"at");
+  const reason=t.surfaced_reason || activity.findLast(a=>a.kind==="Discovery")?.detail || t.reason;
+  const context = (present(reason)?group("Why this surfaced",quote(reason)):"")+
+    facts([...taskContext(t),["Local checkout",(t.origin?.repository || t.github_repository) && t.repository],["Opened",fullDate(t.created)],["Due",fullDate(t.due)],["Decision type",t.kind],["Worktree",t.worktree]])+
     (t.url?'<dl class="facts"><div><dt>Source address</dt><dd>'+sourceReference(t.url)+'</dd></div></dl>':"")+
     (t.parent && findTask(t.parent)?group("Linked task",button(findTask(t.parent).title,"detail","arrow","secondary",'data-id="'+esc(t.parent)+'"')):"")+
-    (present(t.reason)?group("Why this surfaced",quote(t.reason)):"")+
-    (present(t.body)?group("Task context",quote(t.body)):"")+
-    (present(t.result)?group("Result & evidence",quote(t.result)):"")+
+    (present(t.body)?group("Task context",'<div class="markdown-body">'+taskMarkdown.render(t.body)+'</div>'):"")+
+    (t.evidence?.length?group("Supporting activity",evidenceList(t.evidence)):"");
+  const results = (present(t.result)?group("Result & evidence",quote(t.result)):"")+
     (t.findings?.length?group("Test findings",t.findings.map(id=>button(findTask(id)?.title||id,"detail","tasks","secondary",'data-id="'+esc(id)+'"')).join("")):"")+
     (t.special==="app_finding" && t.milestones?.issue?group("GitHub",sourceReference("https://github.com/"+t.milestones.repository+"/issues/"+t.milestones.issue,"Issue #"+t.milestones.issue)+" "+sourceReference(t.milestones.url,"Pull request #"+t.milestones.pr)+" "+sourceReference(t.receipts.find(r=>r.operation==="submit PR review")?.receipt,"Posted review")):"")+
-    (present(t.question)?group("Agent question",quote(t.question)):"")+
-    (present(t.feedback)?group("Feedback & answers",t.feedback.map(f=>quote(f.text||[f.question,f.answer].filter(Boolean).join("\n"))).join("")):"")+
-    (present(t.receipts)?group("Delivery receipts",t.receipts.map(r=>facts([["Operation",r.operation],["Recorded",fullDate(r.at)],["Receipt",r.receipt]])+quote(r.text)).join("")):"")+
     (t.milestones && Object.keys(t.milestones).length?group("Verified milestones",facts(Object.entries(t.milestones))):"");
+  const history = (present(t.feedback)?group("Feedback & answers",t.feedback.map(f=>quote(f.text||[f.question,f.answer].filter(Boolean).join("\n"))).join("")):"")+
+    (present(t.receipts)?group("Delivery receipts",t.receipts.map(r=>facts([["Operation",r.operation],["Recorded",fullDate(r.at)],["Receipt",r.receipt]])+quote(r.text)).join("")):"");
   const recovery = (Array.isArray(t.recovered)&&t.recovered.length)?group("Recovered tasks",t.recovered.map(id=>{
     const found=findTask(id); return found?button(found.title,"detail","tasks","secondary",'data-id="'+esc(found.id)+'"'):'<p>'+esc(id)+'</p>';
   }).join("")):"";
-  const categories = [...new Set([t.kind,...(t.categories||[]),...(present(t.commitments)?["commitment"]:[])].filter(Boolean))];
-  const applicable=categories.map(k=>[titleCase(k),modes[state.rules.find(r=>r.project===t.project&&r.kind===k)?.mode]||"Require review"]);
-  const actionPreview = (t.status==="review" || present(t.draft)) ? group("Proposed action",facts([["Operation",t.operation||t.kind||"External write"],["Sending account",t.account||"Unavailable"],["Destination",t.destination||"Unavailable"],["Subject",t.subject],["Version",t.version]])+draftPreview(t)+
-    (present(t.commitments)?group("Commitments",quote(t.commitments)):"")+
-    (applicable.length?'<details><summary>Decision rules</summary>'+facts(applicable)+'</details>':"")):"";
-  const activity=recent(state.activity.filter(a=>a.task!=null&&String(a.task)===String(t.id)),"at");
-  const confirmable=present(t.draft)&&present(t.account)&&present(t.destination)&&t.version!=null;
-  const actions = (t.status==="review"?button("Approve this version","approve","check","primary",id+' data-version="'+esc(t.version)+'" '+(!confirmable?"disabled":"")):"")+
-    (t.status==="question"?button("Answer question","answer","review","primary",id):"")+
-    (t.status==="uncertain"?button("Record delivery outcome","reconcile","review","secondary",id):"")+
-    (t.status==="failed"?button("Retry preparation","retry","sync","secondary",id):"")+
-    (["queued","review","question","failed","working","scheduled"].includes(t.status)?button("Give feedback","feedback",null,"secondary",id):"")+
-    (["queued","review","question","failed","working","scheduled"].includes(t.status)?button("Dismiss","dismiss",null,"quiet",id):"")+
-    runOn(t);
-  return '<div id="stale" class="policy-note" hidden>This task changed. '+button("View latest","detail","sync","secondary",id)+'</div>'+detail+(t.evidence?group("Supporting activity",evidenceList(t.evidence)):"")+recovery+actionPreview+
-    (actions?'<div class="detail-actions">'+actions+'</div>':"")+
-    (activity.length?group("Task activity",timeline(activity)):"");
+  const actionPreview = t.status==="review" || present(t.draft) ? proposalPreview(t) : "";
+  const actions = taskActionNames(t).map(action=>{
+    if (action==="review_proposal") return approvalButton(t);
+    const [label,glyph]=taskShortcuts[action];
+    return button(label,action,glyph,["answer","folder-access"].includes(action)?"primary":"secondary",id);
+  }).join("")+runOn(t);
+  const tabs = [
+    ["actions","Actions",'<div class="detail-actions">'+status(t.status)+actions+(taskExclusions(t)||button("Manage ignore list","ignorelist","ignore","quiet"))+'</div>'+
+      (present(t.question)?group("Agent question",'<div class="markdown-body">'+taskMarkdown.render(t.question)+'</div>'+
+        (t.question_context?'<div class="markdown-body">'+taskMarkdown.render(t.question_context)+'</div>':"")+answerChoices(t,true)):"")+actionPreview+results+recovery],
+    ["context","Why it surfaced & context",context],
+    ["activity","Task activity",(activity.length?timeline(activity):"")+history || empty("No activity recorded yet.")]
+  ];
+  return staleWarning(t,"detail")+
+    '<div class="tabs task-tabs" role="tablist" aria-label="Task details">'+tabs.map(([key,label],i)=>
+      '<button type="button" role="tab" id="tab-'+key+'" data-action="task-tab" aria-controls="panel-'+key+'" aria-selected="'+(i===0)+'" tabindex="'+(i===0?0:-1)+'">'+esc(label)+'</button>').join("")+'</div>'+
+    tabs.map(([key,,html],i)=>'<section class="task-panel" role="tabpanel" id="panel-'+key+'" aria-labelledby="tab-'+key+'" tabindex="0"'+(i?" hidden":"")+'>'+html+'</section>').join("");
+}
+function selectTaskTab(tab) {
+  for (const item of tab.parentElement.querySelectorAll('[role="tab"]')) {
+    const selected=item===tab;
+    item.setAttribute("aria-selected",String(selected));
+    item.tabIndex=selected?0:-1;
+    document.getElementById(item.getAttribute("aria-controls")).hidden=!selected;
+  }
+  tab.focus();
 }
 function showDialog(type,title,body,context={},footer="") {
   const d=$("#dialog");
@@ -671,17 +840,18 @@ function showDialog(type,title,body,context={},footer="") {
   dialogState={type,...context}; d.className=type==="detail"?"wide":"";
   $("#dialog-body").innerHTML='<div class="dialog-head"><h2 id="dialog-title">'+esc(title)+'</h2><button type="button" class="iconbtn" aria-label="Close dialog" data-action="close">'+icon("close",17)+'</button></div><div class="dialog-content">'+body+'<div class="form-error" role="alert" id="form-error" hidden></div></div>'+footer;
   if (!d.open) d.showModal();
-  const focusTarget = d.querySelector('textarea, input:not([readonly]), select') || d.querySelector("[data-action=close]");
+  const focusTarget = d.querySelector('[role="tab"][aria-selected="true"], textarea, input:not([readonly]), select') || d.querySelector("[data-action=close]");
   if (focusTarget) focusTarget.focus({preventScroll:true});
   d.scrollTop=0;
 }
 const formDrafts=new Map();
-function draftKey(type,ctx) { return JSON.stringify([type,ctx.id||"",ctx.kind||"",ctx.project||""]); }
+function draftKey(type,ctx) { return JSON.stringify([type,ctx.id||"",ctx.kind||"",ctx.project||"",type==="answer"?ctx.version:""]); }
 function openForm(type,title,fields,submit,ctx={},description="") {
   const body=(description?'<p class="form-intro">'+esc(description)+'</p>':"")+'<form id="editor">'+fields+'</form>';
   showDialog(type,title,body,ctx,'<div class="dialog-footer">'+button("Close","close",null,"quiet")+'<button type="submit" class="btn primary" form="editor">'+esc(submit)+'</button></div>');
   const stored=formDrafts.get(draftKey(type,ctx));
   if (stored) for (const [key,val] of Object.entries(stored)) {
+    if (key==="ignored_project") {for (const checkbox of $("#editor").querySelectorAll('[name="ignored_project"]')) checkbox.checked=val.includes(checkbox.value);continue;}
     if (key==="repos" && ["project","suggestion_config"].includes(type)) {$("#repository-rows").innerHTML=val.map(p=>repositoryRow(p,type==="suggestion_config")).join("");continue;}
     const field=$("#editor").elements.namedItem(key);
     if (field && !field.readOnly) field.value=val;
@@ -692,6 +862,7 @@ function rememberForm() {
   const draft={};
   for (const el of form.elements) if (el.name && el.type!=="password") draft[el.name]=el.value;
   if (["project","suggestion_config"].includes(dialogState.type)) {delete draft.repo;draft.repos=new FormData(form).getAll("repo");}
+  if (dialogState.type==="ignorelist") draft.ignored_project=new FormData(form).getAll("ignored_project");
   formDrafts.set(draftKey(dialogState.type,dialogState),draft);
 }
 function showError(message) {
@@ -837,6 +1008,7 @@ function handleAction(el) {
   switch(action) {
     case "menu": document.body.classList.add("menu-open"); $("#scrim").hidden=false; el.setAttribute("aria-expanded","true"); $("#sidebar nav a")?.focus(); return;
     case "close": $("#dialog").close(); return;
+    case "task-tab": selectTaskTab(el); return;
     case "add-repository": $("#repository-rows").insertAdjacentHTML("beforeend",repositoryRow("",dialogState.type==="suggestion_config"));$("#repository-rows").lastElementChild.querySelector("button").focus();rememberForm();return;
     case "remove-repository": el.closest(".repository-picker").remove();rememberForm();return;
     case "chat-settings": {
@@ -861,8 +1033,44 @@ function handleAction(el) {
     case "suggestion_start": void mutate({op:action,id},"Task queued.");return;
     case "suggestion_dismiss": void mutate({op:action,id},"Suggestion dismissed.");return;
     case "choose-repository": void chooseRepository(el); return;
+    case "folder-access": folderAccess(t); return;
+    case "allow-folder":
+    case "check-folder": void checkFolder(el); return;
+    case "open-folder-settings":
+      void request("/api/action",{op:"open_folder_settings"}).catch(e=>showError(e.message)); return;
     case "filter": filter=el.dataset.filter; if (activeView!=="tasks") {projectFilter="";query="";location.hash="tasks";} else render(); return;
     case "reload": void getSchemas(); void refresh(); return;
+    case "project-details": {
+      const name=el.dataset.value, p=state.projects.find(item=>item.name===name);
+      const body=facts([["Scope",p?.global?"Workspace-wide":""],["Parent project",p?.parent],["Registered checkouts",p?.repos?.join("\n")],["Tasks",state.tasks.filter(task=>task.project===name).length]]);
+      showDialog(action,name,body,{},p?'<div class="dialog-footer">'+projectControls(p)+'</div>':"");
+      return;
+    }
+    case "repository-details": {
+      const repo=el.dataset.value;
+      const github=/^[\w.-]+\/[\w.-]+$/.test(repo) && !repo.split("/").some(part=>part==="." || part==="..");
+      const checkout=repo.startsWith("/")?repo:t?.repository;
+      const body=facts([["Project",t?.project],["Local checkout",checkout]])+
+        (github?sourceReference("https://github.com/"+repo,"Open on GitHub"):"");
+      showDialog(action,repo,body,{},'<div class="dialog-footer">'+exclusionButton("repository",repo)+'</div>');
+      return;
+    }
+    case "set_exclusion": {
+      const {scope,value}=el.dataset, ignored=el.dataset.ignored==="true";
+      const label=(ignored?"Ignore ":"Unignore ")+scope;
+      const impact=ignored?(scope==="project"?"Work pauses for this project, its subprojects and their registered repositories.":"Work pauses for this repository across projects and connected accounts.")+" New matching work is excluded.":"Eligible tasks can resume. Other exclusions still apply.";
+      openForm(action,label,facts([[titleCase(scope),value]]),label,{scope,value,ignored},impact);
+      return;
+    }
+    case "ignorelist": {
+      const list=state.ignorelist||{projects:[],repositories:[]};
+      const projects=state.projects.filter(p=>!p.global).map(p=>p.name);
+      const choices=projects.map(name=>'<label><input type="checkbox" name="ignored_project" value="'+esc(name)+'" '+(list.projects.includes(name)?"checked":"")+'> '+esc(name)+'</label>').join("");
+      openForm(action,"Ignore list",(choices?'<fieldset class="ignore-projects"><legend>Projects</legend>'+choices+'</fieldset>':"")+
+        input("repositories","Repositories",{type:"textarea",value:list.repositories.join("\n"),placeholder:"owner/repository",help:"One GitHub owner/repo or absolute checkout path per line."}),
+        "Save ignore list",{},"Work pauses for these repositories, projects and their subprojects. Removing an entry lets work resume.");
+      return;
+    }
     case "self_check": void mutate({op:action},"App checks queued."); return;
     case "connect_app_repo": void mutate({op:action},"App repository connected."); return;
     case "app_finding": openForm(action,"Report an app finding",input("title","Issue title",{required:true})+input("body","Observed behavior and steps to reproduce",{type:"textarea",required:true}),"Track finding",{},"This finding will enter Tasks for the MeMyselfAI repository."); return;
@@ -923,17 +1131,29 @@ function handleAction(el) {
       const ctx=dialogState;
       cancelSignIn(ctx);void openSignIn(ctx.kind,ctx.connection);return;
     }
+    case "review_proposal":
+      if (!t) return;
+      if (t.status==="review") {
+        showDialog(action,t.title,staleWarning(t,action)+proposalPreview(t),{task:t,signature:JSON.stringify(t)},
+          '<div class="dialog-footer">'+button("Cancel","close",null,"quiet")+approvalButton(t)+'</div>');
+        return;
+      }
+      // A refreshed proposal may already have moved to another state.
     case "detail": if (t) showDialog("detail",t.title,detailTask(t),{task:t,signature:JSON.stringify(t)}); return;
+    case "pick-checkout":
+      void answerWithFolder(id,Number(el.dataset.version)); return;
     case "answer":
       if (t?.repository_question) {
-        const scope=state.projects.find(p=>p.name===t.project);
-        const paths=[...new Set(state.projects.filter(p=>includesProject(scope,p)).flatMap(p=>p.repos||[]))];
+        const paths=t.repository_options || (t.answer_choices||[]).map(c=>c.value).filter(Boolean);
         if (paths.length) {
-          openForm("answer","Choose repository",selectField("text","Local repository",[["","Choose a repository"],...paths.map(p=>[p,p])],""),"Submit answer",{id},t.question);
+          openForm("answer","Choose repository",selectField("text","Local repository",[["","Choose a repository"],...paths.map(p=>[p,p])],""),"Submit answer",{id,version:t.version},t.question);
           return;
         }
+        void answerWithFolder(id,t.version); return;
       }
-    case "feedback": if (t) openForm(action,action==="answer"?"Answer agent question":"Give task feedback",input("text",action==="answer"?"Your answer":"Feedback",{type:"textarea",required:true}),action==="answer"?"Submit answer":"Submit feedback",{id},action==="answer"?(t.question||t.title):t.title); return;
+    case "feedback": if (t) openForm(action,action==="answer"?"Answer agent question":"Give task feedback",input("text",action==="answer"?"Your answer":"Feedback",{type:"textarea",required:true}),action==="answer"?"Submit answer":"Submit feedback",{id,version:t.version},action==="answer"?(t.question||t.title):t.title); return;
+    case "pick-answer":
+      void mutate({op:"answer",id,choice:Number(el.dataset.choice),version:Number(el.dataset.version)},"Answer recorded."); return;
     case "reconcile": if (t) openForm(action,"Record delivery outcome",facts([["Operation",t.operation||"reply"],["Account",t.account],["Destination",t.destination],["Subject",t.subject],["Version",t.version]])+draftPreview(t)+selectField("outcome","Verified provider outcome",[["","Choose the verified outcome"],["yes","I verified it was delivered"],["no","I verified it was not delivered"]],"")+(["create issue","create pull request","submit PR review"].includes(t.operation)?input("number",t.operation==="submit PR review"?"GitHub review ID":t.operation==="create issue"?"Verified issue number":"Verified pull request number",{type:"number",help:"Required when recording a verified delivery."}):""),"Record outcome",{id,version:t.version},"Check the destination before recording the outcome of this version."); return;
     case "skill": {
       const s=state.skills.find(k=>String(k.id)===id); if (!s) return;
@@ -943,12 +1163,12 @@ function handleAction(el) {
       showDialog("skill",titleCase(s.kind)+" revision",body,{id},control?'<div class="dialog-footer">'+control+'</div>':"");
       return;
     }
-    case "dismiss":
+    case "close_task":
     case "disconnect":
     case "demo":
     case "revert_skill": {
-      const copy={dismiss:["Dismiss task","This task will leave your active queue.","Dismiss task"],disconnect:["Disconnect account","The agent will stop reading from and delivering to this connection.","Disconnect"],demo:["Load sample workspace","Add sample tasks and activity to this local workspace.","Load samples"],revert_skill:["Revert this revision","The next agent will use the resulting active instructions.","Revert revision"]}[action];
-      openForm(action,copy[0],"",copy[2],{id},copy[1]); return;
+      const copy={close_task:["Close task","Stop work on this task and keep its history. Linked GitHub issues and pull requests stay open.","Close task"],disconnect:["Disconnect account","The agent will stop reading from and delivering to this connection.","Disconnect"],demo:["Load sample workspace","Add sample tasks and activity to this local workspace.","Load samples"],revert_skill:["Revert this revision","The next agent will use the resulting active instructions.","Revert revision"]}[action];
+      openForm(action,copy[0],"",copy[2],{id},action==="close_task" && t?t.title+" — "+copy[1]:copy[1]); return;
     }
     case "approve": void mutate({op:action,id,version:Number(el.dataset.version)},"Approval recorded."); return;
     case "reject_skill": void mutate({op:action,id},"Style suggestion declined."); return;
@@ -957,7 +1177,7 @@ function handleAction(el) {
     case "sync": void mutate({op:action},"Source sync requested."); return;
   }
 }
-const messages={instance_checkout:"Checkout added.",instance_join:"Paired. The instances now share work.",instance_rename:"Instance renamed.",instance_remove:"Instance removed and workspace key rotated.",orchestrator_prompt:"Message sent to the orchestrator.",app_finding:"Finding tracked.",chat_source_config:"Chat source saved.",suggestion_config:"Activity sources saved.",task:"Task created.",project:"Project saved.",report:"Investigation requested.",style:"Style preference submitted for review.",rule:"Decision rule saved.",settings:"Agent settings saved.",connect:"Connection saved.",feedback:"Feedback recorded.",answer:"Answer submitted.",reconcile:"Delivery outcome recorded.",dismiss:"Task dismissed.",disconnect:"Account disconnected.",demo:"Sample workspace loaded.",revert_skill:"Revision reverted."};
+const messages={instance_checkout:"Checkout added.",instance_join:"Paired. The instances now share work.",instance_rename:"Instance renamed.",instance_remove:"Instance removed and workspace key rotated.",orchestrator_prompt:"Message sent to the orchestrator.",close_task:"Task closed.",ignorelist:"Ignore list saved.",app_finding:"Finding tracked.",chat_source_config:"Chat source saved.",suggestion_config:"Activity sources saved.",task:"Task created.",project:"Project saved.",report:"Investigation requested.",style:"Style preference submitted for review.",rule:"Decision rule saved.",settings:"Agent settings saved.",connect:"Connection saved.",feedback:"Feedback recorded.",answer:"Answer submitted.",reconcile:"Delivery outcome recorded.",dismiss:"Task dismissed.",disconnect:"Account disconnected.",demo:"Sample workspace loaded.",revert_skill:"Revision reverted."};
 async function signInAgent(agent) {
   try {
     const result=await request("/api/action",{op:"agent_sign_in",agent});
@@ -991,7 +1211,10 @@ async function mutate(payload,message) {
 }
 document.addEventListener("click",event=>{
   const el=event.target.closest("[data-action]");
-  if (el&&!el.disabled) handleAction(el);
+  if (el&&!el.disabled) {
+    if (event.detail && el.closest(".row-shortcuts,.scope-link")) el.focus({preventScroll:true});
+    handleAction(el);
+  }
   if (event.target.closest("#sidebar a")) closeMenu();
 });
 document.addEventListener("input",event=>{
@@ -1032,6 +1255,9 @@ document.addEventListener("submit",event=>{
   const form=event.target, ctx=dialogState, fields=Object.fromEntries(new FormData(form)), op=ctx.type;
   let payload={op,...fields};
   if (ctx.id!=null) payload.id=ctx.id;
+  if (op==="answer") payload.version=ctx.version;
+  if (op==="set_exclusion") payload={op,scope:ctx.scope,value:ctx.value,ignored:ctx.ignored};
+  if (op==="ignorelist") payload={op,projects:new FormData(form).getAll("ignored_project"),repositories:fields.repositories.split(/\r?\n/).map(v=>v.trim()).filter(Boolean)};
   if (op==="project") {delete payload.repo;payload.repos=new FormData(form).getAll("repo").map(p=>p.trim()).filter(Boolean);}
   if (op==="chat_source_config") payload={op,provider:dialogState.kind,enabled:true,folder:fields.folder||""};
   if (op==="suggestion_config") payload={op,foreground:fields.foreground==="true",folders:new FormData(form).getAll("repo").map(p=>p.trim()).filter(Boolean)};
@@ -1051,12 +1277,32 @@ document.addEventListener("submit",event=>{
       payload.number=Number(fields.number);
     }
   }
-  void mutate(payload,messages[op]);
+  void mutate(payload,op==="set_exclusion"?ctx.value+(ctx.ignored?" added to the ignore list.":" removed from the ignore list."):messages[op]);
 });
 $("#dialog").addEventListener("cancel",e=>{if(running)e.preventDefault();});
-$("#dialog").addEventListener("close",()=>{cancelSignIn(dialogState);dialogState=null;$("#dialog-body").replaceChildren();if(invoker?.isConnected)invoker.focus({preventScroll:true});else $("#main").focus({preventScroll:true});invoker=null;});
+$("#dialog").addEventListener("close",()=>{
+  if ($("#dialog").open) return;
+  cancelSignIn(dialogState);dialogState=null;$("#dialog-body").replaceChildren();
+  if (document.activeElement===document.body) {
+    const sameTask=invoker?.dataset.id ? [...document.querySelectorAll(".task-entry button")].filter(b=>b.dataset.id===invoker.dataset.id) : [];
+    const target=invoker?.isConnected?invoker:sameTask.find(b=>b.dataset.action===invoker.dataset.action) || sameTask[0] || $("#main");
+    target.focus({preventScroll:true});
+  }
+  invoker=null;
+});
 $("#scrim").addEventListener("click",closeMenu);
 document.addEventListener("keydown",e=>{
+  const row=e.target.closest(".task-entry");
+  if (row && !$("#dialog").open && !running && !e.repeat && !e.isComposing &&
+      !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && /^[a-z]$/i.test(e.key)) {
+    const shortcut=row.querySelector('[aria-keyshortcuts="'+e.key.toUpperCase()+'"]');
+    if (shortcut) {e.preventDefault(); shortcut.click(); return;}
+  }
+  if (e.target.matches('.task-tabs [role="tab"]') && ["ArrowLeft","ArrowRight","Home","End"].includes(e.key)) {
+    const tabs=[...e.target.parentElement.children], index=tabs.indexOf(e.target);
+    const next=e.key==="Home"?0:e.key==="End"?tabs.length-1:(index+(e.key==="ArrowRight"?1:-1)+tabs.length)%tabs.length;
+    e.preventDefault(); selectTaskTab(tabs[next]); return;
+  }
   if (e.key==="Escape" && document.body.classList.contains("menu-open")) {closeMenu();$(".menu-toggle")?.focus();}
   if ((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="k"&&!$("#dialog").open) {
     e.preventDefault();if(activeView!=="tasks")location.hash="tasks";

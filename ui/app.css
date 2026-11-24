@@ -66,18 +66,33 @@ svg {display:inline-block;vertical-align:middle;flex-shrink:0}
 .home-queue+.block,#task-list+.block {margin-top:16px}
 .overview-grid {display:grid;grid-template-columns:minmax(0,1.65fr) minmax(232px,1fr);gap:24px;margin-top:20px}
 .task-row,.task-columns {display:grid;grid-template-columns:minmax(0,1fr) minmax(112px,15%) 60px;gap:8px;align-items:center;text-align:left;width:100%;padding:4px 8px}
-.task-columns {font-size:11px;font-weight:500;color:var(--muted);border-block:1px solid var(--line);background:var(--sidebar)}
-.task-row {position:relative;border:0;border-bottom:1px solid var(--line);background:transparent;min-height:44px;padding-block:7px}
+.task-entry,.task-heading {display:grid;grid-template-columns:minmax(0,1fr) 132px;align-items:center}
+.task-heading {font-size:11px;font-weight:500;color:var(--muted);border-block:1px solid var(--line);background:var(--sidebar)}
+.task-heading>span {text-align:right;padding-right:8px}
+.task-entry {border-bottom:1px solid var(--line)}
+.row-shortcuts {display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:2px;padding-right:8px}
+.row-shortcuts .iconbtn {width:28px;height:28px;background:transparent;border-color:transparent;color:var(--muted)}
+.row-shortcuts .iconbtn:hover,.row-shortcuts .iconbtn:focus-visible {background:var(--surface);border-color:var(--line);color:var(--green-dark)}
+.task-row {position:relative;border:0;background:transparent;min-height:44px;padding-block:7px}
 .task-row.needs-attention::before {position:absolute;content:"";top:8px;bottom:8px;left:0;width:2px;background:var(--marker)}
-.task-row:focus-visible {outline-offset:-2px}
+.task-open,.scope-link {font:inherit;text-align:left;color:inherit;background:transparent;border:0;padding:0}
+.task-open {display:block;max-width:100%}
+.task-open::after {content:"";position:absolute;inset:0}
+.scope-link {position:relative;z-index:1;max-width:100%;color:var(--green-dark);text-decoration:underline;text-underline-offset:2px}
+.scope-link:hover {color:var(--green)}
 .task-row .status {justify-self:start}
 .task-age {font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .task-context {display:flex;flex-wrap:wrap;gap:2px 14px;margin:2px 0;font-size:12px;line-height:1.45;color:var(--ink)}
 .context-field {min-width:0;overflow-wrap:anywhere;font-weight:550}
-.context-label {color:var(--muted);font-weight:400}
+.named-icon {display:inline-flex;align-items:center;vertical-align:-.17em;line-height:1;color:inherit}
+.context-field .named-icon {margin-inline-end:2px}
 .task-age,.task-columns span:last-child {text-align:right;font-variant-numeric:tabular-nums}
 .task-row .row-title strong {font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .row-mobile {display:none}
+.queue-answers {display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
+.queue-answers .btn {position:relative;z-index:1;padding:3px 8px;min-height:26px}
+.answer-details {display:grid;gap:10px;margin-top:12px}
+.answer-details p {margin:3px 0 0;overflow-wrap:anywhere;color:var(--muted)}
 
 .section-title {display:flex;justify-content:space-between;align-items:center;gap:8px;min-height:32px;padding-bottom:4px;border-bottom:1px solid #c5c8c2}
 h2 {font-size:15px;line-height:1.4;letter-spacing:-.01em;font-weight:600}
@@ -91,6 +106,7 @@ h3 {font-size:14px;line-height:1.4;font-weight:600}
 .entry-text,.row-title {flex:1;min-width:0}
 .entry strong,.row-title strong {display:block;font-size:14px;line-height:1.45;font-weight:600;overflow-wrap:anywhere}
 .row-title small {display:block;color:var(--muted);font-size:12px;margin-top:2px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.row-title .queue-question {white-space:normal;overflow-wrap:anywhere;color:var(--ink)}
 .entry-actions {display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .skill-row:hover,.task-row:hover {background:var(--soft)}
 .skill-row>svg,.task-row>svg {color:var(--muted)}
@@ -158,14 +174,18 @@ dialog::backdrop {background:#1e2a244a}
 .form-intro {margin-bottom:16px;font-size:13px}
 textarea {resize:vertical;min-height:90px}
 .form-error {border-radius:5px;margin-top:14px}
-.detail-status {display:flex;gap:10px;align-items:center;font-size:13px;color:var(--muted);margin-bottom:8px}
 .facts {display:grid;gap:5px}
 .facts div {display:grid;grid-template-columns:minmax(85px,115px) minmax(0,1fr);gap:8px;font-size:13px}
 .facts dt {color:var(--muted)}.facts dd {margin:0;overflow-wrap:anywhere;white-space:pre-wrap}
 .detail-group {margin:10px 0 0}
 .detail-group h3 {margin-bottom:6px}
 .quote {padding:11px 13px;border:1px solid var(--line);border-radius:5px;background:var(--surface);margin:6px 0;font:inherit;font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4}
-.detail-actions {display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding-top:17px}
+.detail-actions {display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:4px 0 8px}
+.task-tabs button[aria-selected=true] {border-color:var(--green);color:var(--green-dark);font-weight:600}
+dialog.wide #dialog-body {display:flex;flex-direction:column;max-height:inherit}
+dialog.wide .dialog-content {display:flex;flex-direction:column;overflow:hidden}
+.task-tabs {flex:none}
+.task-panel {overflow:auto;min-height:0;padding:6px 2px}
 details {margin:11px 0;font-size:13px}summary {cursor:pointer;color:var(--green);font-weight:560}
 details .facts {margin-top:8px}
 #notice {position:fixed;right:20px;bottom:20px;z-index:8;pointer-events:none;background:var(--green-dark);color:white;border-radius:7px;padding:10px 15px;box-shadow:0 5px 20px #21352222;opacity:0;transform:translateY(5px);transition:opacity 160ms,transform 160ms;font-size:13px;max-width:min(94vw,480px);overflow-wrap:anywhere}
@@ -191,7 +211,11 @@ details .facts {margin-top:8px}
   .filters select {min-width:0;max-width:100%;flex:1}
   .suggested-task {flex-wrap:wrap}
   .timeline li {grid-template-columns:44px minmax(0,1fr);gap:8px}
-  .task-columns {display:none}
+  .task-heading {display:none}
+  .task-entry {grid-template-columns:minmax(0,1fr)}
+  .row-shortcuts {padding:0 6px 5px;justify-content:flex-start;gap:4px}
+  .row-shortcuts:empty {display:none}
+  .row-shortcuts .iconbtn {width:34px;height:34px}
   .task-row {grid-template-columns:minmax(0,1fr) auto}
   .task-age {display:none}
   .row-mobile {display:block;color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -247,3 +271,18 @@ details .facts {margin-top:8px}
 .vps-steps small {display:block;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
 @media (max-width:640px) {.setup-card{flex-wrap:wrap}.vps-form,.vps-run{margin-left:0}}
 .vps-run .vps-form {margin-left:0}
+.markdown-body { line-height:1.55; overflow-wrap:anywhere; overflow-x:auto; }
+.markdown-body > :first-child { margin-top:0; }
+.markdown-body > :last-child { margin-bottom:0; }
+.markdown-body :is(h1,h2,h3,h4,h5,h6) { margin:1em 0 .35em; text-transform:none; letter-spacing:normal; }
+.markdown-body h1 { font-size:1.45em; }
+.markdown-body h2 { font-size:1.25em; }
+.markdown-body h3 { font-size:1.1em; }
+.markdown-body :is(ul,ol) { padding-inline-start:1.6em; }
+.markdown-body pre { padding:.8em; overflow:auto; background:#f3f3ef; border-radius:6px; }
+.markdown-body blockquote { margin-inline:0; padding-inline-start:1em; border-left:3px solid #b4c4b4; }
+.markdown-body :is(td,th) { border:1px solid #d7dbd5; padding:.3em .6em; }
+.markdown-body table { border-collapse:collapse; }
+.markdown-body a { text-decoration:underline; }
+.ignore-projects { display:grid; gap:.5rem; border:0; padding:0; margin:0 0 1rem; }
+.ignore-projects legend { margin-bottom:.5rem; }

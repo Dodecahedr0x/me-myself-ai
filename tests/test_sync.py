@@ -755,6 +755,22 @@ class WorktreeHandoffTests(CapacityBase):
         (tree / "old.txt").unlink()
         return t, tree
 
+    def test_task_with_only_uncommitted_edits_moves(self):
+        self.vps.action(dict(op="instance_checkout", path=str(self.vps_checkout)))
+        t = self.queued(self.laptop, "Tweak", kind="coding", status="question", question="Which?",
+                        repository=str(self.laptop_checkout))
+        tree = worker.prepare_worktree(self.laptop_checkout, self.laptop.db.root / "worktrees", t["id"])
+        with self.laptop.db.atomic():
+            self.laptop.db.put("tasks", {**self.laptop.db.get("tasks", t["id"]), "worktree": str(tree)})
+        (tree / "app.py").write_text("print('edited')\n")
+        self.link()
+        self.laptop.action(dict(op="move", items=["task:" + t["id"]], to=self.vps.instances.id))
+        self.link()
+        self.link()
+        self.assertTrue(self.vps.owns("task:" + t["id"]))
+        moved = Path(self.vps.db.get("tasks", t["id"])["worktree"])
+        self.assertEqual((moved / "app.py").read_text(), "print('edited')\n")
+
     def test_task_moves_with_its_worktree(self):
         self.vps.action(dict(op="instance_checkout", path=str(self.vps_checkout)))
         t, tree = self.coding_task()

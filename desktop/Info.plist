@@ -11,5 +11,6 @@
     <key>CFBundleShortVersionString</key><string>0.1</string>
     <key>LSMinimumSystemVersion</key><string>12.0</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSDocumentsFolderUsageDescription</key><string>MeMyselfAI needs access to the project checkouts you select in Documents to identify their GitHub repositories and prepare task worktrees.</string>
     <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict></plist>

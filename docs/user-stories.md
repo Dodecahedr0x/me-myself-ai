@@ -8,17 +8,17 @@
 | US-04 | Have the agent choose how to handle a task and get started on its own. | A reply is ready when I open the dashboard. I can correct it, add context, or dismiss it. |
 | US-05 | Let the agent prepare work in dry mode and decide exactly what leaves my machine as a post or update. | I can review and confirm one Slack reply while an email draft stays pending. |
 | US-06 | Eventually hand off familiar work completely. | With authority to handle routine status requests, the agent answers one, checks delivery, and records the result while I am away. |
-| US-07 | Have a dedicated agent work on each task. | Two fixes in one repository progress in separate Git worktrees. |
+| US-07 | Have a dedicated agent work on each task. | A delegated fix receives its parent's instructions and a private clone where it can run the project’s tests. The parent resumes when the fix supplies new evidence. [Task execution](specs/task-execution.md) |
 | US-08 | Rely on promises I make or delegate being picked up later. | A sent reply promising Friday's figures creates a linked follow-up. |
 | US-09 | See whether a task achieved its actual outcome. | A bug stays open on the dashboard until its issue, mergeable linked PR, and reporter notification are verified. |
 | US-10 | Define how each project handles each type of decision. | One project allows routine replies while requiring review for promises. |
 | US-11 | Teach my writing style through feedback and past posts. | The agent asks what an ambiguous edit means and future agents apply my approved preference. |
 | US-12 | Decide when I trust autonomous delivery. | I can inspect missed tasks, work quality, and style fidelity before changing a project's rules. |
 | US-13 | Leave work with the person already tackling it. | The dashboard shows why the agent skipped a claimed bug. |
-| US-14 | Answer agent questions in dry mode while independent work continues. | A slipped dependency raises a question about the promised date while unaffected work proceeds. |
+| US-14 | Resolve blockers in dry mode while independent work continues. | I can pick a revised date directly in the queue, open the task to compare what each choice means, or restore folder access after missing a macOS prompt. [Dashboard](specs/dashboard.md) |
 | US-15 | Review everything agents do and report omissions in the app. | Reporting a missed Slack request starts an agent that recovers outstanding related requests. |
 | US-16 | Have agents improve through skills and other Markdown files. | A revised discovery skill catches a similar request on the next run using the same app version. |
-| US-17 | Delegate general computer work in Global and group related repositories under a named project. | One release includes the client and service repositories. An unrelated email stays in Global. [Task execution](specs/task-execution.md) |
+| US-17 | Delegate general computer work in Global and group related repositories under a named project. | A GitHub issue finds its local project from the checkout’s origin. One release can include both client and service repositories. An unrelated email stays in Global. [Task execution](specs/task-execution.md) |
 | US-18 | See suggested work grounded in my connected apps and activity on my Mac. | A follow-up from a Claude or ChatGPT conversation appears with its supporting exchange. A changed budget sheet and a Slack request can also support a suggestion. [Activity suggestions](specs/activity-suggestions.md) |
 | US-19 | Use MeMyselfAI to improve itself. | I run the app's workflow checks or report something I observed. I can follow a finding from its test evidence through its GitHub issue, fix and pull request review in Tasks. [Self-improvement](specs/self-improvement.md) |
 | US-20 | Clear what agents need from me like an email inbox, from the keyboard. | I open the app, press J and K through five rows, press 1 or E on each, and every agent continues. Working agents stay out of my way. [Inbox and focus card](specs/inbox-experience.md) |
@@ -35,6 +35,7 @@
 | US-31 | Set up agents and accounts once, and have every kind of work flow the same way. | I sign into Claude once and connect Google once. The orchestrator reads my mail, hands an email that needs a reply to a new agent, and that agent writes and sends it through the app. A Slack mention or a meeting invite goes the same way. [Agents and the app MCP server](specs/agents-and-app-mcp.md) |
 | US-32 | Be walked through setup, with the app doing whatever it can on its own. | On first launch the app opens on Setup. It already found Claude Code signed in, and connects my GitHub CLI account in one click. Only the steps that need me are marked. [Guided setup](specs/guided-setup.md) |
 | US-33 | Set up my VPS from the desktop app using a host from my SSH config. | I pick OVH-VPS and choose Set up server. The app installs the service, installs Claude Code there and pairs the server with my Mac. It asks only for a sudo password, and for one sign-in in Terminal. [VPS setup over SSH](specs/guided-setup.md#vps-setup-over-ssh) |
+| US-34 | Manage what the agent works on. | I can read a formatted issue description, exclude projects or repositories from agent work, and close a task when I have handled it myself. [Dashboard](specs/dashboard.md) · [Task workflow](specs/task-workflow.md) |
 
 Workspace-wide Slack and Google account connections extend US-01 and US-03. [Workspace accounts](specs/account-wide-connections.md)
 

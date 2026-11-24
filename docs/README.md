@@ -33,13 +33,22 @@ flowchart LR
     Local["Selected folders and active app"] --> Suggestions[Activity suggestions]
     Connectors --> Suggestions
     Suggestions -->|Start suggested work| Tasks
-    Discovery -->|Assign named project or Global| Tasks[Local task queue]
+    Discovery -->|Check workspace ignore list| Scope[Eligible projects and repositories]
+    Scope -->|Assign named project or Global| Tasks[Local task queue]
     Tasks -->|Spawn for each task| CLI[Claude Code or Codex CLI]
-    Projects["Global scope and named projects"] -->|Registered repositories| Worktree
-    CLI -->|Coding tasks| Worktree[Task worktree]
+    Projects["Global scope and named projects"] -->|Registered repositories| Clone[Private task clone]
+    GitHub -->|Match connected owner/repository to local Git origin| Projects
+    Clone --> Worktree
+    CLI -->|Save finished local edits, including before a question| Worktree[Task worktree]
+    Tasks -->|Parent instructions and completed step results| CLI
+    CLI -->|New dependency evidence resumes waiting work| Tasks
+    CLI -->|Other preparation| Directory[Private app workspace folder]
     Style[Approved style file] --> CLI
+    Interaction[Bundled task-interaction skill] --> CLI
     CLI -->|Results and drafts| Dashboard[Desktop dashboard]
+    Dashboard -->|Choose folder and verify Git access| Worktree
     Dashboard -.->|Optional correction| CLI
+    Dashboard -->|Answer a queue question| Tasks
     Dashboard -->|User rules and confirmations| Executor[Action executor]
     CLI -->|Proposed action| Executor
     Executor -->|Authorized write| Sources["Connected Slack, mail or GitHub account"]

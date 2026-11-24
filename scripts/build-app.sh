@@ -12,6 +12,8 @@ cp desktop/launch_service.py ./*.py "$resources/"
 # The server setup over SSH streams these to the VPS and runs its installer. See docs/specs/guided-setup.md.
 mkdir -p "$resources/deploy"
 cp deploy/install-vps.sh deploy/container-start.sh "$resources/deploy/"
+mkdir -p "$resources/skills/task-interaction"
+cp skills/task-interaction/SKILL.md "$resources/skills/task-interaction/"
 mkdir -p "$resources/tests"
 cp tests/test_bug_integration.py tests/test_http.py "$resources/tests/"
 mkdir -p "$resources/vendor/google-workspace"
