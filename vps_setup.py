@@ -148,7 +148,7 @@ def app_archive(source):
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
         for path in sorted(source.glob("*.py")):
             tar.add(path, arcname=path.name)
-        for folder in ("ui", "vendor", "deploy"):
+        for folder in ("ui", "vendor", "deploy", "skills"):
             if (source / folder).is_dir():
                 tar.add(source / folder, arcname=folder,
                         filter=lambda info: None if "/." in "/" + info.name or "__pycache__" in info.name else info)

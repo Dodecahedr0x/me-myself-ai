@@ -718,8 +718,8 @@ def git(cwd, *args):
                           env=GIT_ENV).stdout
 
 
-class WorktreeHandoffTests(CapacityBase):
-    """A coding task moves with its worktree, uncommitted and untracked edits included."""
+class GitBase(CapacityBase):
+    """A bare origin with one clone for each instance."""
 
     def setUp(self):
         super().setUp()
@@ -754,6 +754,11 @@ class WorktreeHandoffTests(CapacityBase):
         (tree / "new.txt").write_text("untracked\n")
         (tree / "old.txt").unlink()
         return t, tree
+
+
+
+class WorktreeHandoffTests(GitBase):
+    """A coding task moves with its worktree, uncommitted and untracked edits included."""
 
     def test_task_with_only_uncommitted_edits_moves(self):
         self.vps.action(dict(op="instance_checkout", path=str(self.vps_checkout)))
@@ -846,6 +851,56 @@ class WorktreeHandoffTests(CapacityBase):
         self.laptop.balance()
         self.link()
         self.assertTrue(self.laptop.owns("task:" + t["id"]))
+
+
+class ProjectRepositoryMappingTests(GitBase):
+    """Project repository paths belong to the instance that registered them. Another instance maps each one to
+    its own checkout of the same origin, cloning it when missing. See "Checkouts by origin" in the spec."""
+
+    def setUp(self):
+        super().setUp()
+        self.laptop.add_project("Web", [str(self.laptop_checkout)])
+        self.laptop.record_origins()
+        self.link()
+
+    def test_registering_instance_records_each_origin(self):
+        origins = self.laptop.db.get("projects", "Web")["origins"]
+        info = origins[str(self.laptop_checkout.resolve())]
+        self.assertEqual(info["instance"], self.laptop.instances.id)
+        self.assertEqual(info["origin"], worker.normalize_origin(str(self.origin)))
+        self.assertEqual(self.vps.db.get("projects", "Web")["origins"], origins, "origins sync with the project")
+
+    def test_registering_instance_keeps_its_own_path(self):
+        self.assertEqual(self.laptop.repositories("Web"), [str(self.laptop_checkout.resolve())])
+
+    def test_peer_uses_its_own_checkout_of_the_origin(self):
+        self.vps.action(dict(op="instance_checkout", path=str(self.vps_checkout)))
+        self.assertEqual(self.vps.repositories("Web"), [str(self.vps_checkout.resolve())])
+
+    def test_peer_without_a_checkout_clones_it_only_when_preparing(self):
+        self.assertEqual(self.vps.repositories("Web"), [], "a lookup never probes the other machine's path")
+        cloned = self.vps.repositories("Web", clone=True)
+        self.assertEqual(len(cloned), 1)
+        self.assertTrue(cloned[0].startswith(str(Path(self.vps.db.root).resolve() / "checkouts")))
+        self.assertEqual(self.vps.repositories("Web"), cloned)
+
+    def test_peer_candidates_never_report_the_other_machines_folder(self):
+        self.vps.action(dict(op="instance_checkout", path=str(self.vps_checkout)))
+        task = {**self.queued(self.vps, "Fix it", kind="coding"), "project": "Web"}
+        self.assertEqual(self.vps.repository_candidates(task, None), [str(self.vps_checkout.resolve())])
+
+    def test_ignored_project_stays_ignored_on_a_peer(self):
+        import workscope
+        with self.vps.db.atomic():
+            web = self.vps.db.get("projects", "Web")
+            self.vps.db.put("projects", {**web, "repos": ["/Users/someone/web"], "origins": {"/Users/someone/web": dict(
+                origin="github.com/acme/web", remote="git@github.com:acme/web.git", instance=self.laptop.instances.id)}})
+            self.vps.db.put("config", {"id": "ignorelist", "projects": ["Web"], "repositories": []})
+        self.assertIn("acme/web", workscope.WorkScope(self.vps.db).slugs)
+
+    def test_editing_the_project_on_a_peer_keeps_the_other_machines_path(self):
+        self.vps.add_project("Web", [str(self.laptop_checkout.resolve())], parent=None)
+        self.assertEqual(self.vps.db.get("projects", "Web")["repos"], [str(self.laptop_checkout.resolve())])
 
 
 class TakeoverTests(CapacityBase):

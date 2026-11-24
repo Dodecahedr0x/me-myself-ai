@@ -280,7 +280,8 @@ class VpsSetupTest(unittest.TestCase):
         import io
         import tarfile
         names = tarfile.open(fileobj=io.BytesIO(vps_setup.app_archive(ROOT))).getnames()
-        for name in ("server.py", "engine.py", "vps_setup.py", "deploy/install-vps.sh", "ui/app.js"):
+        for name in ("server.py", "engine.py", "vps_setup.py", "deploy/install-vps.sh", "ui/app.js",
+                     "skills/task-interaction/SKILL.md"):
             self.assertIn(name, names)
         self.assertFalse(any("__pycache__" in n or n.startswith("tests") for n in names))
 

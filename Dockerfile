@@ -21,6 +21,7 @@ WORKDIR /app
 COPY --chown=root:root *.py /app/
 COPY --chown=root:root ui /app/ui
 COPY --chown=root:root vendor /app/vendor
+COPY --chown=root:root skills /app/skills
 COPY --chown=root:root deploy/container-start.sh /app/container-start.sh
 
 USER memyselfai

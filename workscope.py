@@ -52,6 +52,10 @@ class WorkScope:
         self.paths.update(Path(path) for p in projects if p["name"] in self.projects for path in p["repos"])
         origins = {p: bugflow.checkout_repository(str(p)) for p in registered | self.paths}
         self.slugs.update(origins[p] for p in self.paths if origins[p])
+        # Folders registered on another instance do not exist here. Their recorded origins still identify them.
+        self.slugs.update(info["origin"].split("/", 1)[1] for p in projects if p["name"] in self.projects
+                          for info in (p.get("origins") or {}).values()
+                          if info.get("origin", "").startswith("github.com/"))
         self.paths.update(p for p in registered if origins[p] in self.slugs)
         identities = self.slugs | {str(p) for p in self.paths}
         self.references = re.compile(r"(?<![\w.-])(?:" + "|".join(map(re.escape, identities)) +

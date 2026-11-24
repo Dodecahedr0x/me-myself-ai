@@ -200,11 +200,17 @@ class Engine:
         for repo in repos:
             if not isinstance(repo, str) or not repo.strip():
                 raise ValueError("Choose a repository folder.")
+            if repo in previous.get("repos", []) and self.foreign(previous, repo):
+                paths.append(repo)  # Another instance's folder, kept as registered there.
+                continue
             path = Path(repo).expanduser()
             if not path.is_absolute() or not (path / ".git").exists():
                 raise ValueError(f"Choose a Git working tree for {repo}.")
             paths.append(str(path.resolve()))
-        self.db.put("projects", {**previous, "repos": list(dict.fromkeys(paths))})
+        paths = list(dict.fromkeys(paths))
+        origins = {k: v for k, v in (previous.get("origins") or {}).items() if k in paths}
+        self.db.put("projects", {**previous, "repos": paths, "origins": origins})
+        self.record_project_origins()
         if self.scope.active:
             self.refresh_scope()
         self.repository_recheck.set()
@@ -322,7 +328,7 @@ class Engine:
     def checkout_project(self, connection, path):
         """Called in the transaction assigning a task to a verified checkout."""
         projects = self.db.rows("projects")
-        matches = [p["name"] for p in projects if not p.get("global") and path in p["repos"]]
+        matches = [p["name"] for p in projects if not p.get("global") and path in self.project_paths(p)]
         parents = {p["name"]: p.get("parent") for p in projects}
         broader = {parent for name in matches for parent in self.ancestors(name, parents)}
         matches = [name for name in matches if name not in broader]
@@ -352,7 +358,7 @@ class Engine:
                          reason="Removed from the ignore list")
                 self.save(t, t["reason"])
 
-    def repositories(self, project):
+    def repositories(self, project, clone=False):
         projects = self.db.rows("projects")
         parents = {p["name"]: p.get("parent") for p in projects}
         return list(
@@ -362,10 +368,39 @@ class Engine:
                 if project == self.global_project
                 or p["name"] == project
                 or project in self.ancestors(p["name"], parents)
-                for path in p["repos"]
+                for path in self.project_paths(p, clone)
                 if not self.scope.path(path)
             )
         )
+
+    def foreign(self, project, path):
+        """A repository path another instance registered. It names a folder on that machine, not this one."""
+        info = (project.get("origins") or {}).get(path)
+        return bool(info and info.get("instance") not in (None, self.instances.id))
+
+    @staticmethod
+    def project_origins(project):
+        return {info.get("origin", "") for info in (project.get("origins") or {}).values()} - {""}
+
+    def project_paths(self, project, clone=False):
+        """This instance's folders for a project's repositories. A path registered on another instance maps to
+        this instance's checkout of the same origin, cloned into the data directory when clone is set.
+        See "Checkouts by origin" in instances-and-sync.md."""
+        paths = []
+        for path in project.get("repos", []):
+            if not self.foreign(project, path):
+                paths.append(path)
+                continue
+            info = project["origins"][path]
+            local = self.find_checkout(info.get("origin", ""))
+            if not local and clone and info.get("origin") and info.get("remote"):
+                try:
+                    local = self.checkout_for(info["origin"], info["remote"])
+                except (ValueError, worker.WorkerError) as exc:
+                    self.db.log("Repository not cloned", f"{info['origin']} for {project['name']}: {exc}")
+            if local:
+                paths.append(local)
+        return paths
 
     def skill(self, kind, body, active, reason=""):
         body = str(body).strip()
@@ -697,7 +732,7 @@ class Engine:
         local = self.db.get("local", "checkouts") or {}
         paths = list(local.get("paths", []))
         for p in self.db.rows("projects"):
-            paths += p.get("repos", [])
+            paths += [path for path in p.get("repos", []) if not self.foreign(p, path)]
         return [path for path in dict.fromkeys(paths) if os.path.isdir(path)]
 
     def origin_of(self, path):
@@ -844,8 +879,25 @@ class Engine:
         self.wake.set()
         return len(taken)
 
+    def record_project_origins(self):
+        """Note the origin of each project folder that exists here, so peers can map it to their own checkout."""
+        for p in self.db.rows("projects"):
+            known = p.get("origins") or {}
+            found = {}
+            for path in p.get("repos", []):
+                if path not in known and os.path.isdir(path) and (origin := self.origin_of(path)):
+                    found[path] = dict(origin=origin, remote=worker.checkout_remote(path), instance=self.instances.id)
+            if found:
+                with self.db.atomic():
+                    latest = self.db.get("projects", p["id"])
+                    if latest:
+                        merged = {**found, **(latest.get("origins") or {})}
+                        self.db.put("projects", {**latest, "origins": {k: v for k, v in merged.items()
+                                                                       if k in latest.get("repos", [])}})
+
     def record_origins(self):
         """Note each owned repository task's origin, so a peer can take it over if this instance goes silent."""
+        self.record_project_origins()
         for t in self.db.rows("tasks"):
             if t.get("repository") and not t.get("repository_origin") and t["status"] not in TERMINAL \
                     and self.owns("task:" + t["id"]):
@@ -1298,7 +1350,8 @@ class Engine:
                     p["name"]
                     for p in projects
                     if not p.get("global")
-                    and any(bugflow.checkout_repository(path) == repo for path in p["repos"])
+                    and (any(bugflow.checkout_repository(path) == repo for path in self.project_paths(p))
+                         or "github.com/" + repo in self.project_origins(p))
                 ]
                 parents = {p["name"]: p.get("parent") for p in projects}
                 broader = {parent for name in matches for parent in self.ancestors(name, parents)}
@@ -1993,7 +2046,7 @@ class Engine:
         )
 
     def repository_candidates(self, t, conn, origins=None):
-        paths = self.repositories(t["project"])
+        paths = self.repositories(t["project"], clone=True)
         github = conn and conn["kind"] == "github"
         slug = conn["config"].get("repository", "").casefold() if github else ""
         if github and not slug:
