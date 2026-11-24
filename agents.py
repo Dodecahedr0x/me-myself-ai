@@ -23,6 +23,8 @@ HARNESSES = ("claude", "codex", "hermes")
 SUBSCRIPTIONS = ("claude", "codex")
 # Hermes inference provider for each subscription.
 HERMES_PROVIDER = {"claude": "anthropic", "codex": "openai-codex"}
+# Hermes sends an empty model name unless one is configured, which providers reject.
+HERMES_MODEL = {"claude": "claude-opus-5-5", "codex": "gpt-5.5"}
 HERMES_MIN_VERSION = (0, 13, 0)
 # Hermes toolsets the orchestrator may use. Terminal, file, browser, web, code execution,
 # messaging, cron and delegation stay off. The app MCP server is the only way to act.
@@ -240,9 +242,11 @@ class Agents:
         """Write Hermes' private config. The app owns this file and rewrites it on every start."""
         home = hermes_home(self.root)
         home.mkdir(mode=0o700, parents=True, exist_ok=True)
-        provider = HERMES_PROVIDER[self.subscription()]
+        subscription = self.subscription()
+        provider = HERMES_PROVIDER[subscription]
+        model = self.settings().get("orchestrator_model") or HERMES_MODEL[subscription]
         config = {
-            "model": {"provider": provider},
+            "model": {"provider": provider, "default": model},
             "approvals": {"mode": "manual", "cron_mode": "deny", "unattended_mode": "deny",
                           "single_query_mode": "deny"},
             "mcp_servers": {

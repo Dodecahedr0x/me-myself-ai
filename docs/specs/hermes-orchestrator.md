@@ -55,6 +55,10 @@ Verified on 2026-11-24:
 - In a clean Debian 12 arm64 container, `deploy/install-vps.sh` installed it as the service user (302 MB), and `memyselfai-hermes --version` worked for root.
 - In every case `~/.hermes` was untouched.
 
+- On the user's Ubuntu 26.04 x86_64 VPS, `deploy/install-vps.sh` installed it as the service user (315 MB) next to the user's own Hermes, which kept running untouched. The service restarted on the new code. A run driven by the app reached the app MCP server and registered its tools.
+
+Fixed while verifying: the app wrote Hermes' config with a provider but no model, so every call was rejected with an empty model name. The config now names one: `claude-opus-5-5` for the Claude subscription and `gpt-5.5` for ChatGPT, or the `orchestrator_model` setting. Hermes 0.13 one-shot mode hides errors and exits 0 with no output. The orchestrator therefore reads the last error Hermes logged during the run and shows that.
+
 Not verified: the Docker image start path and Linux x86_64 (same code, different uv build), and the app bundle build with the prebuilt dashboard.
 
 ## What Hermes can and cannot do
@@ -104,7 +108,7 @@ The sweep and the daily project pass in [proactive discovery](proactive-discover
 
 ## Open questions
 
-- Anthropic's and OpenAI's terms may limit using a consumer subscription login inside a third-party agent such as Hermes. Check both before shipping subscription sign-in for Hermes. Keep the API key path available.
+- **Answered for Claude (2026-11-24).** Anthropic serves a Claude subscription login used through Hermes from the account's extra usage, not its plan limits. Without extra usage every call is refused with "Third-party apps now draw from your extra usage, not your plan limits." The orchestrator then shows that message. Options are to add extra usage, use an Anthropic API key, or use the ChatGPT subscription. OpenAI's terms for Codex sign-in inside Hermes are still unchecked.
 - Hermes' macOS desktop app supports Apple Silicon only. This spec uses only the command-line install. Intel Mac support needs testing.
 - Should the orchestrator also be reachable from the user's own Telegram or Signal through Hermes' gateway? That would be a message sent by a third-party service, so it is off in this draft.
 

@@ -341,6 +341,7 @@ class AgentSetupTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         config = json.loads(path.read_text())
         self.assertEqual(config["model"]["provider"], "anthropic")
+        self.assertTrue(config["model"]["default"])  # An empty model name is rejected by the provider.
         self.assertEqual(config["approvals"]["mode"], "manual")
         self.assertEqual(set(config["mcp_servers"]), {"memyselfai"})
         with patch("agents.executable", return_value="/bin/hermes"):

@@ -8,6 +8,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -221,6 +222,7 @@ class Orchestrator:
             entry = app_mcp.launch_config(self.engine.mcp_url, token_file)
             self.engine.agents.write_hermes_config([entry["command"], *entry["args"]], entry["env"])
             command, env = self.engine.agents.hermes_command(self.prompt(purpose, c))
+            started = datetime.datetime.now()
             self.db.log("Orchestrator run", purpose)
             with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, env=env, cwd=token_file.parent,
@@ -235,7 +237,9 @@ class Orchestrator:
             answer = out[:MAX_OUTPUT].decode("utf-8", "replace").strip()
             if process.returncode or not answer:
                 tail = err[-2000:].decode("utf-8", "replace").strip().splitlines()
-                raise RuntimeError(tail[-1] if tail else f"Hermes exited with status {process.returncode}.")
+                # One-shot mode hides errors and exits 0; its log keeps the provider's message.
+                reason = (tail[-1] if tail else "") or self.logged_error(started)
+                raise RuntimeError(reason or f"Hermes exited with status {process.returncode} without an answer.")
         except Exception as exc:
             failures = c.get("failures", 0) + 1
             delay = BACKOFF[min(failures, len(BACKOFF)) - 1]
@@ -268,6 +272,25 @@ class Orchestrator:
             changes.update(pending="")
             self.add_message("hermes", answer[:8000])
         self.save(**changes)
+
+    def logged_error(self, since):
+        """The last ERROR line Hermes logged during this run, without its timestamp."""
+        try:
+            lines = (self.engine.db.root / "hermes" / "logs" / "errors.log").read_text(errors="replace").splitlines()[-200:]
+        except OSError:
+            return ""
+        for line in reversed(lines):
+            try:
+                at = datetime.datetime.strptime(line[:19], "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            if at < since.replace(microsecond=0):
+                return ""
+            if " ERROR " in line:
+                message = line.split(": ", 1)[-1]
+                match = re.search(r"'message': '([^']+)'", message)
+                return (match.group(1) if match else message)[:500]
+        return ""
 
     def close(self):
         process = self.process
