@@ -100,7 +100,8 @@ TMPDIR and Git settings when running fixtures. Network connections are disabled.
 test failures and exit codes as results when the request is to run tests. Use files for deliverable edits.
 A prior request for the user to run a command can be resolved by running it yourself.
 When setup_steps_remaining is positive and a command needs a missing toolchain or dependencies, use
-outcome setup with text "install go", "install rust", "fetch go <folder>", "fetch rust <folder>" or
+outcome setup with text "install go", "install rust", "install c" (a C/C++ compiler and linker, also
+needed when Rust reports linker `cc` not found), "fetch go <folder>", "fetch rust <folder>" or
 "fetch npm <folder>", where folder is relative to the worktree and holds the manifest. The app installs
 official toolchains and downloads dependencies with network for you; then run the command. Setup
 results arrive in command_results. Do not ask the user to install a toolchain the app can install.""",
@@ -768,8 +769,9 @@ def run_command(workdir, command, *, tools=None, cache=None, network=False, cwd=
         temp = Path(scratch).resolve()
         args = _sandbox_args(workdir, temp, command, tools=tools, cache=cache, network=network, cwd=cwd)
         installed = toolchains.bin_paths(tools) if tools else []
+        fallback = toolchains.fallback_paths(tools) if tools else []
         env = {"HOME": str(temp), "TMPDIR": str(temp),
-               "PATH": ":".join([*installed, "/opt/homebrew/bin:/usr/local/bin", os.defpath]),
+               "PATH": ":".join([*installed, "/opt/homebrew/bin:/usr/local/bin", os.defpath, *fallback]),
                "LANG": "en_US.UTF-8", "OPENSSL_CONF": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
                "GIT_TERMINAL_PROMPT": "0", **(toolchains.cache_env(tools, cache) if tools and cache else {})}
         if network:

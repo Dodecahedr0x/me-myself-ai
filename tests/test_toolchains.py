@@ -87,6 +87,47 @@ class RustInstallTests(unittest.TestCase):
             run.assert_not_called()
 
 
+class CInstallTests(unittest.TestCase):
+    """A C toolchain without root: Zig behind cc, c++, ar and ranlib, after the system's own on PATH."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / "toolchains"
+        goos, _ = toolchains._os()
+        _, cpu = toolchains._arch()
+        self.key = f"{cpu}-{'macos' if goos == 'darwin' else 'linux'}"
+        self.top = f"zig-{self.key}-0.99.0"
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:xz") as tar:
+            data = b"#!/bin/sh\n"
+            info = tarfile.TarInfo(self.top + "/zig")
+            info.size, info.mode = len(data), 0o755
+            tar.addfile(info, io.BytesIO(data))
+        self.archive = buffer.getvalue()
+        self.digest = hashlib.sha256(self.archive).hexdigest()
+
+    def get(self, url, limit=0):
+        if url == toolchains.ZIG_INDEX:
+            return json.dumps({"master": {}, "0.9.1": {}, "0.99.0": {self.key: dict(
+                tarball=f"https://ziglang.org/download/0.99.0/{self.top}.tar.xz", shasum=self.digest)}}).encode()
+        return self.archive
+
+    def test_installs_wrappers_after_the_system_tools(self):
+        self.assertIn("Zig 0.99.0", toolchains.install(self.root, "c", get=self.get))
+        wrapper = self.root / "c" / "bin" / "cc"
+        self.assertIn(f'"{self.root / "zig" / "zig"}" cc "$@"', wrapper.read_text())
+        self.assertIn('" c++ "$@"', (self.root / "c" / "bin" / "g++").read_text())
+        self.assertEqual(toolchains.fallback_paths(self.root), [str(self.root / "c" / "bin")])
+        self.assertNotIn(str(self.root / "c" / "bin"), toolchains.bin_paths(self.root))
+
+    def test_rejects_a_checksum_mismatch(self):
+        self.digest = "0" * 64
+        with self.assertRaises(toolchains.SetupError):
+            toolchains.install(self.root, "c", get=self.get)
+        self.assertFalse((self.root / "c").exists())
+
+
 class SetupStepTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -99,6 +140,7 @@ class SetupStepTests(unittest.TestCase):
 
     def test_parses_only_the_listed_steps(self):
         self.assertEqual(toolchains.parse("install go", self.work), ("install", "go", None))
+        self.assertEqual(toolchains.parse("install c", self.work), ("install", "c", None))
         self.assertEqual(toolchains.parse("fetch go svc", self.work)[2], (self.work / "svc").resolve())
         for bad in ("install python", "fetch go ../..", "fetch go /etc", "fetch go web", "fetch pip svc",
                     "rm -rf /", "fetch npm .git"):

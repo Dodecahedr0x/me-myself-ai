@@ -20,6 +20,10 @@ from pathlib import Path
 GO_INDEX = "https://go.dev/dl/?mode=json"
 GO_DOWNLOAD = "https://go.dev/dl/"
 RUSTUP = "https://static.rust-lang.org/rustup/dist/{triple}/rustup-init"
+ZIG_INDEX = "https://ziglang.org/download/index.json"
+# Commands a C toolchain provides, as `zig <subcommand>`. Used when the system has no compiler.
+C_TOOLS = {"cc": "cc", "gcc": "cc", "clang": "cc", "c++": "c++", "g++": "c++", "clang++": "c++",
+           "ar": "ar", "ranlib": "ranlib"}
 NPM_REGISTRY = "https://registry.npmjs.org/"
 MAX_DOWNLOAD = 400 * 1024 * 1024
 MANIFESTS = {"go": "go.mod", "rust": "Cargo.toml", "npm": "package.json"}
@@ -30,7 +34,8 @@ class SetupError(Exception):
 
 
 def _get(url, limit=MAX_DOWNLOAD):
-    if not url.startswith(("https://go.dev/", "https://dl.google.com/", "https://static.rust-lang.org/")):
+    if not url.startswith(("https://go.dev/", "https://dl.google.com/", "https://static.rust-lang.org/",
+                           "https://ziglang.org/")):
         raise SetupError("Downloads come only from official toolchain hosts.")
     request = urllib.request.Request(url, headers={"User-Agent": "MeMyselfAI-toolchains"})
     with urllib.request.urlopen(request, timeout=120) as response:
@@ -58,8 +63,15 @@ def _os():
 
 
 def bin_paths(root):
+    """Installed toolchains, searched before the system's."""
     root = Path(root)
     return [str(p) for p in (root / "go" / "bin", root / "rust" / "cargo" / "bin") if p.is_dir()]
+
+
+def fallback_paths(root):
+    """The C toolchain, searched after the system's so an installed compiler keeps priority."""
+    path = Path(root) / "c" / "bin"
+    return [str(path)] if path.is_dir() else []
 
 
 def install(root, name, get=_get):
@@ -69,7 +81,9 @@ def install(root, name, get=_get):
         return _install_go(root, get)
     if name == "rust":
         return _install_rust(root, get)
-    raise SetupError("Installable toolchains are go and rust.")
+    if name == "c":
+        return _install_c(root, get)
+    raise SetupError("Installable toolchains are go, rust and c.")
 
 
 def _install_go(root, get):
@@ -132,6 +146,46 @@ def _install_rust(root, get):
     return f"Installed stable Rust for {triple} in {rust}"
 
 
+def _install_c(root, get):
+    """A C and C++ compiler and linker without root: Zig's bundled Clang, behind cc, c++, ar and ranlib."""
+    goos, _ = _os()
+    _, cpu = _arch()
+    platform_key = f"{cpu}-{'macos' if goos == 'darwin' else 'linux'}"
+    index = json.loads(get(ZIG_INDEX, 4 * 1024 * 1024))
+    versions = sorted((tuple(int(n) for n in v.split(".")), v) for v in index if re.fullmatch(r"\d+\.\d+\.\d+", v))
+    if not versions:
+        raise SetupError("ziglang.org listed no Zig release.")
+    version = versions[-1][1]
+    entry = index[version].get(platform_key) or {}
+    tarball, digest = entry.get("tarball", ""), entry.get("shasum", "")
+    top = f"zig-{platform_key}-{version}"
+    if tarball != f"https://ziglang.org/download/{version}/{top}.tar.xz" or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise SetupError(f"ziglang.org has no Zig {version} for {platform_key}.")
+    target = root / f"zig-{version}"
+    if not (target / "zig").exists():
+        data = get(tarball)
+        if hashlib.sha256(data).hexdigest() != digest:
+            raise SetupError("The Zig download did not match its published checksum.")
+        with tempfile.TemporaryDirectory(dir=root, prefix=".zig-") as stage:
+            archive = Path(stage) / "zig.tar.xz"
+            archive.write_bytes(data)
+            with tarfile.open(archive) as tar:
+                for member in tar.getmembers():
+                    if not (member.name == top or member.name.startswith(top + "/")) or ".." in Path(member.name).parts:
+                        raise SetupError("The Zig archive has a path outside its folder.")
+                tar.extractall(stage, filter="data")
+            (Path(stage) / top).rename(target)
+    _point(root / "zig", target.name)
+    wrappers = root / "c" / "bin"
+    wrappers.mkdir(mode=0o700, parents=True, exist_ok=True)
+    zig = root / "zig" / "zig"
+    for name, sub in C_TOOLS.items():
+        script = wrappers / name
+        script.write_text(f'#!/bin/sh\nexec "{zig}" {sub} "$@"\n')
+        script.chmod(0o755)
+    return f"Installed Zig {version} as the C toolchain (cc, c++, ar) in {root / 'c' / 'bin'}"
+
+
 def _point(link, name):
     staged = link.with_name(link.name + ".new")
     if staged.is_symlink() or staged.exists():
@@ -148,6 +202,7 @@ def cache_env(root, cache):
         "GOCACHE": str(cache / "go-build"), "GOFLAGS": "-modcacherw", "GOTELEMETRY": "off",
         "CARGO_HOME": str(cache / "cargo"), "npm_config_cache": str(cache / "npm"),
         "npm_config_update_notifier": "false", "npm_config_fund": "false", "npm_config_audit": "false",
+        "ZIG_GLOBAL_CACHE_DIR": str(cache / "zig"), "ZIG_LOCAL_CACHE_DIR": str(cache / "zig-local"),
     }
     if (root / "rust" / "rustup").is_dir():
         env["RUSTUP_HOME"] = str(root / "rust" / "rustup")
@@ -157,7 +212,7 @@ def cache_env(root, cache):
 def parse(text, worktree):
     """A setup step from its text: ("install", name, None) or ("fetch", kind, folder)."""
     words = str(text).strip().split(None, 2)
-    if len(words) == 2 and words[0] == "install" and words[1] in {"go", "rust"}:
+    if len(words) == 2 and words[0] == "install" and words[1] in {"go", "rust", "c"}:
         return "install", words[1], None
     if len(words) in (2, 3) and words[0] == "fetch" and words[1] in MANIFESTS:
         relative = words[2].strip() if len(words) == 3 else "."
@@ -170,7 +225,7 @@ def parse(text, worktree):
         if not (folder / MANIFESTS[words[1]]).is_file():
             raise SetupError(f"{relative} has no {MANIFESTS[words[1]]}.")
         return "fetch", words[1], folder
-    raise SetupError("Setup steps are: install go, install rust, fetch go|rust|npm <folder>.")
+    raise SetupError("Setup steps are: install go|rust|c, fetch go|rust|npm <folder>.")
 
 
 def fetch_command(kind, folder):

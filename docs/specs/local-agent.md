@@ -74,6 +74,7 @@ A task agent can ask for a setup step with outcome `setup` and one of these text
 |---|---|
 | `install go` | Reads `https://go.dev/dl/?mode=json`, takes the newest stable release for this OS and CPU, downloads it from `go.dev`, checks its published SHA-256 and unpacks it into `toolchains/go-<version>`. `toolchains/go` then points at that release. |
 | `install rust` | Downloads `rustup-init` for this platform and its `.sha256` from `static.rust-lang.org`, checks it, and installs the minimal stable toolchain with `RUSTUP_HOME` and `CARGO_HOME` under `toolchains/rust`. |
+| `install c` | Reads `https://ziglang.org/download/index.json`, downloads the newest Zig release for this platform, checks its SHA-256 and unpacks it into `toolchains/zig-<version>`. It adds `cc`, `gcc`, `clang`, `c++`, `g++`, `clang++`, `ar` and `ranlib` wrappers that run Zig's bundled Clang. These come after the system's own tools on `PATH`, so an installed compiler, such as Xcode's on macOS, keeps priority. Rust uses it to link when the system has no `cc`. |
 | `fetch go <folder>` | Runs `go mod download` in that folder of the task worktree. |
 | `fetch rust <folder>` | Runs `cargo fetch` there. |
 | `fetch npm <folder>` | Runs `npm ci --ignore-scripts` there, or `npm install --ignore-scripts` without a lockfile, against `https://registry.npmjs.org/`. |
@@ -84,7 +85,7 @@ The folder is a relative path inside the task worktree, `.` for its root, and mu
 
 **Fetching** runs one of the fixed commands above in the [command sandbox](#command-sandbox) with outbound network allowed. Package install scripts are disabled, and Go and Cargo fetches compile nothing, so no repository code runs while the network is open. Downloads go to a dependency cache for that task, under `toolcache/task-<id>` in the data directory, and to `node_modules` in the named folder. Known risk: a fetch can reach the package registries and any module source a manifest names. A manifest edited in the task could encode data in the names it requests. The manifest is part of the task's proposed edits, which the user reviews before anything is published.
 
-**System prerequisites.** Rust links with the system C compiler. The VPS installer and Docker image install `build-essential`. macOS uses the Xcode command-line tools.
+**Nothing in setup.** No language toolchain or compiler is part of instance setup. The VPS installer installs only what the app itself needs, plus `bubblewrap`, the command sandbox. Everything a task needs is added when an agent asks for it.
 
 **Commands** see installed toolchains read-only and first on `PATH`, and the task's dependency cache read-write. They still have no network. Go runs with `GOFLAGS=-modcacherw` and the task's `GOPATH`, `GOMODCACHE` and `GOCACHE`. Cargo runs with the task's `CARGO_HOME` and the shared `RUSTUP_HOME`. npm runs with the task's cache.
 
@@ -94,5 +95,7 @@ Acceptance, verified by `tests/test_toolchains.py` with stubbed downloads, and o
 
 - A Go install accepts only an archive whose SHA-256 matches the published one, rejects archive paths outside its folder, and leaves the previous toolchain in place when it fails.
 - A Rust install refuses a `rustup-init` whose checksum does not match.
+- A C install refuses a Zig archive whose checksum does not match, and puts its wrappers after the system's tools on `PATH`.
+- On a VPS without a C compiler, `cargo test` fails with linker `cc` not found. After `install c` it passes, and `cc` builds and runs a C program.
 - A fetch step accepts only the listed kinds and a folder inside the worktree that contains the manifest. It runs the fixed command with network, and an ordinary command run afterwards still has no network.
 - On a VPS without Go, a task asks for `install go` and `fetch go`, then runs `go test` in its sandbox.

@@ -4,7 +4,7 @@
 FROM debian:bookworm-slim
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl git nodejs npm openssl bubblewrap build-essential \
+ && apt-get install -y --no-install-recommends ca-certificates curl git nodejs npm openssl bubblewrap \
         python3 python3-cryptography \
  && rm -rf /var/lib/apt/lists/*
 
