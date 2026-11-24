@@ -24,6 +24,13 @@ toolsets = args[args.index("-t") + 1].split(",")
 assert "memyselfai" in toolsets and not {"terminal", "file", "browser", "web", "messaging"} & set(toolsets)
 home = os.environ["HERMES_HOME"]
 mode = json.load(open(os.path.join(home, "fake.json")))
+if mode.get("dump"):
+    # Hermes driven as a subprocess records the provider's refusal in a request dump.
+    os.makedirs(os.path.join(home, "sessions"), exist_ok=True)
+    with open(os.path.join(home, "sessions", "request_dump_x.json"), "w") as dump:
+        json.dump({"reason": "non_retryable_client_error", "error": {"message": "Error code: 400 - {'type': 'error', "
+                   "'error': {'type': 'invalid_request_error', 'message': 'Add more at claude.ai/settings/usage'}}"}}, dump)
+    sys.exit(0)
 if mode.get("silent"):
     # Like Hermes 0.13 one-shot mode: errors go to its log, nothing to stdout, exit 0.
     import datetime
@@ -178,6 +185,9 @@ class OrchestratorTests(unittest.TestCase):
         config = self.orch.config()
         self.assertEqual(config["status"], "failed")
         self.assertEqual(config["error"], "Third-party apps now draw from your extra usage")
+        self.mode({"dump": True})
+        self.orch.run("sweep")
+        self.assertEqual(self.orch.config()["error"], "Add more at claude.ai/settings/usage")
 
     def test_waits_when_hermes_is_not_ready(self):
         with patch.object(self.engine.agents, "inventory",

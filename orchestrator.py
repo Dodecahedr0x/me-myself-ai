@@ -274,7 +274,20 @@ class Orchestrator:
         self.save(**changes)
 
     def logged_error(self, since):
-        """The last ERROR line Hermes logged during this run, without its timestamp."""
+        """The provider error Hermes recorded during this run: a request dump, else its error log."""
+        home = self.engine.db.root / "hermes"
+        dumps = sorted((home / "sessions").glob("request_dump_*.json"), key=lambda p: p.stat().st_mtime)
+        for dump in reversed(dumps[-20:]):
+            if datetime.datetime.fromtimestamp(dump.stat().st_mtime) < since:
+                break
+            try:
+                error = json.loads(dump.read_text(errors="replace")).get("error") or {}
+            except (OSError, ValueError):
+                continue
+            text = error.get("message", "") if isinstance(error, dict) else str(error)
+            match = re.search(r"'message': '([^']+)'", text)
+            if text:
+                return (match.group(1) if match else text)[:500]
         try:
             lines = (self.engine.db.root / "hermes" / "logs" / "errors.log").read_text(errors="replace").splitlines()[-200:]
         except OSError:
