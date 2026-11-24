@@ -11,6 +11,8 @@ flowchart LR
     Slack["Slack access token, refresh token or OAuth"] -->|All accessible channels| Connectors[Connectors]
     Mail["Google Workspace or other IMAP mailboxes"] -->|Account activity| Connectors
     GitHub["GitHub CLI"] -->|Repository activity| Connectors
+    Tasks -->|Rows needing you, grouped failures, shortcut answers| Inbox[Inbox: list and open task]
+    Inbox -->|Approve, answer, retry, instruct| Tasks
     Tasks -->|Queue with project, repository, source and counts| Home[Home overview]
     Suggestions --> Home
     Activity -->|Recent activity| Home

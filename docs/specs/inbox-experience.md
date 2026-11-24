@@ -1,6 +1,6 @@
 # Inbox, focus card and board
 
-**Status** — Draft, not implemented. Covers [US-20, US-21, US-22 and US-28](../user-stories.md). When implemented, it replaces the Home and Tasks layout in the [desktop workspace](dashboard.md). Connection, project, rule, settings and activity-log behavior in that spec stays in force.
+**Status** — Draft, not implemented. The three-column [Inbox view](dashboard.md#inbox-view) ships first and keeps the existing task actions; the focus card, board and options below remain planned. Covers [US-20, US-21, US-22 and US-28](../user-stories.md). When implemented, it replaces the Home and Tasks layout in the [desktop workspace](dashboard.md). Connection, project, rule, settings and activity-log behavior in that spec stays in force.
 
 ## Intent
 

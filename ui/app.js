@@ -4,7 +4,7 @@ const $ = selector => document.querySelector(selector);
 const esc = (value = "") => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const plain = value => typeof value === "string" ? value : value == null ? "" : JSON.stringify(value, null, 2);
 const titleCase = text => String(text ?? "").replace(/[_-]/g, " ").replace(/^./, c => c.toUpperCase());
-const viewNames = {overview:"Home", tasks:"Tasks", activity:"Activity", connections:"Connections", projects:"Projects", policies:"Decision rules", skills:"Skills & style", setup:"Setup", settings:"Settings"};
+const viewNames = {inbox:"Inbox", overview:"Overview", tasks:"Tasks", activity:"Activity", connections:"Connections", projects:"Projects", policies:"Decision rules", skills:"Skills & style", setup:"Setup", settings:"Configuration"};
 const paths = {
   ignore:'<circle cx="12" cy="12" r="9"/><path d="m6 6 12 12"/>',
   overview:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
@@ -34,6 +34,13 @@ const paths = {
   sync:'<path d="M20 5v5h-5m-11 9v-5h5M5.5 9a7.5 7.5 0 0 1 12.8-3l1.7 3M4 15l1.7 3A7.5 7.5 0 0 0 18.5 15"/>',
   search:'<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
   stack:'<path d="m3 8 9-5 9 5-9 5Zm0 5 9 5 9-5M3 17l9 5 9-5"/>',
+  inbox:'<path d="M3 13h5l1.5 3h5l1.5-3h5"/><path d="M5.5 5h13L21 13v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5Z"/>',
+  home:'<path d="M3 11 12 4l9 7"/><path d="M5 10v10h5v-6h4v6h5V10"/>',
+  alert:'<path d="M12 3.5 2.5 20h19Z"/><path d="M12 10v4.5m0 2.5v.01"/>', question:'<circle cx="12" cy="12" r="9"/><path d="M9.6 9.2a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1 .9-1 1.6m0 3v.01"/>',
+  pause:'<circle cx="12" cy="12" r="9"/><path d="M10 9v6m4-6v6"/>', x:'<path d="m7 7 10 10M17 7 7 17"/>', user:'<circle cx="12" cy="8" r="4"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/>',
+  play:'<path d="M7 4.5v15l12-7.5Z"/>', send:'<path d="M4 12 20 4l-5 16-3-7Z"/><path d="m12 13 8-9"/>', bars:'<path d="M6 20v-6m6 6V5m6 15v-9"/>',
+  more:'<path fill="currentColor" d="M5 13.3a1.3 1.3 0 1 0 0-2.6 1.3 1.3 0 0 0 0 2.6Zm7 0a1.3 1.3 0 1 0 0-2.6 1.3 1.3 0 0 0 0 2.6Zm7 0a1.3 1.3 0 1 0 0-2.6 1.3 1.3 0 0 0 0 2.6Z"/>',
+  up:'<path d="m6 15 6-6 6 6"/>', down:'<path d="m6 9 6 6 6-6"/>', back:'<path d="M20 12H5m6-6-6 6 6 6"/>', expand:'<path d="M14 4h6v6m0-6-7 7M10 20H4v-6m0 6 7-7"/>',
   flag:'<path d="M5 22V4m0 0c6-4 8 4 15 0v11c-7 4-9-4-15 0"/>', dot:'<circle cx="12" cy="12" r="4"/>', monitor:'<rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 21h8m-4-3v3"/>'
 };
 function icon(name, size = 18) {
@@ -87,8 +94,14 @@ function setIfChanged(el, html) {
 }
 const recent = (list,key) => [...list].sort((a,b) => Number(b[key]||0)-Number(a[key]||0));
 function shell(view) {
-  const nav = key => '<a href="#'+key+'" '+(view===key?'aria-current="page"':'')+'>'+icon(key,16)+'<span>'+esc(viewNames[key])+'</span></a>';
-  setIfChanged($("#sidebar"), '<div class="brand">'+mark+'<span>MeMyselfAI</span></div><nav><div class="navgroup">'+["overview","tasks","activity"].map(nav).join("")+'</div><div class="navgroup">'+["connections","projects","policies","skills"].map(nav).join("")+'</div></nav><div class="sidebar-foot">'+nav("setup")+nav("settings")+'</div>');
+  const glyphs={overview:"home"};
+  const waiting=state.tasks.filter(t=>inboxKind(t)).length;
+  const nav = key => '<a href="#'+key+'" '+(view===key?'aria-current="page"':'')+'>'+icon(glyphs[key]||key,18)+'<span>'+esc(viewNames[key])+'</span>'+
+    (key==="inbox" && waiting?'<b class="badge" aria-label="'+waiting+' need you">'+waiting+'</b>':"")+'</a>';
+  const who=providerNames[state.settings.provider]||"Choose an agent";
+  const account='<a class="account" href="#settings" aria-label="Configuration: '+esc(who)+'"><span class="avatar" aria-hidden="true">'+esc(who[0])+'</span><span><strong>'+esc(who)+'</strong><small>'+(loaded?(state.settings.dry?"Dry mode":"Live mode"):"Connecting…")+'</small></span>'+icon("chevron",14)+'</a>';
+  setIfChanged($("#sidebar"), '<div class="brand">'+mark+'<span><strong>MeMyselfAI</strong><small>AI agent workspace</small></span></div><nav><div class="navgroup">'+["overview","inbox","tasks","activity","projects","connections"].map(nav).join("")+'</div><div class="navgroup">'+["policies","skills","setup","settings"].map(nav).join("")+'</div></nav><div class="sidebar-foot">'+account+'</div>');
+  document.body.dataset.view=view;
   const buttons = {
     overview:["New task","task","add"], tasks:["New task","task","add"],
     activity:["Report missed work","report","flag"], projects:["Add project","project","add"],
@@ -511,7 +524,7 @@ async function loadSetup(force=false) {
     setupOpened=true;
     if (!location.hash && setup.first_run) { location.hash="setup"; return; }
   }
-  if (["overview","setup"].includes(activeView)) render();
+  if (["overview","setup","inbox"].includes(activeView)) render();
 }
 // One state per step, used by the progress bar, the flow and the cards.
 function stepState(s) {
@@ -644,13 +657,244 @@ async function setupMutate(payload,message) {
   catch(e) { notify(e.message); }
   setupChecked=0; void refresh(); void loadSetup(true);
 }
-const pages = {setup:setupPage,overview,tasks:tasksPage,activity:activityPage,connections:connectionsPage,projects:projectsPage,policies:policiesPage,skills:skillsPage,settings:settingsPage};
+// Inbox view. See docs/specs/dashboard.md#inbox-view.
+let inboxFilter="all", selectedTask=null, detailTab="activity", inboxNarrowOpen=false;
+let inboxSort=localStorage.getItem("inbox-sort")||"priority", autoGroup=localStorage.getItem("inbox-autogroup")!=="off";
+const collapsedGroups=new Set(), collapsedCallouts=new Set(), inboxDrafts=new Map();
+const inboxKinds={decision:"Decision",failed:"Failed",blocked:"Blocked"};
+function inboxKind(t) {
+  if (t.status==="failed") return "failed";
+  if (t.status==="uncertain" || (t.status==="question" && t.checkout_inaccessible)) return "blocked";
+  if (["review","question"].includes(t.status)) return "decision";
+  return "";
+}
+const pillNames={failed:"Failed",review:"Needs approval",question:"Needs answer",uncertain:"Blocked"};
+function inboxPill(t) {
+  const kind=inboxKind(t);
+  const label=kind==="blocked"?"Blocked":pillNames[t.status]||statusNames[t.status]||titleCase(t.status);
+  return '<span class="pill '+(kind||(groups.progress.includes(t.status)?"progress":t.status==="done"?"done":"neutral"))+'">'+esc(label)+'</span>';
+}
+const kindGlyph={failed:"alert",decision:"question",blocked:"pause"};
+function lastEvents() {
+  const seen=new Map();
+  for (const a of state.activity) if (a.task!=null) {
+    const key=String(a.task);
+    if (!seen.has(key) || Number(a.at)>seen.get(key)) seen.set(key,Number(a.at));
+  }
+  return seen;
+}
+function errorLine(t) {
+  return plain(t.result||t.reason||"The agent stopped without a message.").split("\n").map(s=>s.trim()).find(Boolean)||"Unknown error";
+}
+function errorHead(t) {
+  const line=errorLine(t), cut=line.search(/[.!?](\s|$)/);
+  return cut>0 && cut<160?line.slice(0,cut+1):line.slice(0,160);
+}
+const errorKey=t=>errorHead(t).toLowerCase().replace(/(['"`]).*?\1|\/\S+|\d+/g,"…").slice(0,140);
+function inboxTasks() {
+  const all=state.tasks.filter(t=>inboxKind(t));
+  const shown=all.filter(t=>inboxFilter==="all" || inboxKind(t)===inboxFilter);
+  const rank={failed:0,decision:1,blocked:2};
+  shown.sort((a,b)=>(inboxSort==="priority"?rank[inboxKind(a)]-rank[inboxKind(b)]:0) || Number(b.created||0)-Number(a.created||0));
+  return {all,shown};
+}
+function inboxScope(t) {
+  const repo=taskRepository(t), value=repo||t.project;
+  if (!value) return "";
+  const scope=repo?"repository":"project";
+  const {name}=taskContext(t).find(([label])=>label==="Source")?.[2]||{name:"Local"};
+  return '<span class="inbox-scope">'+sourceMark(name,14)+'<button type="button" class="scope-link" data-action="'+scope+'-details" data-value="'+esc(value)+'" data-id="'+esc(t.id)+'" aria-haspopup="dialog" title="Open '+scope+'">'+esc(value)+'</button>'+
+    (repo && t.project?'<span class="muted">· '+esc(t.project)+'</span>':"")+'</span>';
+}
+function rowShortcuts(t) {
+  return taskActionNames(t).map(action=>{
+    const [label,glyph,key]=taskShortcuts[action];
+    return '<button type="button" class="iconbtn" data-action="'+action+'" data-id="'+esc(t.id)+'" aria-label="'+esc(label+" · "+t.title)+'" aria-keyshortcuts="'+key+'" title="'+label+' ('+key+')">'+icon(glyph,15)+'</button>';
+  }).join("");
+}
+function inboxRow(t,grouped=false) {
+  const kind=inboxKind(t), selected=String(selectedTask)===String(t.id);
+  return '<div class="task-entry inbox-row '+kind+(grouped?" grouped":"")+(selected?" selected":"")+'" data-row="'+esc(t.id)+'">'+
+    (grouped?"":'<span class="row-icon">'+icon(kindGlyph[kind],18)+'</span>')+
+    '<div class="row-main"><button type="button" class="task-open" data-action="inbox-select" data-id="'+esc(t.id)+'" aria-current="'+selected+'"><strong>'+esc(t.title)+'</strong></button>'+
+    inboxScope(t)+(t.status==="question" && t.answer_choices?'<p class="row-question">'+esc(plain(t.question).slice(0,200))+'</p>':"")+answerChoices(t)+'</div>'+
+    '<div class="row-side">'+inboxPill(t)+'<div class="row-meta"><div class="row-shortcuts">'+rowShortcuts(t)+'</div><time title="'+esc(fullDate(t.created))+'">'+esc(relativeDate(t.created))+'</time></div></div></div>';
+}
+function inboxList(shown) {
+  if (!shown.length) return '<div class="inbox-empty">'+icon("done",28)+'<strong>'+(inboxFilter==="all"?"Nothing needs you":"Nothing in "+inboxKinds[inboxFilter])+'</strong><p>Agents keep working. Tasks appear here when one needs a decision, fails or is blocked.</p></div>';
+  const buckets=new Map();
+  if (autoGroup) for (const t of shown) if (inboxKind(t)==="failed") {
+    const key=errorKey(t); buckets.set(key,[...(buckets.get(key)||[]),t]);
+  }
+  const done=new Set();
+  return shown.map(t=>{
+    if (done.has(t.id)) return "";
+    const members=autoGroup && inboxKind(t)==="failed" ? buckets.get(errorKey(t)) : null;
+    if (!members || members.length<2) return inboxRow(t);
+    members.forEach(m=>done.add(m.id));
+    const key=errorKey(t), open=!collapsedGroups.has(key);
+    const places=[...new Set(members.map(m=>taskRepository(m)||m.project).filter(Boolean))];
+    return '<section class="inbox-group failed"><div class="group-head"><span class="row-icon">'+icon("stack",18)+'</span><div class="row-main"><strong>'+members.length+' tasks failed: '+esc(errorHead(t))+'</strong>'+
+      '<p>Affecting '+members.length+' tasks'+(places.length?" in "+esc(places.slice(0,3).join(", "))+(places.length>3?" and "+(places.length-3)+" more":""):"")+'.</p></div>'+
+      '<div class="row-side">'+button("Retry all","inbox-retry-all","sync","secondary",'data-key="'+esc(key)+'"')+'<span class="pill failed">Failed</span>'+
+      '<button type="button" class="iconbtn plain" data-action="inbox-group" data-key="'+esc(key)+'" aria-expanded="'+open+'" aria-label="'+(open?"Collapse":"Expand")+' group">'+icon(open?"up":"down",16)+'</button></div></div>'+
+      (open?'<div class="group-rows">'+members.map(m=>inboxRow(m,true)).join("")+'</div>':"")+'</section>';
+  }).join("");
+}
+function inboxHead(all) {
+  const events=lastEvents(), day=Date.now()/1000-86400;
+  const progress=state.tasks.filter(t=>groups.progress.includes(t.status)).length;
+  const completed=state.tasks.filter(t=>t.status==="done" && (events.get(String(t.id))||Number(t.created||0))>day).length;
+  const count=kind=>all.filter(t=>inboxKind(t)===kind).length;
+  const card=(cls,glyph,n,label,action,f)=>'<button type="button" class="stat '+cls+'" data-action="'+action+'" data-filter="'+f+'"><span class="stat-top">'+icon(glyph,22)+'<strong>'+n+'</strong></span><span>'+label+'</span></button>';
+  const chip=(key,label,n)=>'<button type="button" class="chip '+key+'" data-action="inbox-filter" data-filter="'+key+'" aria-pressed="'+(inboxFilter===key)+'">'+(key==="all"?"":'<i></i>')+esc(label)+'<span>'+n+'</span></button>';
+  return '<div class="inbox-title"><div><h1>Inbox</h1><p>Tasks that need you to keep agents moving.</p></div><div class="inbox-tools">'+
+    '<label class="switch"><input type="checkbox" id="auto-group" '+(autoGroup?"checked":"")+'><span aria-hidden="true"></span>Auto-group</label>'+
+    '<details class="more-menu"><summary class="iconbtn plain" aria-label="More inbox actions">'+icon("more",18)+'</summary><div class="menu">'+
+    button("New task","task","add","quiet")+button("Manage ignore list","ignorelist","ignore","quiet")+'<a class="btn quiet" href="#tasks">'+icon("tasks",16)+'All tasks</a></div></details></div></div>'+
+    '<div class="stats">'+card("attention","alert",all.length,"Needs attention","inbox-filter","all")+card("progress","sync",progress,"In progress","filter","progress")+
+    card("complete","check",completed,"Completed (24h)","filter","completed")+card("blocked","bars",count("blocked"),"Blocked","inbox-filter","blocked")+'</div>'+
+    '<div class="chips"><div class="chip-row">'+chip("all","All",all.length)+chip("decision","Decision",count("decision"))+chip("failed","Failed",count("failed"))+chip("blocked","Blocked",count("blocked"))+'</div>'+
+    '<label class="sort">Sort by: <select id="inbox-sort">'+selectOptions([["priority","Priority"],["newest","Newest"]],inboxSort)+'</select></label></div>';
+}
+function prNumber(t) {
+  const m=String(t.url||"").match(/\/(?:pull|issues)\/(\d+)/) || String(t.title||"").match(/#(\d+)\b/);
+  return m?m[1]:"";
+}
+function eventGlyph(kind) {
+  const k=String(kind).toLowerCase();
+  if (/fail|error|reject|denied/.test(k)) return ["x","bad"];
+  if (/approv|deliver|sent|done|complete|verified|receipt/.test(k)) return ["check","good"];
+  if (/question|answer|waiting|feedback|user/.test(k)) return ["user","wait"];
+  if (/start|created|discover|queued|retry/.test(k)) return ["play","good"];
+  return ["settings","neutral"];
+}
+function taskTimeline(t) {
+  const events=recent(state.activity.filter(a=>a.task!=null && String(a.task)===String(t.id)),"at").reverse();
+  const steps=events.map(a=>{
+    const [glyph,tone]=eventGlyph(a.kind);
+    return '<li><span class="step-icon '+tone+'">'+icon(glyph,15)+'</span><div><strong>'+esc(titleCase(a.kind))+'</strong><p>'+esc(plain(a.detail))+'</p></div><time title="'+esc(fullDate(a.at))+'">'+esc(relativeDate(a.at))+'</time></li>';
+  });
+  if (inboxKind(t)) steps.push('<li><span class="step-icon wait">'+icon("user",15)+'</span><div><strong>Waiting for you</strong><p>'+esc(t.status==="review"?"Review the proposal before anything leaves.":t.status==="uncertain"?"Check the destination and record what happened.":t.status==="failed"?"Retry, or instruct the agent how to proceed.":"Answer to unblock the task.")+'</p></div></li>');
+  return steps.length?'<ol class="stepper">'+steps.join("")+'</ol>':empty("No activity recorded yet.");
+}
+function inboxCallout(t) {
+  const id=String(t.id), open=!collapsedCallouts.has(id);
+  const box=(cls,title,body)=>'<div class="callout '+cls+'"><div class="callout-head">'+icon(cls==="failed"?"alert":cls==="blocked"?"pause":"question",20)+'<strong>'+title+'</strong>'+
+    '<button type="button" class="iconbtn plain" data-action="callout-toggle" data-id="'+esc(id)+'" aria-expanded="'+open+'" aria-label="'+(open?"Hide":"Show")+' details">'+icon(open?"up":"down",16)+'</button></div>'+(open?'<div class="callout-body">'+body+'</div>':"")+'</div>';
+  if (t.status==="failed") {
+    const text=plain(t.result||t.reason||"The agent stopped without a message.");
+    const head=errorHead(t), rest=text.trim().slice(head.length).trim();
+    return box("failed",esc(head),rest?'<p class="message-text">'+esc(rest)+'</p>':'<p>Retry, or tell the agent how to proceed below.</p>');
+  }
+  if (t.status==="uncertain") return box("blocked","The delivery outcome is uncertain.",'<p>Check '+esc(t.destination||"the destination")+' before recording what happened. Nothing will be resent until you do.</p>');
+  if (t.status==="question") {
+    const q='<div class="markdown-body">'+taskMarkdown.render(plain(t.question||"The agent needs an answer."))+'</div>'+(t.question_context?'<div class="markdown-body">'+taskMarkdown.render(t.question_context)+'</div>':"");
+    return box(t.checkout_inaccessible?"blocked":"decision",t.checkout_inaccessible?"The agent can't open the checkout folder.":"The agent needs an answer.",q+(answerChoices(t,true)||answerChoices(t)));
+  }
+  return "";
+}
+function inboxActions(t) {
+  const id='data-id="'+esc(t.id)+'"', names=taskActionNames(t);
+  const primary={review_proposal:["Review & approve","inspect"],answer:["Answer","reply"],"folder-access":["Allow folder access","projects"],retry:["Retry","sync"],reconcile:["Record outcome","check"]};
+  const first=names.find(n=>primary[n] && !(n==="answer" && t.answer_choices?.length) && !(n==="retry" && t.status!=="failed"));
+  const buttons=names.filter(n=>n!=="feedback").map(n=>{
+    const [,glyph,key]=taskShortcuts[n], [label]=n===first?primary[n]:taskShortcuts[n];
+    return button(label,n,glyph,n===first?"primary":"secondary",id+' aria-keyshortcuts="'+key+'" title="'+esc(label)+' ('+key+')"');
+  });
+  if (names.includes("feedback")) buttons.splice(first?1:0,0,button("Instruct","inbox-instruct","review","secondary",id+' aria-keyshortcuts="F" title="Instruct (F)"'));
+  const more=button("Open full details","detail","inspect","quiet",id)+runOn(t)+(taskExclusions(t)||button("Manage ignore list","ignorelist","ignore","quiet"));
+  return '<div class="detail-bar">'+buttons.join("")+'<details class="more-menu"><summary class="iconbtn" aria-label="More task actions">'+icon("more",18)+'</summary><div class="menu">'+more+'</div></details></div>';
+}
+function inboxDetail(t) {
+  if (!t) return '<div class="inbox-empty">'+icon("inbox",28)+'<strong>Select a task</strong><p>Its activity, details and controls open here.</p></div>';
+  const repo=taskRepository(t), number=prNumber(t);
+  const {name}=taskContext(t).find(([label])=>label==="Source")?.[2]||{name:"Local"};
+  const chips='<div class="detail-chips"><span class="tag">'+sourceMark(name,15)+esc(repo||t.project||name)+'</span>'+(number?'<span class="tag">#'+esc(number)+'</span>':"")+'</div>';
+  const top='<div class="detail-top"><button type="button" class="btn quiet back" data-action="inbox-back">'+icon("back",16)+'Back to inbox</button>'+chips+
+    '<div class="detail-icons">'+(t.url?sourceReference(t.url,"Open source"):"")+'<button type="button" class="iconbtn plain" data-action="detail" '+'data-id="'+esc(t.id)+'" aria-label="Open full details" title="Open full details">'+icon("expand",17)+'</button></div></div>';
+  const activity=recent(state.activity.filter(a=>a.task!=null&&String(a.task)===String(t.id)),"at");
+  const reason=t.surfaced_reason || activity.findLast(a=>a.kind==="Discovery")?.detail || t.reason;
+  const results=(present(t.result) && t.status!=="failed"?group("Result & evidence",quote(t.result)):"")+
+    (t.milestones && Object.keys(t.milestones).length?group("Verified milestones",facts(Object.entries(t.milestones))):"")+
+    (present(t.feedback)?group("Feedback & answers",t.feedback.map(f=>quote(f.text||[f.question,f.answer].filter(Boolean).join("\n"))).join("")):"")+
+    (present(t.receipts)?group("Delivery receipts",t.receipts.map(r=>facts([["Operation",r.operation],["Recorded",fullDate(r.at)],["Receipt",r.receipt]])+quote(r.text)).join("")):"");
+  const tabs=[
+    ["activity","Activity",taskTimeline(t)],
+    ["details","Details",facts([...taskContext(t),["Status",statusNames[t.status]||t.status],["Opened",fullDate(t.created)],["Due",fullDate(t.due)],["Decision type",t.kind],["Version",t.version]])+results],
+    ...(t.worktree||t.repository?[["files","Files",facts([["Worktree",t.worktree],["Local checkout",t.repository],["Repository",repo]])]]:[]),
+    ["context","Context",(present(reason)?group("Why this surfaced",quote(reason)):"")+(t.url?'<dl class="facts"><div><dt>Source address</dt><dd>'+sourceReference(t.url)+'</dd></div></dl>':"")+
+      (present(t.body)?group("Task context",'<div class="markdown-body">'+taskMarkdown.render(t.body)+'</div>'):"")+(t.evidence?.length?group("Supporting activity",evidenceList(t.evidence)):"") || empty("No context recorded.")]
+  ];
+  if (!tabs.some(([key])=>key===detailTab)) detailTab="activity";
+  const proposal=t.status==="review" || present(t.draft) && t.status!=="done" ? proposalPreview(t) : "";
+  return top+'<h2 class="detail-title">'+esc(t.title)+'</h2><div class="detail-status">'+inboxPill(t)+'<time title="'+esc(fullDate(t.created))+'">'+esc(relativeDate(t.created))+'</time></div>'+
+    inboxCallout(t)+inboxActions(t)+proposal+
+    '<div class="detail-tabs" role="tablist" aria-label="Task sections">'+tabs.map(([key,label])=>'<button type="button" role="tab" data-action="inbox-tab" data-tab="'+key+'" aria-selected="'+(key===detailTab)+'">'+label+'</button>').join("")+'</div>'+
+    '<section class="detail-panel" role="tabpanel">'+tabs.find(([key])=>key===detailTab)[2]+'</section>';
+}
+function composerState(t) {
+  if (!t) return {allowed:false,reason:"Select a task to instruct its agent."};
+  const allowed=taskActionNames(t).includes("feedback");
+  const answering=t.status==="question" && !t.checkout_inaccessible && !t.repository_question && !t.calendar_question;
+  const reason=allowed?"":t.status==="uncertain"?"Record the delivery outcome first.":t.status==="sending"?"The agent is sending. Wait for the receipt.":"This task is "+(statusNames[t.status]||t.status).toLowerCase()+".";
+  return {allowed,answering,reason};
+}
+function inboxComposer(t) {
+  const c=composerState(t), draft=t?inboxDrafts.get(String(t.id))||"":"";
+  return '<form id="instruct-form" data-id="'+esc(t?.id??"")+'" data-version="'+esc(t?.version??"")+'" data-answering="'+!!c.answering+'"><label class="sr-only" for="instruct-text">'+(c.answering?"Answer the agent":"Instruct the agent")+'</label>'+
+    '<textarea id="instruct-text" name="text" rows="2" placeholder="'+esc(c.allowed?(c.answering?"Answer the agent…":"Instruct the agent…"):c.reason)+'" '+(c.allowed?"":"disabled")+'>'+esc(draft)+'</textarea>'+
+    '<div class="composer-foot"><small>'+(c.allowed?"⌘↵ to send. The agent resumes with your words.":"")+'</small><button type="submit" class="btn primary send" aria-label="Send" '+(c.allowed?"":"disabled")+'>'+icon("send",16)+'</button></div></form>';
+}
+const inboxSkeleton='<div class="inbox" id="inbox"><section class="inbox-list" aria-label="Tasks that need you"><div id="inbox-head"></div><div id="inbox-rows"></div></section>'+
+  '<aside class="inbox-detail" aria-label="Open task"><div id="inbox-detail"></div><div id="inbox-composer"></div></aside></div>';
+function renderInbox() {
+  const {all,shown}=inboxTasks();
+  if (selectedTask==null || !findTask(selectedTask)) selectedTask=shown[0]?.id ?? null;
+  const t=selectedTask!=null?findTask(selectedTask):null;
+  $("#inbox").classList.toggle("detail-open",inboxNarrowOpen && !!t);
+  setIfChanged($("#inbox-head"),inboxHead(all));
+  setIfChanged($("#inbox-rows"),inboxList(shown));
+  setIfChanged($("#inbox-detail"),inboxDetail(t));
+  const c=composerState(t), signature=[t?.id,t?.version,c.allowed,c.answering].join("|"), box=$("#inbox-composer");
+  if (box.dataset.signature!==signature) {
+    const focused=box.contains(document.activeElement);
+    box.innerHTML=inboxComposer(t); box.dataset.signature=signature;
+    if (focused && c.allowed) { const area=$("#instruct-text"); area.focus({preventScroll:true}); area.setSelectionRange(area.value.length,area.value.length); }
+  }
+}
+function selectInboxTask(id,{focusRow=false,open=true}={}) {
+  selectedTask=id; detailTab="activity"; if (open) inboxNarrowOpen=true;
+  renderInbox();
+  if (focusRow) document.querySelector('.inbox-row[data-row="'+CSS.escape(String(id))+'"] .task-open')?.focus();
+}
+async function sendInstruction(form) {
+  const t=findTask(form.dataset.id), area=form.elements.text, text=area.value.trim();
+  if (!t || !text || running) return;
+  const answering=form.dataset.answering==="true";
+  const payload=answering?{op:"answer",id:t.id,text,version:Number(form.dataset.version)}:{op:"feedback",id:t.id,text};
+  const send=form.querySelector('[type="submit"]'); send.disabled=true; running=true;
+  try {
+    await request("/api/action",payload);
+    inboxDrafts.delete(String(t.id)); area.value="";
+    notify(answering?"Answer submitted. The agent resumes.":"Instruction sent. The agent resumes with it.");
+  } catch(e) { notify(e.message); }
+  finally { running=false; send.disabled=false; await refresh(); }
+}
+async function retryGroup(key) {
+  const members=state.tasks.filter(t=>inboxKind(t)==="failed" && errorKey(t)===key);
+  let done=0;
+  for (const t of members) { try { await request("/api/action",{op:"retry",id:t.id}); done++; } catch { /* reported below */ } }
+  notify(done===members.length?done+" tasks queued for retry.":done+" of "+members.length+" tasks queued. Retry the rest one by one.");
+  await refresh();
+}
+const pages = {inbox:()=>inboxSkeleton,setup:setupPage,overview,tasks:tasksPage,activity:activityPage,connections:connectionsPage,projects:projectsPage,policies:policiesPage,skills:skillsPage,settings:settingsPage};
 function closeMenu() {
   document.body.classList.remove("menu-open"); $("#scrim").hidden=true;
   $(".menu-toggle")?.setAttribute("aria-expanded","false");
 }
 function render() {
-  const [key,params] = location.hash.slice(1).split("?"), view = Object.hasOwn(pages,key)?key:"overview";
+  const [key,params] = location.hash.slice(1).split("?"), view = Object.hasOwn(pages,key)?key:"inbox";
   const scoped = view==="activity" ? new URLSearchParams(params).get("connection") || "" : "";
   if (activityConnection!==scoped) {
     activityConnection=scoped; activityProject=""; activityQuery=""; activeView="";
@@ -661,9 +905,12 @@ function render() {
   if (activeView===view && $("#main").contains(document.activeElement) && ["INPUT","SELECT"].includes(document.activeElement.tagName)) {
     if (view==="tasks") { setIfChanged($("#task-list"),taskList()); return; }
     if (view==="activity") { setIfChanged($("#activity-list"),activityList()); return; }
+    if (view==="inbox") { renderInbox(); return; }
     if (view==="setup") { const p=$("#vps-progress"); if (p && !p.contains(document.activeElement)) setIfChanged(p,vpsProgress()); return; }
   }
+  if (activeView===view && view==="inbox") { renderInbox(); return; }
   activeView=view; setIfChanged($("#main"),pages[view]());
+  if (view==="inbox") renderInbox();
   if (view==="settings") { void loadProviders(); void loadAgents(); }
   if (view==="setup" || view==="overview") void loadSetup();
   document.title=viewNames[view]+" · MeMyselfAI";
@@ -1065,6 +1312,17 @@ function handleAction(el) {
     case "menu": document.body.classList.add("menu-open"); $("#scrim").hidden=false; el.setAttribute("aria-expanded","true"); $("#sidebar nav a")?.focus(); return;
     case "close": $("#dialog").close(); return;
     case "task-tab": selectTaskTab(el); return;
+    case "inbox-select": selectInboxTask(el.dataset.id); return;
+    case "inbox-back": inboxNarrowOpen=false; renderInbox(); document.querySelector('.inbox-row[data-row="'+CSS.escape(String(selectedTask))+'"] .task-open')?.focus(); return;
+    case "inbox-filter": inboxFilter=el.dataset.filter; selectedTask=null; inboxNarrowOpen=false; renderInbox(); return;
+    case "inbox-group": collapsedGroups.has(el.dataset.key)?collapsedGroups.delete(el.dataset.key):collapsedGroups.add(el.dataset.key); renderInbox(); return;
+    case "inbox-retry-all": void retryGroup(el.dataset.key); return;
+    case "inbox-tab": detailTab=el.dataset.tab; renderInbox(); document.querySelector('.detail-tabs [data-tab="'+detailTab+'"]')?.focus(); return;
+    case "callout-toggle": collapsedCallouts.has(el.dataset.id)?collapsedCallouts.delete(el.dataset.id):collapsedCallouts.add(el.dataset.id); renderInbox(); return;
+    case "inbox-instruct": {
+      if (activeView!=="inbox" || String(selectedTask)!==String(id)) { if (activeView!=="inbox") location.hash="inbox"; selectInboxTask(id); }
+      requestAnimationFrame(()=>$("#instruct-text")?.focus()); return;
+    }
     case "add-repository": $("#repository-rows").insertAdjacentHTML("beforeend",repositoryRow("",dialogState.type==="suggestion_config"));$("#repository-rows").lastElementChild.querySelector("button").focus();rememberForm();return;
     case "remove-repository": el.closest(".repository-picker").remove();rememberForm();return;
     case "chat-settings": {
@@ -1268,6 +1526,7 @@ async function mutate(payload,message) {
 }
 document.addEventListener("click",event=>{
   const el=event.target.closest("[data-action]");
+  for (const menu of document.querySelectorAll("details.more-menu[open]")) if (!menu.contains(event.target) || el && menu.querySelector(".menu").contains(el)) menu.open=false;
   if (el&&!el.disabled) {
     if (event.detail && el.closest(".row-shortcuts,.scope-link")) el.focus({preventScroll:true});
     handleAction(el);
@@ -1282,6 +1541,7 @@ document.addEventListener("input",event=>{
   }
   const el=event.target;
   if (el.id==="vps-host") hostDraft=el.value;
+  if (el.id==="instruct-text") inboxDrafts.set(el.form.dataset.id,el.value);
   if (el.id==="task-search") {query=el.value;setIfChanged($("#task-list"),taskList());}
   if (el.id==="activity-search") {activityQuery=el.value;setIfChanged($("#activity-list"),activityList());}
   if (el.closest("#editor")) rememberForm();
@@ -1293,12 +1553,15 @@ document.addEventListener("change",event=>{
     const fields=event.target.form.elements;
     for (const [key,value] of Object.entries({imap_host:imap,imap_port:"993",smtp_host:smtp,smtp_port:port})) fields.namedItem("cfg."+key).value=value;
   }
+  if (event.target.id==="auto-group") {autoGroup=event.target.checked;localStorage.setItem("inbox-autogroup",autoGroup?"on":"off");renderInbox();}
+  if (event.target.id==="inbox-sort") {inboxSort=event.target.value;localStorage.setItem("inbox-sort",inboxSort);renderInbox();}
   if (event.target.id==="task-project") {projectFilter=event.target.value;setIfChanged($("#task-list"),taskList());}
   if (event.target.id==="activity-connection") location.hash = event.target.value?"activity?connection="+encodeURIComponent(event.target.value):"activity";
   if (event.target.id==="activity-project") {activityProject=event.target.value;setIfChanged($("#activity-list"),activityList());}
   if (event.target.closest("#editor")) rememberForm();
 });
 document.addEventListener("submit",event=>{
+  if (event.target.id==="instruct-form") {event.preventDefault();void sendInstruction(event.target);return;}
   if (event.target.id==="auth-form") {event.preventDefault();void submitSignIn(event.target);return;}
   if (event.target.id==="vps-form") {event.preventDefault();void vpsStart($("#vps-host").value.trim());return;}
   if (event.target.id==="vps-password-form") {
@@ -1348,12 +1611,36 @@ $("#dialog").addEventListener("close",()=>{
   invoker=null;
 });
 $("#scrim").addEventListener("click",closeMenu);
+const typing=el=>el.matches?.("input,textarea,select,[contenteditable]");
 document.addEventListener("keydown",e=>{
-  const row=e.target.closest(".task-entry");
+  if (e.target.id==="instruct-text" && e.key==="Enter" && (e.metaKey||e.ctrlKey)) {e.preventDefault();e.target.form.requestSubmit();return;}
+  const plainKey=!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !e.isComposing;
+  if (activeView==="inbox" && plainKey && !typing(e.target) && !$("#dialog").open && !running) {
+    const key=e.key.toLowerCase();
+    if (key==="j" || key==="k" || e.key==="ArrowDown" && !e.target.closest(".detail-tabs") || e.key==="ArrowUp" && !e.target.closest(".detail-tabs")) {
+      const ids=[...document.querySelectorAll(".inbox-row")].map(r=>r.dataset.row);
+      if (ids.length) {
+        const at=ids.indexOf(String(selectedTask)), down=key==="j"||e.key==="ArrowDown";
+        const next=at<0?0:Math.min(ids.length-1,Math.max(0,at+(down?1:-1)));
+        e.preventDefault(); selectInboxTask(ids[next],{focusRow:true,open:false}); return;
+      }
+    }
+    if (/^[1-9]$/.test(e.key) && selectedTask!=null) {
+      const pick=document.querySelector('#inbox-detail [data-action="pick-answer"][data-choice="'+(Number(e.key)-1)+'"]');
+      if (pick) {e.preventDefault(); pick.click(); return;}
+    }
+    if (e.key==="Enter" && e.target.closest(".inbox-row") && !e.target.matches("button,a")) {selectInboxTask(e.target.closest(".inbox-row").dataset.row);return;}
+  }
+  const row=e.target.closest(".task-entry") || (activeView==="inbox" && !typing(e.target) && !e.target.closest("#inbox-detail button,#inbox-detail a") ?
+    document.querySelector('.inbox-row[data-row="'+CSS.escape(String(selectedTask))+'"]') : null);
   if (row && !$("#dialog").open && !running && !e.repeat && !e.isComposing &&
       !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && /^[a-z]$/i.test(e.key)) {
     const shortcut=row.querySelector('[aria-keyshortcuts="'+e.key.toUpperCase()+'"]');
     if (shortcut) {e.preventDefault(); shortcut.click(); return;}
+  }
+  if (e.target.matches('.detail-tabs [role="tab"]') && ["ArrowLeft","ArrowRight"].includes(e.key)) {
+    const tabs=[...e.target.parentElement.children], index=tabs.indexOf(e.target);
+    e.preventDefault(); tabs[(index+(e.key==="ArrowRight"?1:-1)+tabs.length)%tabs.length].click(); return;
   }
   if (e.target.matches('.task-tabs [role="tab"]') && ["ArrowLeft","ArrowRight","Home","End"].includes(e.key)) {
     const tabs=[...e.target.parentElement.children], index=tabs.indexOf(e.target);
