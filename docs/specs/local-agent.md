@@ -63,3 +63,36 @@ Acceptance, verified by `tests/test_worker.py` on macOS, and on Ubuntu 26.04 as 
 - On Linux, `/proc` is available inside the sandbox.
 - Without bubblewrap, the command fails with an install instruction.
 
+
+## Toolchains and dependencies
+
+**Status** — Implemented on macOS and Linux. Covers the request that agents install what a task needs, such as Go or Rust, on every instance without asking the user.
+
+A task agent can ask for a setup step with outcome `setup` and one of these texts:
+
+| Step | What the app does |
+|---|---|
+| `install go` | Reads `https://go.dev/dl/?mode=json`, takes the newest stable release for this OS and CPU, downloads it from `go.dev`, checks its published SHA-256 and unpacks it into `toolchains/go-<version>`. `toolchains/go` then points at that release. |
+| `install rust` | Downloads `rustup-init` for this platform and its `.sha256` from `static.rust-lang.org`, checks it, and installs the minimal stable toolchain with `RUSTUP_HOME` and `CARGO_HOME` under `toolchains/rust`. |
+| `fetch go <folder>` | Runs `go mod download` in that folder of the task worktree. |
+| `fetch rust <folder>` | Runs `cargo fetch` there. |
+| `fetch npm <folder>` | Runs `npm ci --ignore-scripts` there, or `npm install --ignore-scripts` without a lockfile, against `https://registry.npmjs.org/`. |
+
+The folder is a relative path inside the task worktree, `.` for its root, and must contain the manifest. Each inference sequence can take up to four setup steps, besides its four commands. Each result returns to the agent with the command results, including the step, its exit status and the last 12 KiB of output.
+
+**Authority.** Installing reads only from the listed official hosts and writes only under the instance's `toolchains/` folder in its data directory. Nothing is installed system-wide, no package manager runs as root, and the user is not asked: this is local preparation, not an external write. A toolchain stays installed for later tasks on that instance. Toolchains are per instance and do not sync. Each instance installs what its own tasks ask for.
+
+**Fetching** runs one of the fixed commands above in the [command sandbox](#command-sandbox) with outbound network allowed. Package install scripts are disabled, and Go and Cargo fetches compile nothing, so no repository code runs while the network is open. Downloads go to a dependency cache for that task, under `toolcache/task-<id>` in the data directory, and to `node_modules` in the named folder. Known risk: a fetch can reach the package registries and any module source a manifest names. A manifest edited in the task could encode data in the names it requests. The manifest is part of the task's proposed edits, which the user reviews before anything is published.
+
+**System prerequisites.** Rust links with the system C compiler. The VPS installer and Docker image install `build-essential`. macOS uses the Xcode command-line tools.
+
+**Commands** see installed toolchains read-only and first on `PATH`, and the task's dependency cache read-write. They still have no network. Go runs with `GOFLAGS=-modcacherw` and the task's `GOPATH`, `GOMODCACHE` and `GOCACHE`. Cargo runs with the task's `CARGO_HOME` and the shared `RUSTUP_HOME`. npm runs with the task's cache.
+
+**Open:** a task's dependency cache is kept until the task folder is removed. There is no size cap yet.
+
+Acceptance, verified by `tests/test_toolchains.py` with stubbed downloads, and on the VPS and this Mac with real ones:
+
+- A Go install accepts only an archive whose SHA-256 matches the published one, rejects archive paths outside its folder, and leaves the previous toolchain in place when it fails.
+- A Rust install refuses a `rustup-init` whose checksum does not match.
+- A fetch step accepts only the listed kinds and a folder inside the worktree that contains the manifest. It runs the fixed command with network, and an ordinary command run afterwards still has no network.
+- On a VPS without Go, a task asks for `install go` and `fetch go`, then runs `go test` in its sandbox.

@@ -409,6 +409,25 @@ class BugIntegrationTests(unittest.TestCase):
         self.engine.resume_repository_questions()
         self.assertEqual(self.engine.db.get("tasks", task["id"])["status"], "question")
 
+    def test_setup_step_installs_without_asking_and_returns_its_result(self):
+        task = self.engine.new_task("Run the Go tests in this checkout", "Reporting", kind="coding",
+                                    status="question", context_checked=True, repository=str(self.repo),
+                                    question="I can't run commands in this checkout. Please paste the output.")
+        self.engine.resume_repository_questions()
+        responses = [dict(outcome="setup", text="install go"), dict(outcome="setup", text="install python"),
+                     dict(outcome="question", text="Which release?"), dict(question="Which release?")]
+        with patch("worker.run_agent", side_effect=responses) as agent, \
+                patch("toolchains.install", return_value="Installed go1.99.1") as install:
+            self.engine.process(task["id"])
+        install.assert_called_once_with(self.engine.db.root / "toolchains", "go")
+        second = agent.call_args_list[1].args[1]
+        self.assertEqual(second["setup_steps_remaining"], 3)
+        self.assertEqual(second["local_commands_remaining"], 4)
+        self.assertEqual(second["command_results"][-1]["output"], "Installed go1.99.1")
+        third = agent.call_args_list[2].args[1]
+        self.assertEqual(third["command_results"][-1]["exit_code"], 1, "an unlisted step is refused")
+        self.assertTrue(any(r["kind"] == "Setup step" for r in self.engine.db.history()))
+
     def test_existing_checkout_question_resumes_once(self):
         task = self.engine.new_task("Prepare the report", "Reporting", kind="coding", status="question",
                                     question="Can you link the worktree or paste report.py?")

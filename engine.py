@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import tarfile
 import threading
 import time
 from pathlib import Path
@@ -26,6 +27,7 @@ import google_workspace
 from signin import SignIns
 from suggestions import Suggestions
 from context import Context
+import toolchains
 import worker
 from store import Store, uid
 
@@ -109,7 +111,8 @@ class Engine:
         self.recent_offers = {}
         self.origin_cache = {}
         self.next_github_share = 0
-        self.clone_lock = threading.Lock()  # One clone at a time; a waiting caller then reuses the finished one.
+        self.clone_lock = threading.Lock()
+        self.toolchain_lock = threading.Lock()  # One toolchain install at a time on this instance.  # One clone at a time; a waiting caller then reuses the finished one.
         self.next_balance = 0
         # The app MCP server. The HTTP service sets mcp_url once it listens.
         self.mcp_sessions = app_mcp.Sessions()
@@ -612,6 +615,9 @@ class Engine:
         # the current task record, never from source content or a CLI response.
         can_run = role == "task" and initial and initial["status"] == "working" and "available_paths" in payload
         results = []
+        setups = 0
+        tools = self.db.root / "toolchains"
+        cache = self.db.root / "toolcache" / ("task-" + task) if task else None
         # Task agents get an app MCP session scoped to their task, revoked when the agent returns.
         token = None
         if role == "task" and task and self.mcp_url:
@@ -619,24 +625,52 @@ class Engine:
         mcp = dict(url=self.mcp_url, token=token) if token else None
         try:
             while True:
+                commands = sum(1 for r in results if not r.get("setup"))
                 if can_run:
-                    request = dict(request, local_commands_remaining=4 - len(results), command_results=list(results))
+                    request = dict(request, local_commands_remaining=4 - commands, setup_steps_remaining=4 - setups,
+                                   command_results=list(results))
                 answer = worker.run_agent(role, request, provider, directory, **deadline, **({"mcp": mcp} if mcp else {}))
                 if initial:
                     self.require_current_task(initial)
-                if answer.get("outcome") != "run":
+                if answer.get("outcome") not in ("run", "setup"):
                     self.db.log("Agent result", json.dumps(answer, ensure_ascii=False), project, task)
                     return answer
-                if not can_run or len(results) >= 4:
+                if answer.get("outcome") == "setup":
+                    if not can_run or setups >= 4:
+                        raise worker.WorkerError("No further setup steps are available for this request.")
+                    setups += 1
+                    result = self.setup_step(directory, answer["text"], tools, cache)
+                    self.db.log("Setup step", json.dumps(result, ensure_ascii=False), project, task)
+                    self.require_current_task(initial)
+                    results.append(result)
+                    continue
+                if not can_run or commands >= 4:
                     raise worker.WorkerError("No further local commands are available for this request.")
                 command = answer["text"]
-                result = dict(command=command, **worker.run_command(directory, command))
+                result = dict(command=command, **worker.run_command(directory, command, tools=tools, cache=cache))
                 self.db.log("Local command", json.dumps(result, ensure_ascii=False), project, task)
                 self.require_current_task(initial)
                 results.append(result)
         finally:
             if token:
                 self.mcp_sessions.revoke(token)
+
+    def setup_step(self, directory, text, tools, cache):
+        """Install an official toolchain or fetch dependencies for a task agent, without asking the user.
+        See "Toolchains and dependencies" in local-agent.md."""
+        base = dict(command=text, setup=True)
+        try:
+            action, kind, folder = toolchains.parse(text, directory)
+            if action == "install":
+                with self.toolchain_lock:
+                    detail = toolchains.install(tools, kind)
+                return dict(base, exit_code=0, timed_out=False, truncated=False, output=detail)
+            result = worker.run_command(directory, toolchains.fetch_command(kind, folder), tools=tools,
+                                        cache=cache, network=True, cwd=folder, timeout=900)
+            return dict(base, **result)
+        except (toolchains.SetupError, worker.WorkerError, OSError, ValueError, KeyError, TypeError,
+                tarfile.TarError, subprocess.SubprocessError) as exc:
+            return dict(base, exit_code=1, timed_out=False, truncated=False, output=f"{type(exc).__name__}: {exc}")
 
     def task_actions(self, key):
         """Action tools a task agent may call: its declared type, or the kind of its source."""

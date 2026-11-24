@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import selectors
 import signal
@@ -19,6 +20,7 @@ import unicodedata
 import uuid
 
 import bugflow
+import toolchains
 
 
 PROVIDERS = ("claude", "codex")
@@ -96,7 +98,12 @@ worktree for repository commands. Read command_results for the observed exit sta
 The command already receives a clean environment without account credentials. Keep its HOME,
 TMPDIR and Git settings when running fixtures. Network connections are disabled. Report observed
 test failures and exit codes as results when the request is to run tests. Use files for deliverable edits.
-A prior request for the user to run a command can be resolved by running it yourself.""",
+A prior request for the user to run a command can be resolved by running it yourself.
+When setup_steps_remaining is positive and a command needs a missing toolchain or dependencies, use
+outcome setup with text "install go", "install rust", "fetch go <folder>", "fetch rust <folder>" or
+"fetch npm <folder>", where folder is relative to the worktree and holds the manifest. The app installs
+official toolchains and downloads dependencies with network for you; then run the command. Setup
+results arrive in command_results. Do not ask the user to install a toolchain the app can install.""",
     "discovery": """Review the supplied activity and current discovery guidance. Distinguish
 the user's work from a teammate's claim; a request to review that teammate's fix is a separate
 task. Look for unanswered requests, time-sensitive follow-ups, and commitments actually made
@@ -157,7 +164,7 @@ _SCHEMAS = {
     ),
     "task": _object(
         "outcome text kind commitments",
-        outcome={"type": "string", "enum": ["done", "draft", "question", "skip", "run"]},
+        outcome={"type": "string", "enum": ["done", "draft", "question", "skip", "run", "setup"]},
         text=_TEXT,
         kind=_TEXT,
         commitments=_PROMISES,
@@ -370,7 +377,7 @@ def _validate(role, result):
             if any(type(result.get(k)) is not bool for k in ("owned", "relevant")):
                 raise WorkerError("Invalid discovery result.")
         else:
-            if result.get("outcome") not in ("done", "draft", "question", "skip", "run"):
+            if result.get("outcome") not in ("done", "draft", "question", "skip", "run", "setup"):
                 raise WorkerError("Unknown task outcome.")
             _string(result.get("text"), "text")
             event = result.get("calendar_event")
@@ -682,28 +689,48 @@ _COMMAND_PROFILE = """
 (deny file-read* (with errno ENOENT)
     (literal "/opt/homebrew/etc/gitconfig") (literal "/usr/local/etc/gitconfig")
     (literal "/opt/homebrew/etc/openssl@3/openssl.cnf") (literal "/usr/local/etc/openssl@3/openssl.cnf"))
+(allow file-read* file-map-executable (subpath (param "TOOLS")))
+(allow file-read* file-write* file-map-executable (subpath (param "CACHE")))
 (deny file-write* (subpath (param "METADATA")))
 (deny file-write-unlink (literal (param "WORK")))
 """
 
+# Only fixed dependency fetches get this. See "Toolchains and dependencies" in docs/specs/local-agent.md.
+_NETWORK_PROFILE = """
+(allow network-outbound system-socket)
+(allow file-read* (literal "/private/etc/resolv.conf") (literal "/private/etc/hosts")
+    (literal "/private/etc/services") (literal "/private/etc/protocols") (subpath "/private/etc/ssl")
+    (subpath "/private/var/run/resolv.conf") (literal "/etc/resolv.conf"))
+(allow mach-lookup (global-name "com.apple.dnssd.service") (global-name "com.apple.trustd")
+    (global-name "com.apple.trustd.agent") (global-name "com.apple.SystemConfiguration.configd")
+    (global-name "com.apple.SystemConfiguration.DNSConfiguration") (global-name "com.apple.networkd"))
+"""
 
-def _sandbox_args(workdir, temp, command):
+
+def _sandbox_args(workdir, temp, command, *, tools=None, cache=None, network=False, cwd=None):
     """The kernel-enforced sandbox for a task command: sandbox-exec on macOS, bubblewrap on Linux. Both allow
     reading system toolchains, writing only the task folder and a disposable temp folder, keep the clone's Git
     metadata read-only and deny the network. See "Command sandbox" in docs/specs/local-agent.md."""
     workdir, temp = Path(workdir), Path(temp)
+    # Unset folders become an empty path inside the disposable temp folder.
+    tools = Path(tools) if tools else temp / "no-tools"
+    cache = Path(cache) if cache else temp / "no-cache"
+    cwd = Path(cwd) if cwd else workdir
     if sys.platform == "darwin":
         return ["/usr/bin/sandbox-exec", "-D", "WORK=" + str(workdir),
                 "-D", "TEMP=" + str(temp), "-D", "METADATA=" + str(workdir / ".git"),
                 "-D", "XCRUN_CACHE=" + str(temp.parent / "xcrun_db"),
-                "-p", _COMMAND_PROFILE, "/bin/sh", "-c", command]
+                "-D", "TOOLS=" + str(tools), "-D", "CACHE=" + str(cache),
+                "-p", _COMMAND_PROFILE + (_NETWORK_PROFILE if network else ""),
+                "/bin/sh", "-c", ("cd " + shlex.quote(str(cwd)) + " && " if cwd != workdir else "") + command]
     bwrap = shutil.which("bwrap", path="/usr/bin:/bin:/usr/local/bin")
     if not bwrap:
         raise WorkerError("Task commands on Linux need bubblewrap. Install it with apt-get install bubblewrap, "
                           "then retry.")
     # A fresh user, network, PID, IPC and UTS namespace. Only /usr and the dynamic loader's links are visible
     # from the host, so the service's home, data folder, credentials and other processes are not.
-    args = [bwrap, "--unshare-all", "--die-with-parent", "--new-session", "--ro-bind", "/usr", "/usr"]
+    args = [bwrap, "--unshare-all", *(["--share-net"] if network else []), "--die-with-parent", "--new-session",
+            "--ro-bind", "/usr", "/usr"]
     for name in ("bin", "sbin", "lib", "lib32", "lib64"):
         path = Path("/" + name)
         if path.is_symlink():
@@ -711,34 +738,48 @@ def _sandbox_args(workdir, temp, command):
         elif path.is_dir():
             args += ["--ro-bind", str(path), str(path)]
     for path in ("/etc/alternatives", "/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/ld.so.conf.d", "/etc/ssl/certs",
-                 "/etc/ca-certificates", "/etc/localtime", "/opt"):
+                 "/etc/ca-certificates", "/etc/localtime", "/opt",
+                 *(("/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf", "/etc/services", "/etc/protocols",
+                    "/etc/ssl/openssl.cnf") if network else ())):
         args += ["--ro-bind-try", path, path]
     args += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
              "--bind", str(temp), str(temp), "--bind", str(workdir), str(workdir)]
     if (workdir / ".git").exists():
         args += ["--ro-bind", str(workdir / ".git"), str(workdir / ".git")]
-    return args + ["--chdir", str(workdir), "/bin/sh", "-c", command]
+    if tools.is_dir():
+        args += ["--ro-bind", str(tools), str(tools)]
+    if cache.is_dir():
+        args += ["--bind", str(cache), str(cache)]
+    return args + ["--chdir", str(cwd), "/bin/sh", "-c", command]
 
 
-def run_command(workdir, command):
-    """Run a local preparation command, retaining the tail of its combined output."""
+def run_command(workdir, command, *, tools=None, cache=None, network=False, cwd=None, timeout=None):
+    """Run a local preparation command, retaining the tail of its combined output. Installed toolchains in tools
+    come first on PATH, read-only, and the task's dependency cache is writable. Only fixed dependency fetches
+    set network."""
     _string(command, "local command", limit=8192)
     workdir = Path(workdir).resolve(strict=True)
+    if cache:
+        Path(cache).mkdir(mode=0o700, parents=True, exist_ok=True)
     output = bytearray()
     limit = 12 * 1024
     truncated = False
     with tempfile.TemporaryDirectory(prefix="memyselfai-command-") as scratch:
         temp = Path(scratch).resolve()
-        args = _sandbox_args(workdir, temp, command)
-        env = {"HOME": str(temp), "TMPDIR": str(temp), "PATH": "/opt/homebrew/bin:/usr/local/bin:" + os.defpath,
+        args = _sandbox_args(workdir, temp, command, tools=tools, cache=cache, network=network, cwd=cwd)
+        installed = toolchains.bin_paths(tools) if tools else []
+        env = {"HOME": str(temp), "TMPDIR": str(temp),
+               "PATH": ":".join([*installed, "/opt/homebrew/bin:/usr/local/bin", os.defpath]),
                "LANG": "en_US.UTF-8", "OPENSSL_CONF": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
-               "GIT_TERMINAL_PROMPT": "0"}
+               "GIT_TERMINAL_PROMPT": "0", **(toolchains.cache_env(tools, cache) if tools and cache else {})}
+        if network:
+            env.pop("OPENSSL_CONF")
         try:
             process = subprocess.Popen(args, cwd=workdir, env=env, stdin=subprocess.DEVNULL,
                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
         except OSError as exc:
             raise WorkerError("Could not launch the sandbox for this task command.") from exc
-        deadline = time.monotonic() + AGENT_TIMEOUT
+        deadline = time.monotonic() + (timeout or AGENT_TIMEOUT)
         timed_out = False
         with process, selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)

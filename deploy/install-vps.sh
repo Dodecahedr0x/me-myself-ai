@@ -20,7 +20,7 @@ fi
 
 if command -v apt-get >/dev/null 2>&1; then
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        python3 python3-cryptography git ca-certificates curl nodejs npm openssl bubblewrap
+        python3 python3-cryptography git ca-certificates curl nodejs npm openssl bubblewrap build-essential
 fi
 python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))' || {
     echo "Python 3.9 or newer is required." >&2; exit 1; }
