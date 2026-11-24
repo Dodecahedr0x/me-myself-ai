@@ -311,19 +311,22 @@ function chatThread() {
 // One card per task a Hermes message links, with its current status and primary action.
 // See docs/specs/hermes-orchestrator.md#message-format-and-actions.
 function chatActions(ids) {
-  const tasks=(ids||[]).map(findTask).filter(Boolean);
+  // Only tasks that still need the user; the rest stay as links in the text.
+  const tasks=(ids||[]).map(findTask).filter(t=>t && inboxKind(t));
   if (!tasks.length) return "";
-  return '<ul class="chat-actions" aria-label="Tasks in this message">'+tasks.map(t=>{
+  return '<ul class="chat-actions" aria-label="Waiting for you">'+tasks.map(t=>{
     const id='data-id="'+esc(t.id)+'"', primary=taskPrimary(t);
-    return '<li><button type="button" class="task-ref" data-action="chat-open-task" '+id+'>'+esc(t.title)+'</button>'+inboxPill(t)+
-      '<span class="chat-action-buttons">'+(primary?button(primary[1],primary[0],primary[2],"primary",id):"")+button("Open","chat-open-task",null,"quiet",id)+'</span></li>';
+    const question=t.status==="question" && !primary?'<p class="chat-question">'+esc(plain(t.question).slice(0,200))+'</p>'+answerChoices(t):"";
+    return '<li><div class="chat-action-head"><button type="button" class="task-ref" data-action="chat-open-task" '+id+'>'+esc(t.title)+'</button>'+inboxPill(t)+'</div>'+question+
+      '<div class="chat-action-buttons">'+(primary?button(primary[1],primary[0],primary[2],"primary",id):"")+button("Open","chat-open-task",null,"quiet",id)+'</div></li>';
   }).join("")+'</ul>';
 }
 function openTaskFromChat(id) {
   const t=findTask(id); if (!t) return;
   if (!inboxKind(t)) { showDialog("detail",t.title,detailTask(t),{task:t,signature:JSON.stringify(t)}); return; }
   inboxFilter="all";
-  if (activeView!=="inbox") location.hash="inbox";
+  // The Inbox renders on hashchange, after this returns; select first so it opens on this task.
+  if (activeView!=="inbox") { selectedTask=t.id; detailTab="activity"; inboxNarrowOpen=true; location.hash="inbox"; return; }
   selectInboxTask(t.id);
 }
 function chatComposer() {
@@ -1817,6 +1820,7 @@ $("#scrim").addEventListener("click",closeMenu);
 const typing=el=>el.matches?.("input,textarea,select,[contenteditable]");
 document.addEventListener("keydown",e=>{
   if ((e.target.id==="instruct-text" || e.target.id==="chat-text") && e.key==="Enter" && (e.metaKey||e.ctrlKey)) {e.preventDefault();e.target.form.requestSubmit();return;}
+  if (e.target.matches?.("a.task-ref[role=button]") && (e.key==="Enter" || e.key===" ")) {e.preventDefault();e.target.click();return;}
   const plainKey=!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && !e.isComposing;
   if (activeView==="inbox" && plainKey && !typing(e.target) && !$("#dialog").open && !running) {
     const key=e.key.toLowerCase();

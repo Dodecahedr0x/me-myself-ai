@@ -29,8 +29,9 @@ chatMarkdown.renderer.rules.link_open = (tokens, index, options, env, renderer) 
   }
   const id = href.slice(5);
   if (!(env.tasks || []).includes(id)) { closers.push("</span>"); return '<span class="task-ref missing">'; }
-  closers.push("</button>");
-  return '<button type="button" class="task-ref" data-action="chat-open-task" data-id="' + chatMarkdown.utils.escapeHtml(id) + '">';
+  // A link, not a button, so a long title wraps with the sentence. Enter and Space work via app.js.
+  closers.push("</a>");
+  return '<a class="task-ref" role="button" tabindex="0" data-action="chat-open-task" data-id="' + chatMarkdown.utils.escapeHtml(id) + '">';
 };
 chatMarkdown.renderer.rules.link_close = (tokens, index, options, env) => (env.closers || []).pop() || "</a>";
 chatMarkdown.renderer.rules.image = taskMarkdown.renderer.rules.image;
