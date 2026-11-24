@@ -2,9 +2,11 @@
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import time
+from pathlib import Path
 
 from connectors import Rejected
 
@@ -56,15 +58,22 @@ def _issue(conn, number, account, api):
     return not owners or account.casefold() in owners
 
 
+class CheckoutAccessError(ValueError):
+    pass
+
+
 def _git(worktree, *args):
     result = subprocess.run(
         ["git", "--literal-pathspecs", "-C", worktree, *args],
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
         check=False,
         timeout=15,
     )
     if result.returncode:
+        if any(message in result.stderr.lower() for message in
+               (b"permission denied", b"operation not permitted", b"cannot change to")):
+            raise CheckoutAccessError(f"Git cannot access {worktree}. Check that the folder exists and allow MeMyselfAI to access it, then retry.")
         raise Rejected("Could not verify the local worktree and its origin.")
     return result.stdout
 
@@ -79,14 +88,52 @@ def _github_repository(origin):
     return match[1].casefold() if match else ""
 
 
-def checkout_repository(path):
+def checkout_repository(path, *, report_access=False):
     if not path:
         return ""
     try:
         origin = _git(path, "remote", "get-url", "origin").decode().strip()
-    except (Rejected, OSError, UnicodeError, subprocess.TimeoutExpired):
+    except CheckoutAccessError:
+        if report_access:
+            raise
+        return ""
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        if report_access:
+            raise CheckoutAccessError(f"Git could not read the registered checkout at {path}. Check Git and allow any pending macOS folder access request, then retry.") from exc
+        return ""
+    except (Rejected, UnicodeError):
         return ""
     return _github_repository(origin)
+
+
+def checkout_folders(name, roots, excluded):
+    """Probe exact folder names in up to three levels of local project collections."""
+    if not re.fullmatch(r"[\w.-]+", name, re.ASCII) or name in {".", ".."}:
+        return []
+    pending = [(Path(path), 0) for path in roots]
+    seen, found = set(), set()
+    for folder, depth in pending:
+        if folder in seen or folder.is_symlink() or excluded(folder):
+            continue
+        seen.add(folder)
+        if len(seen) > 4096:
+            break
+        try:
+            checkout = folder if folder.name.casefold() == name.casefold() else folder / name
+            if (not checkout.is_symlink() and not excluded(checkout) and
+                    (checkout / ".git").exists() and not (checkout / ".git").is_symlink()):
+                found.add(str(checkout))
+            if depth >= 2 or (folder / ".git").exists():
+                continue
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    if (not entry.name.startswith(".") and entry.name not in {"node_modules", "vendor", "target", "build"}
+                            and not entry.name.endswith((".app", ".bundle", ".photoslibrary"))
+                            and entry.is_dir(follow_symlinks=False) and len(pending) < 4096):
+                        pending.append((Path(entry.path), depth + 1))
+        except OSError:
+            continue
+    return sorted(found)
 
 
 def _remote_base(conn, api):

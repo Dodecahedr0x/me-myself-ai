@@ -71,3 +71,14 @@ class DesktopHTTPTests(TestCase):
             self.assertEqual(req.output.call_args.args[0], 200)
             self.assertIn(expected, req.output.call_args.args[1])
             req.server.engine.action.assert_not_called()
+
+    def test_folder_settings_opens_only_the_system_files_and_folders_pane(self):
+        body = b'{"op":"open_folder_settings","url":"https://example.invalid"}'
+        req = self.request("/api/action", Cookie="memyself_session=session",
+                           **{"X-App-Token": "csrf", "Content-Length": str(len(body))})
+        req.rfile = BytesIO(body)
+        with patch("server.sys.platform", "darwin"), patch("server.subprocess.run") as launch:
+            req.do_POST()
+        self.assertEqual(launch.call_args.args[0], ["/usr/bin/open",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders"])
+        self.assertEqual(req.output.call_args.args[0], 200)

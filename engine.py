@@ -11,6 +11,7 @@ from pathlib import Path
 
 import bugflow
 import selfcheck
+import workscope
 import github_signin
 import connectors
 import workspace_bridge
@@ -33,7 +34,7 @@ def required(data, key, limit=100000):
 
 
 BASE_SKILL = "Discover explicit requests, assigned reviews, open promises and unanswered questions. Skip work someone else has claimed. Explain the evidence."
-TERMINAL = {"dismissed", "skipped", "done"}
+TERMINAL = {"closed", "dismissed", "skipped", "done"}
 BUSY = {"sending", "uncertain"}
 
 
@@ -44,6 +45,9 @@ class Engine:
         self.suggestions = Suggestions(self)
         self.now = clock
         self.wake = threading.Event()
+        self.repository_recheck = threading.Event()
+        self.repository_recheck.set()
+        self.next_repository_probe = 0
         self.stop = threading.Event()
         self.jobs = {}
         self.event_locks = [threading.RLock() for _ in range(32)]
@@ -61,6 +65,7 @@ class Engine:
                 self.db.put("config", settings)
                 self.db.log("Settings upgraded", f"AI CLI: {settings['provider']}")
             self.global_project = self.initialize_projects()
+            self.scope = workscope.WorkScope(self.db)
             for connection in self.db.rows("connections"):
                 if (
                     connection.get("auth_method") == "slack"
@@ -83,7 +88,13 @@ class Engine:
                 if e["state"] == "working":
                     e["state"] = "new"
                     self.db.put("events", e)
+            self.apply_scope_to_tasks()
         self.write_markdown()
+        self.legacy_questions = [
+            (t["id"], t["version"]) for t in self.db.rows("tasks")
+            if t["status"] == "question" and t.get("decision_id") and "answer_choices" not in t
+            and not t.get("checkout_inaccessible")
+        ]
 
     def initialize_projects(self):
         projects = self.db.rows("projects")
@@ -135,6 +146,152 @@ class Engine:
                 raise ValueError(f"Choose a Git working tree for {repo}.")
             paths.append(str(path.resolve()))
         self.db.put("projects", {**previous, "repos": list(dict.fromkeys(paths))})
+        if self.scope.active:
+            self.refresh_scope()
+        self.repository_recheck.set()
+        self.wake.set()
+
+    def resume_repository_questions(self):
+        origins = {}
+        for task in self.db.rows("tasks"):
+            error = task.get("result", "")
+            git_blocked = task["status"] == "failed" and not task.get("draft") and (
+                error.startswith("Git cannot access ") and "folder permissions" in error
+                or error == "Git could not prepare the isolated checkout. Check the repository and task branch."
+            )
+            command_blocked = task["status"] == "question" and re.search(
+                r"\b(?:can[’']t|cannot|unable to) (?:run|execute) (?:the |shell |local )?(?:commands?|tests?|suites?)\b",
+                " ".join((task.get("question", ""), task.get("question_context", ""), error)), re.I)
+            if ((git_blocked or command_blocked) and not task.get("local_commands_available")
+                    and not task.get("special") and not task.get("repository_question")
+                    and self.rule(task["project"], task["kind"]) != "user"):
+                with self.db.atomic():
+                    if self.db.get("tasks", task["id"])["version"] != task["version"] or self.scope.task(task):
+                        continue
+                    try:
+                        self.step_source(task)
+                    except ValueError:
+                        continue
+                    task.update(status="queued", due=0, question="", decision_id="", local_commands_available=True)
+                    self.save(task, "Retrying preparation in an app-owned workspace")
+                    self.wake.set()
+                continue
+            legacy_context = (
+                not task.get("context_checked") and not task.get("special") and not task.get("calendar_question")
+                and self.rule(task["project"], task["kind"]) != "user"
+                and ((task["status"] == "question" and re.search(
+                    r"\b(worktree|checkout|parent task|file (?:contents|paths)|contents of [\w./-]+\.\w+)\b",
+                    task.get("question", ""), re.I))
+                    or (task["status"] == "failed" and task["result"] ==
+                        "Git is unavailable or the isolated checkout operation timed out."))
+            )
+            if (task["status"] == "question" and task.get("repository_question")) or legacy_context:
+                self.recheck_repository(task, origins)
+
+    def step_parent(self, task):
+        if task.get("depth") and task.get("parent"):
+            parent = self.db.get("tasks", task["parent"])
+            if parent and parent["project"] == task["project"]:
+                return parent
+
+    def step_source(self, task):
+        # Steps may use the originating issue to select a checkout. Its outbound
+        # destination and completion criteria belong to the original task.
+        while not task.get("event") and (parent := self.step_parent(task)):
+            if parent.get("depth", 0) >= task["depth"]:
+                break
+            task = parent
+        event = self.db.get("events", task.get("event", ""))
+        conn = self.db.get("connections", event["connection"]) if event else None
+        if task.get("event") and (not conn or conn.get("unavailable")):
+            raise ValueError("The source account is disconnected.")
+        return conn
+
+    def recheck_repository(self, task, origins):
+        if self.scope.task(task):
+            return
+        try:
+            conn = self.step_source(task)
+        except ValueError:
+            return
+        try:
+            paths = self.repository_candidates(task, conn, origins)
+            parent = self.step_parent(task) or {}
+            selected = task.get("repository") or parent.get("repository")
+            repository = selected if selected in paths else self.match_repository(task, conn, paths)
+        except bugflow.CheckoutAccessError as exc:
+            if task.get("checkout_inaccessible") and task["question"] == str(exc):
+                return
+            task.update(status="question", question=str(exc), repository_question=True, checkout_inaccessible=True,
+                        reason="Waiting for access to the registered checkout")
+        else:
+            if not repository:
+                if not task.get("repository_question"):
+                    return
+                choices = self.repository_answers(paths)
+                prompt = "Which local checkout should this task use?" if paths else "Where is this task’s local checkout?"
+                if task["question"] == prompt and task.get("repository_options") == paths and not task.get("checkout_inaccessible"):
+                    return
+                task.update(question=prompt, answer_choices=choices, checkout_inaccessible=False,
+                            repository_options=paths, question_context="Choose a local Git checkout for this task.",
+                            reason="Waiting for a checkout")
+            else:
+                task.update(status="queued", repository=repository, context_checked=True, repository_question=False,
+                            checkout_inaccessible=False, question="",
+                            decision_id="", due=0, reason="Found the matching checkout")
+        with self.db.atomic():
+            latest = self.db.get("tasks", task["id"])
+            if latest["version"] != task["version"] or self.scope.task(latest):
+                return
+            if task["status"] == "queued" and self.scope.path(task["repository"]):
+                return
+            if task["status"] == "queued" and conn and conn["kind"] == "github" and self.can_group_task(task):
+                project = self.checkout_project(conn, task["repository"])
+                if not any(rule["project"] == project for rule in self.db.rows("rules")):
+                    task["project"] = project
+                event = self.db.get("events", task["event"])
+                event["project"] = task["project"]
+                self.db.put("events", event)
+            self.save(task, task["reason"])
+            self.wake.set()
+
+    def can_group_task(self, task):
+        return (task["project"] == self.global_project and task.get("event") and not task.get("parent")
+                and not any(row.get("parent") == task["id"] for row in self.db.rows("tasks"))
+                and not any(row["project"] == self.global_project for row in self.db.rows("rules")))
+
+    def checkout_project(self, connection, path):
+        """Called in the transaction assigning a task to a verified checkout."""
+        projects = self.db.rows("projects")
+        matches = [p["name"] for p in projects if not p.get("global") and path in p["repos"]]
+        parents = {p["name"]: p.get("parent") for p in projects}
+        broader = {parent for name in matches for parent in self.ancestors(name, parents)}
+        matches = [name for name in matches if name not in broader]
+        if matches:
+            return matches[0] if len(matches) == 1 else self.global_project
+        slug = connection["config"]["repository"].casefold()
+        if self.db.get("projects", slug):
+            return self.global_project
+        self.db.put("projects", dict(id=slug, name=slug, repos=[path], parent=self.global_project))
+        self.repository_recheck.set()
+        return slug
+
+    def refresh_scope(self):
+        self.scope = workscope.WorkScope(self.db)
+        self.apply_scope_to_tasks()
+        self.suggestions.next_scan = 0
+
+    def apply_scope_to_tasks(self):
+        for t in self.db.rows("tasks"):
+            if t["status"] in TERMINAL | BUSY:
+                continue
+            if self.scope.task(t):
+                if t["status"] != "paused":
+                    self.save(t, "Paused by the workspace ignore list")
+            elif t["status"] == "paused":
+                t.update(status="scheduled" if t.get("due", 0) > self.now() else "queued",
+                         reason="Removed from the ignore list")
+                self.save(t, t["reason"])
 
     def repositories(self, project):
         projects = self.db.rows("projects")
@@ -147,6 +304,7 @@ class Engine:
                 or p["name"] == project
                 or project in self.ancestors(p["name"], parents)
                 for path in p["repos"]
+                if not self.scope.path(path)
             )
         )
 
@@ -193,6 +351,8 @@ class Engine:
             connections = self.db.rows("connections")
             inventories = {}
             for source in connections:
+                if self.scope.connection(source):
+                    source["status"] = "Ignored"
                 if source.get("github_parent") and not source.get("unavailable"):
                     inventories.setdefault(source["github_parent"], []).append(
                         {"name": source["config"]["repository"], "status": source["status"]}
@@ -215,6 +375,7 @@ class Engine:
                 ],
                 rules=self.db.rows("rules"),
                 settings=self.settings(),
+                ignorelist=self.scope.config,
                 skills=self.db.rows("skills")[::-1],
                 suggestions=self.suggestions.state(),
                 projects=sorted(self.db.rows("projects"), key=lambda p: not p.get("global")),
@@ -243,10 +404,17 @@ class Engine:
             receipts=[],
         )
         task.update(fields)
+        if task["reason"]:
+            task["surfaced_reason"] = task["reason"]
         self.save(task, "Task created")
         return task
 
     def save(self, t, message, connection=""):
+        if t["status"] not in TERMINAL | BUSY and self.scope.task(t):
+            t.update(status="paused", reason="Paused by the workspace ignore list", draft="", question="")
+        if t["status"] != "question" or t.get("checkout_inaccessible"):
+            t.pop("answer_choices", None)
+            t.pop("question_context", None)
         t["version"] += 1
         self.db.put("tasks", t)
         self.db.log(t["status"], message, t["project"], t["id"], connection)
@@ -255,26 +423,73 @@ class Engine:
         row = self.db.get("rules", digest(project, kind))
         return row["mode"] if row else "review"
 
+    def require_current_task(self, task):
+        latest = self.db.get("tasks", task["id"])
+        if latest["version"] != task["version"] or self.scope.task(latest):
+            raise ValueError("The task changed during preparation.")
+        return latest
+
     def auto(self, t):
         kinds = {t["kind"], *t.get("categories", [])}
         if t["commitments"]:
             kinds.add("commitment")
         return not self.settings()["dry"] and all(self.rule(t["project"], k) == "auto" for k in kinds)
 
+    def agent_directory(self, role, project, key, task):
+        if task and task.get("worktree") and task["project"] == project:
+            return worker.resume_worktree(task["worktree"], self.db.root / "worktrees", task["id"], task.get("repository"))
+
+        root = self.db.root.resolve() / "agent-workspaces"
+        folder = root / ("task-" + digest(key) if key else "role-" + role)
+        for directory in (root, folder):
+            if directory.is_symlink():
+                raise ValueError("The app workspace directory must not be a symbolic link.")
+            directory.mkdir(mode=0o700, exist_ok=True)
+        return folder
+
     def infer(self, role, payload, project, task=""):
         with self.db.lock:
+            initial = self.db.get("tasks", task) if task else None
+            if project in self.scope.projects or (initial and (
+                initial["status"] in {"closed", "paused"} or self.scope.task(initial)
+            )):
+                raise ValueError("This task is closed or ignored.")
             revisions = [s["id"] for s in self.db.rows("skills") if s["active"]]
             instructions = {
                 kind: (self.db.root / "skills" / (kind + ".md")).read_text() for kind in ("style", "workflow")
             }
             rules = [r for r in self.db.rows("rules") if r["project"] == project]
         provider = self.settings()["provider"]
-        self.db.log("Agent started", f"{role} · {provider} · skills {', '.join(revisions)}", project, task)
-        answer = worker.run_agent(
-            role, {**payload, "instructions": instructions, "project": project, "rules": rules}, provider
-        )
-        self.db.log("Agent result", json.dumps(answer, ensure_ascii=False), project, task)
-        return answer
+        directory = self.agent_directory(role, project, task, initial)
+        self.db.log("Agent started", f"{role} · {provider} · {directory} · skills {', '.join(revisions)}", project, task)
+        task_data = payload.get("task")
+        if isinstance(task_data, dict) and task_data.get("changes"):
+            # The verified files selection supplies originals. Repeating full
+            # saved edits here can exhaust the input budget on the next attempt.
+            payload = dict(payload, task=dict(task_data, changes=[edit["path"] for edit in task_data["changes"]]))
+        retries = initial.get("agent_retries", 0) if initial and initial["status"] == "working" else 0
+        deadline = {"timeout": worker.AGENT_TIMEOUT * (1 + min(retries, 2))} if retries else {}
+        request = {**payload, "instructions": instructions, "project": project, "rules": rules}
+        # Only ordinary preparation can request a command. Authority comes from
+        # the current task record, never from source content or a CLI response.
+        can_run = role == "task" and initial and initial["status"] == "working" and "available_paths" in payload
+        results = []
+        while True:
+            if can_run:
+                request = dict(request, local_commands_remaining=4 - len(results), command_results=list(results))
+            answer = worker.run_agent(role, request, provider, directory, **deadline)
+            if initial:
+                self.require_current_task(initial)
+            if answer.get("outcome") != "run":
+                self.db.log("Agent result", json.dumps(answer, ensure_ascii=False), project, task)
+                return answer
+            if not can_run or len(results) >= 4:
+                raise worker.WorkerError("No further local commands are available for this request.")
+            command = answer["text"]
+            result = dict(command=command, **worker.run_command(directory, command))
+            self.db.log("Local command", json.dumps(result, ensure_ascii=False), project, task)
+            self.require_current_task(initial)
+            results.append(result)
 
     def start(self):
         self.thread = threading.Thread(target=self.loop, daemon=True, name="scheduler")
@@ -299,6 +514,17 @@ class Engine:
             self.wake.wait(1)
             self.wake.clear()
 
+    @staticmethod
+    def related_evidence(task, parent, children, siblings):
+        def completed(rows):
+            return [dict(id=r["id"], title=r["title"], result=r["result"][:3000])
+                    for r in rows if r["id"] != task["id"] and r.get("depth") and r["status"] == "done"]
+
+        return dict(children=completed(children), siblings=completed(siblings),
+                    parent_answers=[{k: str(v)[:1500] for k, v in entry.items()}
+                                    for entry in parent["feedback"][-3:]] if parent else [],
+                    parent_result=parent["result"][:3000] if parent and parent["status"] == "done" else "")
+
     def tick(self):
         for key, job in list(self.jobs.items()):
             if job.done():
@@ -313,27 +539,57 @@ class Engine:
             if key not in self.jobs:
                 self.jobs[key] = pool.submit(fn, arg)
 
+        tasks = self.db.rows("tasks")
+        probe_due = now >= self.next_repository_probe and any(
+            t["status"] == "question" and (t.get("checkout_inaccessible") or t.get("repository_question")) for t in tasks)
+        if (self.repository_recheck.is_set() or probe_due) and "repository-checks" not in self.jobs:
+            self.repository_recheck.clear()
+            self.next_repository_probe = now + 60
+            self.jobs["repository-checks"] = self.pool.submit(self.resume_repository_questions)
         if self.suggestions.next_scan <= now:
             submit("activity-suggestions", self.suggestions.run, None, self.pool)
         for c in self.db.rows("connections"):
-            if not c.get("unavailable") and c.get("next", 0) <= now:
+            if not c.get("unavailable") and c.get("next", 0) <= now and not self.scope.connection(c):
                 submit("sync:" + c["id"], self.sync, c, self.sync_pool)
-        for t in self.db.rows("tasks"):
+        by_id = {t["id"]: t for t in tasks}
+        steps = {}
+        for row in tasks:
+            if row.get("depth"):
+                steps.setdefault((row["project"], row["parent"]), []).append(row)
+        for t in tasks:
+            if t["status"] == "question" and t.get("related_snapshot"):
+                parent = by_id.get(t.get("parent")) if t.get("depth") else None
+                siblings = steps.get((t["project"], t.get("parent")), []) if parent else []
+                evidence = self.related_evidence(t, parent, steps.get((t["project"], t["id"]), []), siblings)
+                if digest(evidence) != t["related_snapshot"]:
+                    with self.db.atomic():
+                        if self.db.get("tasks", t["id"])["version"] != t["version"]:
+                            continue
+                        t.update(status="queued", due=0, decision_id="", related_snapshot="")
+                        self.save(t, "New evidence from a related task")
             if t["status"] in {"queued", "scheduled"} and t.get("due", 0) <= now:
                 submit("task:" + t["id"], self.process, t["id"], self.pool)
             if t["status"] == "review" and self.auto(t):
                 submit("send:" + t["id"], self.autosend, (t["id"], t["version"]), self.sync_pool)
         for e in self.db.rows("events"):
+            if self.scope.matches(e):
+                continue
             if e["state"] == "new" or (e["state"] == "ignored" and e.get("next", 0) <= now):
                 submit("discover:" + e["id"], self.discover, e["id"], self.pool)
+        if self.legacy_questions and "format-question" not in self.jobs:
+            submit("format-question", self.format_existing_question, self.legacy_questions.pop(), self.pool)
 
     def ingest(self, conn, raw):
         with self.db.atomic():
+            if self.scope.connection(conn) or self.scope.matches(raw):
+                return
             current = self.db.get("connections", conn["id"])
             if not current or current.get("unavailable") or current.get("revision") != conn.get("revision"):
                 return
             key = digest(conn["id"], raw["key"])
             prev = self.db.get("events", key)
+            if self.scope.matches(prev):
+                return
             if prev and prev["raw"] == raw:
                 return
             e = dict(
@@ -375,6 +631,8 @@ class Engine:
             )
 
     def sync(self, conn, window=None):
+        if self.scope.connection(conn):
+            return
         end = self.now()
         start = conn.get("cursor", end - 10800)
         start, end = window or (start, min(end, start + 10800))
@@ -469,6 +727,7 @@ class Engine:
                 "question": decision.get("question") or prompt,
                 "calendar_details": details,
                 "calendar_question": True,
+                "answer_choices": self.calendar_answers(calendars),
             }
         body = google_workspace.calendar_payload(
             task["id"], details["title"], details["start"], details["end"]
@@ -513,6 +772,12 @@ class Engine:
         with self.db.atomic():
             e = self.db.get("events", key)
             if not e or e["state"] == "working" or (not report and e["state"] not in {"new", "ignored"}):
+                return
+            if self.scope.matches(e):
+                return
+            if (self.db.get("tasks", key) or {}).get("status") == "closed":
+                e["state"] = "handled"
+                self.db.put("events", e)
                 return
             e["state"] = "working"
             self.db.put("events", e)
@@ -559,11 +824,18 @@ class Engine:
                     e["project"],
                     key,
                 )
+            inferred_paths = []
+            if (out.get("relevant") and source and source["kind"] == "github" and not source.get("unavailable")
+                    and e["project"] in {"", self.global_project} and not self.scope.matches(e)):
+                try:
+                    inferred_paths = self.repository_candidates({"project": self.global_project}, source)
+                except bugflow.CheckoutAccessError:
+                    pass  # Preparation can ask for access if the task needs this folder.
             with self.db.atomic():
                 if self.db.get("events", key)["generation"] != e["generation"]:
                     return
                 c = self.db.get("connections", e["connection"])
-                if not c:
+                if not c or c.get("unavailable"):
                     return
                 t = self.db.get("tasks", key)
                 if t:
@@ -571,7 +843,13 @@ class Engine:
                 elif not e["project"]:
                     suggested = out.get("project")
                     e["project"] = suggested if suggested in project_names else self.global_project
+                if self.scope.matches(e) or (t and t["status"] == "closed"):
+                    e["state"] = "handled" if t and t["status"] == "closed" else "new"
+                    self.db.put("events", e)
+                    return
                 if not t and (out.get("relevant") or out.get("owned")):
+                    if len(inferred_paths) == 1 and not self.scope.path(inferred_paths[0]):
+                        e["project"] = self.checkout_project(c, inferred_paths[0])
                     self.new_task(
                         out.get("title") or r["title"],
                         e["project"],
@@ -644,7 +922,8 @@ class Engine:
 
     def thread_context(self, e):
         records = sorted(
-            (x["raw"] for x in self.db.rows("events") if x["id"] != e["id"] and self.same_thread(e, x)),
+            (x["raw"] for x in self.db.rows("events") if x["id"] != e["id"]
+             and self.same_thread(e, x) and not self.scope.matches(x)),
             key=lambda x: x["timestamp"],
             reverse=True,
         )
@@ -702,7 +981,11 @@ class Engine:
             t = self.db.get("tasks", key)
             if not t or t["status"] not in {"queued", "scheduled"} or t.get("due", 0) > self.now():
                 return
-            t["status"] = "working"
+            if self.scope.task(t):
+                self.save(t, "Paused by the workspace ignore list")
+                return
+            t.update(status="working", local_commands_available=True)
+            t.pop("related_snapshot", None)
             self.save(t, "Agent picked up task")
             version = t["version"]
         try:
@@ -717,6 +1000,7 @@ class Engine:
                     "style", {"feedback": t["body"], "clarifications": t["feedback"]}, t["project"], key
                 )
                 with self.db.atomic():
+                    self.require_current_task(t)
                     self.skill("style", response["body"], False, t["body"])
                 if response.get("question"):
                     update = self.decision(t, response["question"])
@@ -736,14 +1020,74 @@ class Engine:
                 if t.get("special") == "self_check":
                     update = selfcheck.record_results(self, t, checks)
                 latest.update(update)
+                latest.pop("agent_retries", None)
                 self.save(latest, latest.get("question") or latest.get("reason") or latest["status"])
+                if latest["status"] == "question" and latest.get("repository_question"):
+                    # A registration may have changed while the decision agent was running.
+                    self.repository_recheck.set()
         except Exception as exc:
             with self.db.atomic():
                 latest = self.db.get("tasks", key)
                 if latest["version"] == version:
-                    latest.update(status="failed", result=str(exc))
+                    attempts = latest.get("checkout_retries", 0)
+                    if isinstance(exc, bugflow.CheckoutAccessError):
+                        latest.update(status="question", question=str(exc), repository_question=True,
+                                      checkout_inaccessible=True, reason="Waiting for access to the registered checkout")
+                    elif isinstance(exc, worker.CheckoutTimeout) and attempts < 2:
+                        delay = (30, 120)[attempts]
+                        latest.update(status="scheduled", due=self.now() + delay, checkout_retries=attempts + 1,
+                                      result=str(exc), reason=f"Retrying checkout access in {delay} seconds")
+                    elif isinstance(exc, worker.AgentTimeout) and latest.get("agent_retries", 0) < 2:
+                        attempt = latest.get("agent_retries", 0)
+                        delay = (30, 120)[attempt]
+                        latest.update(status="scheduled", due=self.now() + delay, agent_retries=attempt + 1,
+                                      result=str(exc), reason=f"Retrying agent preparation in {delay} seconds")
+                    else:
+                        latest.update(status="failed", result=str(exc))
+                        if isinstance(exc, (worker.AgentTimeout, worker.CheckoutTimeout)):
+                            latest["reason"] = "Preparation timed out after two automatic retries"
                     self.save(latest, str(exc))
         self.wake.set()
+
+    @staticmethod
+    def calendar_answers(calendars):
+        return [dict(label=email, detail="Use this calendar for the event.", value=email)
+                for email in sorted(calendars) if len(email) <= 32][:3]
+
+    @staticmethod
+    def repository_answers(paths):
+        folders = [Path(path) for path in paths]
+        choices = []
+        for index, folder in enumerate(folders[:3]):
+            label = folder.name
+            if any(other != folder and other.name == label for other in folders):
+                label = folder.parent.name + "/" + label
+            if len(label) > 32 or any(choice["label"] == label for choice in choices):
+                label = f"Checkout {index + 1}"
+            choices.append(dict(label=label, detail=str(folder), value=str(folder)))
+        return choices
+
+    def format_existing_question(self, target):
+        key, version = target
+        task = self.db.get("tasks", key)
+        if not task or task["version"] != version or self.scope.task(task):
+            return
+        old = task["question"]
+        if task.get("repository_question"):
+            paths = self.repository_candidates(task, self.step_source(task))
+            prompt = "Which local checkout should this task use?" if paths else "Where is this task’s local checkout?"
+            choices = self.repository_answers(paths)
+        elif task.get("calendar_question"):
+            prompt = "Which calendar should receive this event?"
+            choices = self.calendar_answers(self.calendars())
+        else:
+            response = self.infer("decision", {"question": old, "task": task, "dry": True}, task["project"], key)
+            prompt, choices = response["question"], response.get("choices", [])
+        with self.db.atomic():
+            latest = self.db.get("tasks", key)
+            if latest["version"] == version and not self.scope.task(latest):
+                latest.update(question=prompt, question_context=old, answer_choices=choices)
+                self.save(latest, "Prepared queue question and answer choices")
 
     def decision(self, t, question):
         response = self.infer(
@@ -765,10 +1109,27 @@ class Engine:
         return dict(
             status="question",
             question=q,
+            question_context=response.get("context") or (question if question != q else ""),
+            answer_choices=response.get("choices", []),
             decision_kind=category,
             decision_id=digest(t["project"], " ".join(question.casefold().split())),
             reason="Waiting for your answer",
         )
+
+    def save_prepared_files(self, task, edits, originals, *, partial):
+        with self.db.atomic():
+            latest = self.require_current_task(task)
+            if self.scope.checkout(task["worktree"]):
+                raise ValueError("This checkout belongs to an ignored repository.")
+            changes = {edit["path"]: edit for edit in latest.get("changes", [])}
+            changes.update((edit["path"], edit) for edit in edits)
+            saved = list(changes.values())
+            worker._validate_files(saved)
+            paths = worker.apply_worktree_files(task["worktree"], edits, originals)
+            latest.update(changes=saved, partial_changes=partial)
+            self.db.put("tasks", latest)
+            self.db.log("Files edited", "\n".join(paths), task["project"], task["id"])
+            task.update(changes=saved, partial_changes=partial)
 
     def prepare(self, t):
         e = self.db.get("events", t.get("event", ""))
@@ -788,6 +1149,7 @@ class Engine:
                 "style", {"feedback": t["new_feedback"], "task": t["title"]}, t["project"], t["id"]
             )
             with self.db.atomic():
+                self.require_current_task(t)
                 self.skill("style", preference.get("body", ""), False, t["new_feedback"])
                 if preference.get("question"):
                     ident = digest(t["id"], t["new_feedback"], "style clarification")
@@ -805,23 +1167,39 @@ class Engine:
         location = t["worktree"]
         repository = t.get("repository", "")
         coding = t["kind"].lower() in {"coding", "bug", "code", "bugfix"}
-        if coding:
+        parent = self.step_parent(t)
+        repo_source = self.step_source(t) if parent else conn
+        github_issue = (conn and conn["kind"] == "github"
+                        and e["raw"].get("context", {}).get("is_pull_request") is False)
+        candidates = None
+        if (github_issue or parent) and not location:
+            candidates = self.repository_candidates(t, repo_source)
+            if parent and not repository:
+                repository = parent.get("repository", "")
+            if repository not in candidates:
+                repository = self.match_repository(t, repo_source, candidates)
+        omissions = {}
+        available = []
+        hints = "\n".join((t.get("question", ""), t.get("result", ""), t["title"], t["body"],
+                           parent["body"] if parent else "", e["raw"]["body"] if e else ""))
+        if coding or location or ((github_issue or parent) and repository):
+            if self.scope.checkout(repository or location):
+                raise ValueError("This checkout belongs to an ignored repository.")
             if location and not repository:
                 # Older tasks stored only the verified task worktree.
                 location = str(worker.resume_worktree(location, self.db.root / "worktrees", t["id"]))
             elif location:
                 location = str(worker.prepare_worktree(repository, self.db.root / "worktrees", t["id"]))
             else:
-                candidates = self.repository_candidates(t, conn)
-                if not repository:
-                    repository = self.match_repository(t, conn, candidates)
-                elif repository not in candidates:
-                    repository = ""
+                if candidates is None:
+                    candidates = self.repository_candidates(t, repo_source)
+                if repository not in candidates:
+                    repository = self.match_repository(t, repo_source, candidates)
                 if not repository:
                     question = (
                         "Which repository should this task use?"
                         if candidates
-                        else "Link the target checkout in Projects, then select it for this task."
+                        else "Where is this task’s local checkout?"
                     )
                     decision = self.decision(
                         t, question + ("\n" + "\n".join(candidates) if candidates else "")
@@ -835,23 +1213,52 @@ class Engine:
                         "status": "question",
                         "question": decision.get("question") or question,
                         "repository_question": True,
+                        "answer_choices": self.repository_answers(candidates),
+                        "repository_options": candidates,
                         "decision_id": digest(t["id"], "repository"),
                     }
+                with self.db.atomic():
+                    latest = self.require_current_task(t)
+                    latest["repository"] = repository
+                    if self.scope.task(latest):
+                        self.save(latest, "Selected repository is ignored")
+                        return {}
+                    self.db.put("tasks", latest)
                 location = str(worker.prepare_worktree(repository, self.db.root / "worktrees", t["id"]))
-            files = worker.worktree_context(location)
+            t = dict(t, repository=repository, worktree=location,
+                     github_repository=bugflow.checkout_repository(location))
+            with self.db.atomic():
+                latest = self.require_current_task(t)
+                latest.update(repository=repository, worktree=location, github_repository=t["github_repository"])
+                self.db.put("tasks", latest)
+            files = worker.worktree_context(location, hints, omissions, available)
+        family = [row for row in self.db.rows("tasks") if row["project"] == t["project"]]
+        children = [row for row in family if row.get("parent") == t["id"]]
+        siblings = [row for row in family if row.get("parent") == parent["id"]] if parent else []
+        related = self.related_evidence(t, parent, children, siblings)
         context = dict(
             task=t,
             event=e["raw"] if e else {},
             files=files,
+            omitted_files=omissions,
+            available_paths=available,
             google_calendars=list(self.calendars()),
             now=self.now(),
             thread=self.thread_context(e) if e else [],
             children=[
-                dict(title=x["title"], result=x["result"], status=x["status"])
-                for x in self.db.rows("tasks")
-                if x.get("parent") == t["id"]
+                dict(title=x["title"], result=x["result"][:3000], status=x["status"])
+                for x in children
             ],
         )
+        if parent:
+            context["parent_task"] = dict(id=parent["id"], title=parent["title"], body=parent["body"][:12000],
+                                          answers=related["parent_answers"], result=related["parent_result"])
+            context["completed_siblings"] = related["siblings"]
+        if not location and not e and t["project"] != self.global_project:
+            paths = self.repository_candidates(t, None)
+            candidate = self.match_repository(t, None, paths)
+            if candidate:
+                context["registered_checkout"] = dict(path=candidate, github_repository=bugflow.checkout_repository(candidate))
         if (
             e
             and e["raw"].get("context", {}).get("google_service") == "Drive"
@@ -871,6 +1278,7 @@ class Engine:
                 x["raw"]
                 for x in self.db.rows("events")
                 if x["project"] == t["project"]
+                and not self.scope.matches(x)
                 and x["id"] != e["id"]
                 and x["raw"].get("url")
                 and x["raw"]["url"] in body
@@ -880,6 +1288,7 @@ class Engine:
                     source["kind"] != "github"
                     or not source["config"].get("repository")
                     or source.get("unavailable")
+                    or self.scope.connection(source)
                 ):
                     continue
                 repo = source["config"]["repository"]
@@ -914,16 +1323,31 @@ class Engine:
                         self.db.log("Linked activity unavailable", str(exc), t["project"], t["id"])
                         context.setdefault("missing_context", []).append(f"{repo}#{number}: {exc}")
         bug = t["kind"].lower() in {"bug", "bugfix"}
-        if bug and t.get("changes") and t.get("milestones"):
+        if bug and t.get("changes") and t.get("milestones") and not t.get("partial_changes"):
             out = dict(outcome="done", text=t["result"], kind="bug")
         else:
             out = self.infer("task", context, t["project"], t["id"])
+            if location and out["outcome"] == "question":
+                prepared = out.get("files") or []
+                if prepared:
+                    self.save_prepared_files(t, prepared, files, partial=True)
+                requested_omissions = {}
+                extra = worker.worktree_context(location, out["text"] + "\n" + hints, requested_omissions)
+                new_context = extra.keys() - files.keys() - {edit["path"] for edit in prepared}
+                if new_context or requested_omissions.keys() - omissions.keys():
+                    files = extra
+                    followup = dict(context, files=files, omitted_files=requested_omissions, file_request=out["text"])
+                    out = self.infer("task", followup, t["project"], t["id"])
+                    if out["outcome"] == "question" and out.get("files"):
+                        self.save_prepared_files(t, out["files"], files, partial=True)
         result = out["text"]
         update = dict(
             result=result,
             worktree=location,
             repository=repository,
             repository_question=False,
+            context_checked=True,
+            checkout_retries=0,
             new_feedback="",
             question="",
             draft="",
@@ -932,7 +1356,10 @@ class Engine:
         )
         outcome = out["outcome"]
         newkind = out.get("kind") or t["kind"]
-        if not coding and newkind in {"coding", "bug", "bugfix"}:
+        needs_checkout = outcome == "question" and re.search(r"\b(worktree|(?:git|local|registered) checkout)\b", result, re.I)
+        if not location and (out.get("files") or needs_checkout) and newkind.lower() not in {"bug", "bugfix"}:
+            newkind = "coding"
+        if not coding and newkind.lower() in {"coding", "code", "bug", "bugfix"}:
             return dict(
                 update, status="queued", kind=newkind, reason="Preparing a dedicated coding workspace"
             )
@@ -947,13 +1374,16 @@ class Engine:
             return dict(update, status="skipped", reason=result)
         if out.get("style") and (t["feedback"] or (e and e["raw"].get("authored"))):
             with self.db.atomic():
+                self.require_current_task(t)
                 self.skill("style", out["style"], False, "Task agent suggestion")
         if outcome == "question":
             with self.db.atomic():
-                for step in out.get("independent_steps", [])[:6]:
+                self.require_current_task(t)
+                remaining = max(0, 6 - sum(bool(child.get("depth")) for child in children))
+                for step in out.get("independent_steps", []):
                     title = required(step, "title", 300)
                     ident = digest(t["id"], title)
-                    if not self.db.get("tasks", ident) and t.get("depth", 0) < 2:
+                    if remaining and not self.db.get("tasks", ident) and t.get("depth", 0) < 2:
                         self.new_task(
                             title,
                             t["project"],
@@ -962,19 +1392,16 @@ class Engine:
                             parent=t["id"],
                             depth=t.get("depth", 0) + 1,
                         )
-            return {**update, **self.decision(t, result)}
+                        remaining -= 1
+            return {**update, "related_snapshot": digest(related), **self.decision(t, result)}
         if out.get("files"):
             if not location:
                 return {
                     **update,
                     **self.decision(t, "Which local Git repository should be linked to this project?"),
                 }
-            with self.db.atomic():
-                if self.db.get("tasks", t["id"])["version"] != t["version"]:
-                    raise ValueError("Task changed during preparation.")
-                paths = worker.apply_worktree_files(location, out["files"], files)
-                self.db.log("Files edited", "\n".join(paths), t["project"], t["id"])
-            update["changes"] = out["files"]
+            self.save_prepared_files(t, out["files"], files, partial=False)
+        update["partial_changes"] = False
         if bug:
             github = self.github_for({**t, **update}, conn)
             if not github or not (update.get("changes") or t.get("changes")):
@@ -1054,12 +1481,46 @@ class Engine:
             next_step=out.get("next_step", ""),
         )
 
-    def repository_candidates(self, t, conn):
+    def repository_candidates(self, t, conn, origins=None):
         paths = self.repositories(t["project"])
-        if conn and conn["kind"] == "github":
-            slug = conn["config"]["repository"].casefold()
-            return [p for p in paths if bugflow.checkout_repository(p) == slug]
-        return paths
+        github = conn and conn["kind"] == "github"
+        slug = conn["config"].get("repository", "").casefold() if github else ""
+        if github and not slug:
+            return []
+        if not github and not self.scope.slugs:
+            return paths
+        origins = {} if origins is None else origins
+        matches = []
+        access_error = None
+        for path in paths:
+            if path not in origins:
+                try:
+                    origins[path] = bugflow.checkout_repository(path, report_access=True)
+                except bugflow.CheckoutAccessError as exc:
+                    origins[path] = exc
+            origin = origins[path]
+            if isinstance(origin, bugflow.CheckoutAccessError):
+                access_error = origin
+            elif origin not in self.scope.slugs and (not github or origin == slug):
+                matches.append(path)
+        if github and not matches and not conn.get("unavailable") and not self.scope.connection(conn):
+            slug = connectors.validate("github", conn["config"])["repository"].casefold()
+            key = ("local", slug)
+            if key not in origins:
+                home = Path.home()
+                roots = [Path(p) for p in self.suggestions.config()["folders"]]
+                roots.extend(Path(p).parent for p in self.repositories(self.global_project))
+                roots.extend(home / name for name in ("Developer", "Projects", "src", "code", "Documents"))
+                storage = self.db.root.resolve()
+                def excluded(path):
+                    return path == storage or storage in path.parents or self.scope.path(path)
+                origins[key] = [path for path in bugflow.checkout_folders(slug.split("/")[1], roots, excluded)
+                                if path not in origins and bugflow.checkout_repository(path) == slug]
+            registered = set(self.repositories(self.global_project))
+            matches = [path for path in origins[key] if path not in registered or path in paths]
+        if access_error and (not matches or not github):
+            raise access_error
+        return matches
 
     def match_repository(self, t, conn, paths):
         if len(paths) == 1 and conn and conn["kind"] == "github":
@@ -1132,7 +1593,7 @@ class Engine:
             except Exception as exc:
                 errors.append(c["label"] + ": " + str(exc))
                 gaps.append(errors[-1])
-        events = [e for e in self.db.rows("events") if start <= e["raw"]["timestamp"] <= end]
+        events = [e for e in self.db.rows("events") if start <= e["raw"]["timestamp"] <= end and not self.scope.matches(e)]
         current = (self.db.root / "skills" / "workflow.md").read_text()
         if not events:
             why = " ".join(errors) or "No source events were available in the three-hour window."
@@ -1234,6 +1695,8 @@ class Engine:
                 t = self.db.get("tasks", key)
                 if not t or t["version"] != version or t["status"] != "review":
                     raise ValueError("This preview changed. Review its current version.")
+                if self.scope.task(t):
+                    raise ValueError("This project or repository is ignored.")
                 if automatic and not self.auto(t):
                     raise ValueError("This action needs review.")
                 if not t["draft"] or not t["account"] or not t["destination"]:
@@ -1246,6 +1709,8 @@ class Engine:
                     conn = self.db.get("connections", t.get("google", ""))
                 elif t.get("operation", "reply") != "reply":
                     conn = self.db.get("connections", t.get("github", ""))
+                if self.scope.connection(conn) or self.scope.checkout(t.get("repository") or t.get("worktree")):
+                    raise ValueError("This repository is ignored.")
                 if (not conn or conn.get("unavailable")) and not t.get("sample"):
                     raise ValueError("Reconnect the source before delivery.")
                 t["status"] = "sending"
@@ -1355,6 +1820,14 @@ class Engine:
         key = d.get("id", "")
         if op.startswith("auth_"):
             return self.signins.action(d)
+        if op == "check_folder_access":
+            path = required(d, "path")
+            if not any(path in p["repos"] for p in self.db.rows("projects")):
+                raise ValueError("Choose a folder registered under Projects.")
+            worker.check_checkout_root(path)
+            self.repository_recheck.set()
+            self.wake.set()
+            return
         if op == "connect_app_repo":
             login = github_signin.active_login()
             account = digest("github.com account", login.casefold())
@@ -1405,6 +1878,8 @@ class Engine:
                 raise ValueError(
                     "This repository is outside the connected inventory. Sync the account first."
                 )
+            if self.scope.connection(source):
+                raise ValueError("This repository is ignored.")
             raw = connectors.github_selected_issue(source, d.get("number"))
             event_id = digest(source["id"], raw["key"])
             with self.db.atomic():
@@ -1417,6 +1892,8 @@ class Engine:
                     raise ValueError("The source changed. Refresh the account first.")
                 self.ingest(source, raw)
                 event = self.db.get("events", event_id)
+                if not event or self.scope.matches(event):
+                    raise ValueError("This item belongs to an ignored scope.")
                 if not self.db.get("tasks", event_id):
                     event.update(state="new", user_requested=True, generation=event["generation"] + 1)
                     self.db.put("events", event)
@@ -1430,7 +1907,29 @@ class Engine:
             self.wake.set()
             return
         with self.dispatch_lock, self.db.atomic():
-            if op in {"self_check", "app_finding"}:
+            if op in {"ignorelist", "set_exclusion"}:
+                projects = self.db.rows("projects")
+                if op == "set_exclusion":
+                    field = {"project": "projects", "repository": "repositories"}.get(required(d, "scope"))
+                    if not field or type(d.get("ignored")) is not bool:
+                        raise ValueError("Choose a project or repository and its ignore state.")
+                    change = {"projects": [], "repositories": []}
+                    change[field] = [required(d, "value")]
+                    value, = workscope.normalize(change, projects)[field]
+                    entries = set(self.scope.config[field])
+                    if d["ignored"]:
+                        entries.add(value)
+                    else:
+                        entries.discard(value)
+                    config = {**self.scope.config, "id": "ignorelist", field: sorted(entries)}
+                else:
+                    config = workscope.normalize(d, projects)
+                if config == self.scope.config:
+                    return
+                self.db.put("config", config)
+                self.refresh_scope()
+                self.db.log("Ignore list updated", "Updated excluded projects and repositories")
+            elif op in {"self_check", "app_finding"}:
                 if not self.db.get("projects", selfcheck.PROJECT):
                     local = Path(__file__).resolve().parent
                     paths = []
@@ -1564,7 +2063,7 @@ class Engine:
                             sample=True,
                             sample_kind=kind,
                         )
-            elif op in {"feedback", "answer", "retry", "dismiss", "reconcile"}:
+            elif op in {"feedback", "answer", "retry", "dismiss", "close_task", "reconcile"}:
                 t = self.db.get("tasks", key)
                 if not t:
                     raise ValueError("Task was not found.")
@@ -1605,18 +2104,36 @@ class Engine:
                     else:
                         t["status"] = "review"
                         self.save(t, "User verified absence of write")
+                elif op == "close_task":
+                    if t["status"] != "closed":
+                        t.update(status="closed", draft="", question="", reason="Closed by you")
+                        self.save(t, "Closed by user")
+                elif t["status"] == "closed":
+                    raise ValueError("This task is closed.")
                 elif op == "dismiss":
                     t.update(status="dismissed", draft="", question="")
                     self.save(t, "Dismissed by user")
                 elif op == "retry":
-                    if t["status"] != "failed":
-                        raise ValueError("Only failed tasks can be retried.")
-                    t.update(status="queued", due=0)
+                    if t["status"] not in {"failed", "question"}:
+                        raise ValueError("Only failed tasks or tasks awaiting an answer can be retried.")
+                    t.update(status="queued", question="", decision_id="", repository_question=False, due=0, checkout_retries=0)
+                    t.pop("agent_retries", None)
                     self.save(t, "Retry requested")
                 else:
-                    text = required(d, "text")
                     if op == "answer" and t["status"] != "question":
                         raise ValueError("Question has already been answered.")
+                    if op == "answer" and ("version" in d or "choice" in d) and d.get("version") != t["version"]:
+                        raise ValueError("The question changed. Open the latest question before answering.")
+                    choice = None
+                    if op == "answer" and "choice" in d:
+                        index = d["choice"]
+                        choices = t.get("answer_choices", [])
+                        if type(index) is not int or not 0 <= index < len(choices):
+                            raise ValueError("Choose one of the displayed answers.")
+                        choice = choices[index]
+                        text = choice.get("value", choice["label"])
+                    else:
+                        text = required(d, "text")
                     if t["status"] in TERMINAL:
                         raise ValueError("This task is closed.")
                     if op == "answer" and t.get("calendar_question"):
@@ -1635,11 +2152,22 @@ class Engine:
                         self.wake.set()
                         return
                     if op == "answer" and t.get("repository_question"):
-                        event = self.db.get("events", t.get("event", ""))
-                        conn = self.db.get("connections", event["connection"]) if event else None
+                        conn = self.step_source(t)
                         paths = self.repository_candidates(t, conn)
-                        if text not in paths:
-                            raise ValueError("Choose a registered checkout for this task's repository.")
+                        if d.get("picked_folder") is True and text not in paths:
+                            if d.get("version") != t["version"] or not Path(text).is_absolute():
+                                raise ValueError("Open the current question and choose a local checkout.")
+                            text = str(worker.check_checkout_root(text))
+                            if Path(text).is_relative_to(self.db.root.resolve()):
+                                raise ValueError("Choose a checkout outside the app’s private storage.")
+                            if self.scope.task(t) or self.scope.checkout(text):
+                                raise ValueError("This checkout is ignored.")
+                            if conn and conn["kind"] == "github" and bugflow.checkout_repository(text) != conn["config"]["repository"].casefold():
+                                raise ValueError("Choose a checkout of " + conn["config"]["repository"] + ".")
+                            project = self.db.get("projects", t["project"])
+                            self.add_project(project["name"], [*project["repos"], text])
+                        elif text not in paths:
+                            raise ValueError("Choose a matching local checkout for this task.")
                         t["feedback"].append({"question": t["question"], "answer": text})
                         t.update(
                             status="queued",
@@ -1654,8 +2182,10 @@ class Engine:
                         self.wake.set()
                         return
                     entry = {"question": t["question"], "answer": text} if op == "answer" else {"text": text}
+                    if choice:
+                        entry["detail"] = choice["detail"]
                     t["feedback"].append(entry)
-                    t.update(status="queued", draft="", question="", due=0, new_feedback=text)
+                    t.update(status="queued", draft="", question="", due=0, new_feedback="" if choice else text)
                     self.save(t, text)
                     if op == "answer" and t.get("decision_id"):
                         for dependent in self.db.rows("tasks"):

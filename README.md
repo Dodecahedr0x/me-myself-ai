@@ -15,13 +15,15 @@ For the browser interface, run `./scripts/run-local.sh` and open the one-time lo
 
 ## Try the workflow
 
+Open a task to read its Markdown context. **Close task** removes it from the open queue and keeps its history under **Tasks → Closed**. In **Settings → Edit ignore list**, select projects or enter GitHub repositories and local checkout paths. Project exclusions include subprojects and their repositories. Removing an entry resumes eligible tasks with fresh approvals.
+
 To use the app on itself, open **Tasks → Improve MeMyselfAI**. **Run checks** exercises the installed dashboard request handlers and GitHub bug workflow against fixtures. **Report a finding** captures a problem you observed. Both put the result in the **MeMyselfAI** project. A failed check links directly to its finding.
 
 Choose **Connect app repository** to use your signed-in GitHub CLI for this repository. An existing connection also works. For fixes, link a local checkout at the published default branch under **Projects → MeMyselfAI**. The app prepares an issue first, then a fix branch, a linked PR and a comment review of that PR's changes. Open the finding in Tasks to approve each write in dry mode and follow its GitHub links. [Self-improvement spec](docs/specs/self-improvement.md)
 
 1. Open **Settings** and load the sample workspace. Select the sample release reply in **Tasks**, inspect its account, destination, and content, then approve. Sample deliveries stay on your machine.
 2. Install and sign in to Claude Code or Codex CLI on your Mac. Choose it under **Settings → Agent provider**. The CLI runs locally and sends the supplied task context to its AI provider for inference. You can switch CLIs between runs.
-3. General tasks start in **Global**. Under **Projects**, group related work into projects and subprojects, and link their local Git repositories. Coding tasks get an isolated worktree in the selected repository.
+3. General tasks start in **Global**. Under **Projects**, group related work into projects and subprojects, and link their local Git repositories. Each coding task gets a private clone under app storage. It can run tests there while you keep working in your own checkout.
 4. Open **Connections**, choose a provider and sign in once for the workspace. GitHub connects your CLI account, discovers its repositories automatically, and tracks issue and pull request activity across them. Use **Browse work** to see open assignments, issues, PRs and review requests. Slack monitors the workspace’s accessible channels. Google lists the services authorized for each account. Other email hosts and manual credentials are available under manual setup.
 5. Leave dry mode on while assessing coverage, results and writing style. Set authority by project and decision type under **Decision rules**. When you report a miss, the recovery agent scans all connected sources for the three hours ending at the report time.
 

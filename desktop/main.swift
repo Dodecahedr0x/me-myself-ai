@@ -210,6 +210,10 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
             return
         }
         let panel = NSOpenPanel()
+        if let checkout = message.body as? String, checkout.hasPrefix("/") {
+            panel.directoryURL = URL(fileURLWithPath: checkout, isDirectory: true)
+            panel.message = "Choose the registered repository folder to check access for MeMyselfAI."
+        }
         panel.prompt = "Choose Folder"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false

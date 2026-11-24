@@ -84,7 +84,7 @@ class BugIntegrationTests(unittest.TestCase):
             mock.start()
             self.addCleanup(mock.stop)
 
-    def model(self, role, payload, model):
+    def model(self, role, payload, model, workdir):
         if role == "discovery":
             return dict(
                 relevant=True,
@@ -324,6 +324,303 @@ class BugIntegrationTests(unittest.TestCase):
         self.assertIsNone(self.engine.github_for(dict(task, project="Global", repository=""), self.slack))
         self.engine.db.put("connections", dict(self.github, id="other-account"))
         self.assertIsNone(self.engine.github_for(task, self.slack))
+
+    def test_issue_agents_receive_selected_checkout_on_first_attempt(self):
+        raw = dict(key="issue:17", title="Inspect report", body="Inspect the calculation",
+                   account="me", destination="fixture/report#17", timestamp=self.now,
+                   context=dict(repository="fixture/report", number=17, is_pull_request=False))
+        self.engine.ingest(self.github, raw)
+        event = digest(self.github["id"], raw["key"])
+        for kind in ("issue", "coding"):
+            task = self.engine.new_task("Inspect report", "Reporting", event=event, kind=kind)
+            with patch("engine.worker.run_agent", side_effect=[
+                dict(outcome="question", text="Which output do you want?"),
+                dict(question="Which output do you want?"),
+            ]) as agent:
+                self.engine.process(task["id"])
+            prepared = self.engine.db.get("tasks", task["id"])
+            self.assertEqual(prepared["status"], "question", prepared["result"])
+            for call in agent.call_args_list:
+                context = call.args[1]["task"]
+                self.assertEqual(call.args[3], Path(prepared["worktree"]))
+                self.assertEqual(context["repository"], str(self.repo))
+                self.assertEqual(context["worktree"], prepared["worktree"])
+                self.assertEqual(context["github_repository"], "fixture/report")
+            self.assertTrue((Path(prepared["worktree"]) / "report.py").is_file())
+            self.assertIn("report.py", agent.call_args_list[0].args[1]["files"])
+
+    def test_delegated_step_uses_parent_evidence_and_separate_worktree(self):
+        parent = self.engine.new_task("Fix the report", "Reporting", "Check negative totals.", kind="coding")
+        with patch("worker.run_agent", side_effect=[
+            dict(outcome="question", text="What output?", independent_steps=[
+                dict(title="Inspect report.py", body="Explain the current calculation.")]),
+            dict(question="What output?"),
+        ]):
+            self.engine.process(parent["id"])
+        child = digest(parent["id"], "Inspect report.py")
+        with patch("worker.run_agent", return_value=dict(outcome="done", text="Uses the first value.")) as agent:
+            self.engine.process(child)
+        payload = agent.call_args.args[1]
+        self.assertEqual(payload["parent_task"]["body"], "Check negative totals.")
+        self.assertIn("report.py", payload["files"])
+        self.assertNotEqual(self.engine.db.get("tasks", parent["id"])["worktree"], str(agent.call_args.args[3]))
+        # The child finished while its parent awaited a decision. Resume through the scheduler.
+        self.engine.suggestions.next_scan = self.now + 3600
+        for conn in self.engine.db.rows("connections"):
+            self.engine.db.put("connections", dict(conn, next=self.now + 3600))
+        with patch("worker.run_agent", side_effect=[
+            dict(outcome="question", text="What output?"), dict(question="What output?"),
+        ]) as agent:
+            self.engine.tick()
+            for job in list(self.engine.jobs.values()):
+                job.result(timeout=5)
+            self.assertEqual(agent.call_args_list[0].args[1]["children"][0]["result"], "Uses the first value.")
+            self.engine.tick()
+            self.assertNotIn("task:" + parent["id"], self.engine.jobs)
+
+    def test_legacy_git_permission_failure_retries_only_once(self):
+        error = f"Git cannot access {self.repo}. Check MeMyselfAI's folder permissions, then retry."
+        task = self.engine.new_task("Prepare the report", "Reporting", status="failed", kind="coding",
+                                    repository=str(self.repo), result=error)
+        self.engine.resume_repository_questions()
+        retry = self.engine.db.get("tasks", task["id"])
+        self.assertEqual(retry["status"], "queued")
+        self.engine.db.put("tasks", dict(retry, status="failed", result=error))
+        self.engine.resume_repository_questions()
+        self.assertEqual(self.engine.db.get("tasks", task["id"])["status"], "failed")
+
+    def test_command_blocked_step_retries_once_and_uses_the_output(self):
+        task = self.engine.new_task("Run both fixture suites in this checkout", "Reporting", kind="coding",
+                                    status="question", context_checked=True, repository=str(self.repo),
+                                    question="I can't run commands in this checkout. Please paste the output.")
+        self.engine.resume_repository_questions()
+        self.assertEqual(self.engine.db.get("tasks", task["id"])["status"], "queued")
+        responses = [dict(outcome="run", text="exit 7"), dict(outcome="question", text="Which release?"),
+                     dict(question="Which release?")]
+        with patch("worker.run_agent", side_effect=responses) as agent, patch(
+                "worker.run_command", return_value=dict(exit_code=7, output="fixture failed")) as command:
+            self.engine.process(task["id"])
+            command.assert_called_once()
+            self.assertEqual(agent.call_args_list[1].args[1]["command_results"][-1]["exit_code"], 7)
+        self.engine.resume_repository_questions()
+        self.assertEqual(self.engine.db.get("tasks", task["id"])["status"], "question")
+
+    def test_existing_checkout_question_resumes_once(self):
+        task = self.engine.new_task("Prepare the report", "Reporting", kind="coding", status="question",
+                                    question="Can you link the worktree or paste report.py?")
+        unrelated = self.engine.new_task("Approve plan", "Reporting", status="question", question="Which date?")
+        self.engine.resume_repository_questions()
+        self.assertEqual(self.engine.db.get("tasks", task["id"])["status"], "queued")
+        with patch("worker.run_agent", side_effect=[
+            dict(outcome="question", text="Which date?"), dict(question="Which date?"),
+        ]):
+            self.engine.process(task["id"])
+        self.engine.resume_repository_questions()
+        for row in (task, unrelated):
+            self.assertEqual(self.engine.db.get("tasks", row["id"])["status"], "question")
+
+    def test_question_edits_survive_decision_failure_and_later_preparation(self):
+        task = self.engine.new_task("Inspect report.py", "Reporting", kind="coding")
+        first = dict(outcome="question", text="What should the output say?",
+                     files=[dict(path="notes.txt", content="Reviewed the input")])
+        with patch("worker.run_agent", side_effect=[first, RuntimeError("Offline")]):
+            self.engine.process(task["id"])
+        row = self.engine.db.get("tasks", task["id"])
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual((Path(row["worktree"]) / "notes.txt").read_text(), "Reviewed the input")
+        self.assertEqual(row["changes"], first["files"])
+        self.engine.action(dict(op="retry", id=task["id"]))
+        last = dict(outcome="done", text="Report fixed.", files=[dict(path="report.py", content=self.fixed)])
+        with patch("worker.run_agent", return_value=last):
+            self.engine.process(task["id"])
+        done = self.engine.db.get("tasks", task["id"])
+        self.assertEqual(done["status"], "done")
+        self.assertEqual(done["changes"], first["files"] + last["files"])
+        self.assertFalse(self.writes)
+
+    def test_agent_timeout_retries_preserve_worktree_and_stop(self):
+        import worker
+        task = self.engine.new_task("Inspect report.py", "Reporting", kind="coding")
+        with patch("worker.run_agent", side_effect=worker.AgentTimeout("CLI timed out")) as agent:
+            for delay in (30, 120):
+                self.engine.process(task["id"])
+                row = self.engine.db.get("tasks", task["id"])
+                self.assertEqual((row["status"], row["due"]), ("scheduled", self.now + delay))
+                self.now += delay
+            self.engine.process(task["id"])
+        self.assertEqual(self.engine.db.get("tasks", task["id"])["status"], "failed")
+        self.assertEqual(len({c.args[3] for c in agent.call_args_list}), 1)
+        self.assertEqual([c.kwargs.get("timeout") for c in agent.call_args_list], [None, 360, 540])
+
+    def test_transient_checkout_timeouts_back_off_and_stop(self):
+        task = self.engine.new_task("Inspect report", "Reporting", kind="coding")
+        with patch("worker.subprocess.run", side_effect=subprocess.TimeoutExpired("git", 60)):
+            for delay in (30, 120):
+                self.engine.process(task["id"])
+                row = self.engine.db.get("tasks", task["id"])
+                self.assertEqual((row["status"], row["due"]), ("scheduled", self.now + delay))
+                self.engine.process(task["id"])
+                self.assertEqual(self.engine.db.get("tasks", task["id"])["version"], row["version"])
+                self.now += delay
+            self.engine.process(task["id"])
+        row = self.engine.db.get("tasks", task["id"])
+        self.assertEqual(row["status"], "failed")
+        self.assertIn("timed out", row["result"])
+
+    def test_named_and_requested_files_precede_generic_context(self):
+        task = self.engine.new_task("Inspect z_target.py", "Reporting", kind="coding")
+        from worker import prepare_worktree
+        tree = prepare_worktree(self.repo, self.state_dir / "worktrees", task["id"])
+        for n in range(25):
+            (tree / f"a{n:02}.py").write_text("fixture")
+        (tree / "z_target.py").write_text("target")
+        (tree / "z_other.py").write_text("other")
+        with patch("worker.run_agent", side_effect=[
+            dict(outcome="question", text="Please provide z_other.py"),
+            dict(outcome="done", text="Both files inspected."),
+        ]) as agent:
+            self.engine.process(task["id"])
+        first, second = [c.args[1] for c in agent.call_args_list]
+        self.assertEqual(first["files"]["z_target.py"], "target")
+        self.assertNotIn("z_other.py", first["files"])
+        self.assertIn("z_other.py", first["available_paths"])
+        self.assertEqual(second["files"]["z_other.py"], "other")
+        self.assertLessEqual(len(second["files"]), 24)
+        self.assertEqual(self.engine.db.get("tasks", task["id"])["status"], "done")
+
+    def unregistered_source(self):
+        self.engine.add_project("Reporting", [])
+        home = self.repo.parent
+        root = home / "Documents" / "team" / "services"
+        root.mkdir(parents=True)
+        self.repo = self.repo.rename(root / "report")
+        home_patch = patch.object(Path, "home", return_value=home)
+        home_patch.start()
+        self.addCleanup(home_patch.stop)
+        raw = dict(key="issue:33", title="Inspect calculation", body="", account="me",
+                   timestamp=self.now, destination="fixture/report#33",
+                   context=dict(repository="fixture/report", number=33, is_pull_request=False))
+        self.engine.ingest(self.github, raw)
+        return digest(self.github["id"], raw["key"])
+
+    def test_new_issue_infers_project_from_local_origin_and_uses_private_clone(self):
+        event = self.unregistered_source()
+        with patch("worker.run_agent", return_value=dict(relevant=True, kind="coding")):
+            self.engine.discover(event)
+        task = self.engine.db.get("tasks", event)
+        self.assertEqual(task["project"], "fixture/report")
+        self.assertEqual(self.engine.repositories(task["project"]), [str(self.repo)])
+        with patch("worker.run_agent", return_value=dict(outcome="done", text="Checked the report.")):
+            self.engine.process(event)
+        done = self.engine.db.get("tasks", event)
+        self.assertEqual(done["status"], "done", done["result"])
+        self.assertEqual(done["repository"], str(self.repo))
+        self.assertTrue((Path(done["worktree"]) / "report.py").is_file())
+
+    def test_waiting_issue_verifies_owner_and_refreshes_checkout_buttons(self):
+        event = self.unregistered_source()
+        task = self.engine.new_task("Inspect calculation", "Global", kind="coding", event=event,
+                                    status="question", repository_question=True, answer_choices=[])
+        other = self.repo.parents[1] / "archive" / "report"
+        other.parent.mkdir()
+        subprocess.run(["git", "init", "-q", str(other)], check=True)
+        subprocess.run(["git", "-C", str(other), "remote", "add", "origin", "git@github.com:fixture/report.git"], check=True)
+        self.engine.resume_repository_questions()
+        pending = self.engine.db.get("tasks", task["id"])
+        choices = pending["answer_choices"]
+        self.assertEqual(pending["status"], "question")
+        self.assertEqual({c["detail"] for c in choices}, {str(other), str(self.repo)})
+        self.assertEqual(len({c["label"] for c in choices}), 2)
+        subprocess.run(["git", "-C", str(other), "remote", "set-url", "origin", "git@github.com:other/report.git"], check=True)
+        self.engine.resume_repository_questions()
+        queued = self.engine.db.get("tasks", task["id"])
+        self.assertEqual((queued["status"], queued["project"], queued["repository"]),
+                         ("queued", "fixture/report", str(self.repo)))
+        self.assertEqual(self.engine.db.get("events", event)["project"], queued["project"])
+
+    def test_missing_checkout_can_be_selected_in_task(self):
+        event = self.unregistered_source()
+        self.repo = self.repo.rename(self.repo.parent / "custom-folder")
+        task = self.engine.new_task("Inspect calculation", "Global", kind="coding", event=event,
+                                    status="question", repository_question=True)
+        action = dict(op="answer", id=task["id"], version=task["version"], picked_folder=True)
+        other = self.repo.parent / "wrong"
+        subprocess.run(["git", "init", "-q", str(other)], check=True)
+        with self.assertRaisesRegex(ValueError, "fixture/report"):
+            self.engine.action(dict(action, text=str(other)))
+        self.engine.action(dict(action, text=str(self.repo)))
+        queued = self.engine.db.get("tasks", task["id"])
+        self.assertEqual((queued["status"], queued["repository"]), ("queued", str(self.repo)))
+
+    def test_registered_checkout_resumes_repository_selection_questions(self):
+        self.engine.add_project("Reporting", [])
+        task = self.engine.new_task("Fix report", "Reporting", kind="coding")
+        with patch("engine.worker.run_agent", return_value=dict(question="Which checkout?")):
+            self.engine.process(task["id"])
+        waiting = self.engine.db.get("tasks", task["id"])
+        self.assertTrue(waiting["repository_question"])
+        other = self.engine.new_task("Choose a release date", "Reporting", status="question")
+        self.engine.action(dict(op="project", name="Reporting", repos=[str(self.repo)]))
+        self.assertTrue(self.engine.repository_recheck.is_set())
+        self.engine.resume_repository_questions()
+        resumed = self.engine.db.get("tasks", task["id"])
+        self.assertEqual((resumed["status"], resumed["repository"]), ("queued", str(self.repo)))
+        self.assertEqual(self.engine.db.get("tasks", other["id"])["status"], "question")
+        self.engine.db.put("tasks", waiting)
+        reopened = Engine(self.state_dir)
+        self.addCleanup(reopened.close)
+        reopened.suggestions.next_scan = reopened.now() + 3600
+        for connection in reopened.db.rows("connections"):
+            reopened.db.put("connections", dict(connection, next=reopened.now() + 3600))
+        with patch.object(reopened, "process"):
+            reopened.tick()
+            reopened.jobs["repository-checks"].result(timeout=5)
+        self.assertEqual(reopened.db.get("tasks", task["id"])["status"], "queued")
+        self.assertEqual(reopened.db.get("tasks", other["id"])["status"], "question")
+
+    def test_retry_local_question_can_use_project_checkout(self):
+        task = self.engine.new_task("Update the report", "Reporting", status="question",
+                                    question="Can you link a checkout?")
+        self.engine.action(dict(op="retry", id=task["id"]))
+        with patch("engine.worker.run_agent", side_effect=[
+            dict(outcome="question", kind="code", text="Prepare the worktree."),
+            dict(outcome="done", text="Read the calculation."),
+        ]) as agent:
+            self.engine.process(task["id"])
+            initial = agent.call_args_list[0].args[1]
+            self.assertEqual(agent.call_args_list[0].args[3].parent, self.state_dir / "agent-workspaces")
+            self.assertEqual(initial["registered_checkout"],
+                             dict(path=str(self.repo), github_repository="fixture/report"))
+            self.assertFalse(initial["task"]["question"])
+            self.engine.process(task["id"])
+            self.assertIn("report.py", agent.call_args_list[1].args[1]["files"])
+        self.assertEqual(self.engine.db.get("tasks", task["id"])["status"], "done")
+
+    def test_registered_folder_timeout_is_distinct_from_missing_checkout(self):
+        raw = dict(key="issue:19", title="Fix report", body="", account="me", timestamp=self.now,
+                   destination="fixture/report#19", context=dict(repository="fixture/report"))
+        self.engine.ingest(self.github, raw)
+        event = digest(self.github["id"], raw["key"])
+        waiting = [self.engine.new_task("Fix report", "Reporting", kind="coding", event=event,
+                                       status="question", repository_question=True) for _ in range(2)]
+        self.engine.action(dict(op="ignorelist", projects=[], repositories=["elsewhere/ignored"]))
+        with patch("bugflow._git", side_effect=subprocess.TimeoutExpired("git", 15)) as git:
+            self.engine.resume_repository_questions()
+            git.assert_called_once()
+        for task in waiting:
+            current = self.engine.db.get("tasks", task["id"])
+            self.assertEqual(current["status"], "question")
+            self.assertIn(str(self.repo), current["question"])
+            self.assertIn("macOS folder access", current["question"])
+        self.engine.suggestions.next_scan = self.now + 3600
+        for conn in self.engine.db.rows("connections"):
+            self.engine.db.put("connections", dict(conn, next=self.now + 3600))
+        self.engine.repository_recheck.clear()
+        self.now += 61
+        with patch.object(self.engine, "discover"):
+            self.engine.tick()
+            self.engine.jobs["repository-checks"].result(timeout=5)
+        self.assertTrue(all(self.engine.db.get("tasks", t["id"])["status"] == "queued" for t in waiting))
 
     def test_global_ambiguous_checkout_waits_then_resumes_in_chosen_repo(self):
         other = self.repo.parent / "other"

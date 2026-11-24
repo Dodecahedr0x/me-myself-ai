@@ -78,7 +78,7 @@ def recent_commits(root, start, end):
     return rows[:16]
 
 
-def changed_files(folder, start, end, workspace):
+def changed_files(folder, start, end, workspace, scope):
     root = Path(folder)
     if root.is_symlink() or root.resolve() != root or not root.is_dir():
         raise ValueError("Folder is unavailable.")
@@ -92,6 +92,9 @@ def changed_files(folder, start, end, workspace):
 
     for base, dirs, files in os.walk(root, onerror=inaccessible):
         directory = Path(base)
+        if scope.path(directory) or ((directory / ".git").exists() and scope.checkout(directory)):
+            dirs.clear()
+            continue
         dirs[:] = sorted(
             d
             for d in dirs
@@ -146,7 +149,7 @@ class Suggestions:
         return dict(
             config=self.config(),
             scan=self.db.get("config", "suggestion_scan") or {},
-            pending=[s for s in self.db.rows("suggestions") if s["status"] == "pending"],
+            pending=[s for s in self.db.rows("suggestions") if s["status"] == "pending" and not self.engine.scope.task(s)],
         )
 
     def configure(self, data):
@@ -243,8 +246,10 @@ class Suggestions:
             )
         chat_count, chat_gaps = len(records), len(gaps)
         for folder in config["folders"]:
+            if self.engine.scope.checkout(folder):
+                continue
             try:
-                entries, partial = changed_files(folder, start, now, self.db.root.resolve())
+                entries, partial = changed_files(folder, start, now, self.db.root.resolve(), self.engine.scope)
                 records.extend(entries)
                 records.extend(recent_commits(Path(folder), start, now))
                 if partial:
@@ -285,7 +290,7 @@ class Suggestions:
         for e in self.db.rows("events"):
             c = sources.get(e["connection"])
             r = e["raw"]
-            if not c or not start <= r["timestamp"] <= now or r.get("owned"):
+            if not c or not start <= r["timestamp"] <= now or r.get("owned") or self.engine.scope.matches(e):
                 continue
             records.append(
                 dict(
@@ -299,6 +304,7 @@ class Suggestions:
                     url=r.get("url", ""),
                     project=e["project"],
                     connection=c["id"],
+                    **({"repository": c["config"]["repository"]} if c["kind"] == "github" and c["config"].get("repository") else {}),
                     generation=e["generation"],
                 )
             )
@@ -306,6 +312,8 @@ class Suggestions:
         counts = {}
         recent = {}
         for row in sorted(records, key=lambda r: (r["at"], r["id"]), reverse=True):
+            if self.engine.scope.matches(row):
+                continue
             source = row["source"]
             if counts.get(source, 0) < 16:
                 recent[row["id"]] = row
@@ -316,6 +324,7 @@ class Suggestions:
         if not self.lock.acquire(blocking=False):
             return
         config = self.config()
+        scope = self.engine.scope
         now = self.engine.now()
         self.next_scan = now + INTERVAL
         gaps = []
@@ -323,8 +332,8 @@ class Suggestions:
             evidence, gaps = self.gather(config, now)
             signature = fingerprint([(k, r.get("generation")) for k, r in sorted(evidence.items())])
             last = self.db.get("config", "suggestion_scan") or {}
-            tasks = self.db.rows("tasks")
-            prior = self.db.rows("suggestions")
+            tasks = [t for t in self.db.rows("tasks") if not scope.task(t)]
+            prior = [s for s in self.db.rows("suggestions") if not scope.task(s)]
             covered = {t["id"] for t in tasks} | {s["anchor"] for s in prior}
             if any(
                 r["source"] != "Mac app" and k not in covered for k, r in evidence.items()
@@ -338,11 +347,11 @@ class Suggestions:
                     global_scope=self.engine.global_project,
                     now=now,
                 )
-                if self.config()["revision"] != config["revision"]:
+                if self.config()["revision"] != config["revision"] or self.engine.scope is not scope:
                     return
                 out = self.engine.infer("suggestions", payload, self.engine.global_project)
                 with self.db.atomic():
-                    if self.config()["revision"] != config["revision"]:
+                    if self.config()["revision"] != config["revision"] or self.engine.scope is not scope:
                         return
                     self.record(out["suggestions"], evidence, projects)
             with self.db.atomic():
@@ -389,6 +398,8 @@ class Suggestions:
                 status="pending",
                 created=self.engine.now(),
             )
+            if self.engine.scope.task(suggestion):
+                continue
             self.db.put("suggestions", suggestion)
             self.db.log(
                 "Task suggested",
@@ -403,6 +414,8 @@ class Suggestions:
         sources = self.connected()
         config = self.config()
         for r in rows:
+            if self.engine.scope.matches(r):
+                return False
             if r.get("chat_source") and config.get("chats", {}).get(r["chat_source"], {}).get(
                 "revision"
             ) != r.get("chat_revision"):
@@ -413,7 +426,7 @@ class Suggestions:
                 return False
             if "connection" in r:
                 e = self.db.get("events", r["id"])
-                if (self.db.get("tasks", r["id"]) or {}).get("status") in {"skipped", "dismissed"}:
+                if (self.db.get("tasks", r["id"]) or {}).get("status") in {"skipped", "dismissed", "closed", "paused"}:
                     return False
                 if (
                     not e
@@ -430,6 +443,8 @@ class Suggestions:
             if not s or s["status"] != "pending":
                 raise ValueError("This suggestion has already been handled.")
             if start:
+                if self.engine.scope.task(s):
+                    raise ValueError("This suggestion belongs to an ignored scope.")
                 if not self.valid_sources(s["evidence"]):
                     raise ValueError(
                         "The source activity changed. Dismiss this suggestion and review the latest activity."

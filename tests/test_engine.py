@@ -238,7 +238,7 @@ class EngineTests(unittest.TestCase):
         key = self.event(raw)
         self.engine.new_task("Provide status", "A", raw["body"], id=key, event=key, kind="reply")
 
-        def agent(role, payload, model):
+        def agent(role, payload, model, workdir):
             self.assertEqual(payload["linked_activity"][-1]["title"], "Export fix")
             return dict(outcome="draft", text="The fix is in review.", kind="reply", complete_after_send=True)
 
@@ -288,8 +288,43 @@ class EngineTests(unittest.TestCase):
         self.addCleanup(restarted.close)
         self.assertEqual(restarted.db.get("tasks", t["id"])["status"], "uncertain")
 
+    def test_queue_choice_is_bound_to_displayed_question_and_remains_local(self):
+        task = self.engine.new_task("Prepare changelog", "A")
+        choices = [dict(label="May", detail="Cover the May milestone.")]
+        with patch("worker.run_agent", side_effect=[dict(outcome="question", text="Which milestone?"),
+                   dict(question="Which release?", context="The changelog needs a cutoff.", choices=choices)]):
+            self.engine.process(task["id"])
+        row = self.db.get("tasks", task["id"])
+        self.assertEqual(row["answer_choices"], choices)
+        self.assertEqual(row["question_context"], "The changelog needs a cutoff.")
+        action = dict(op="answer", id=task["id"], version=row["version"], choice=0)
+        with self.assertRaisesRegex(ValueError, "changed"):
+            self.engine.action(dict(action, version=row["version"]-1))
+        with self.assertRaisesRegex(ValueError, "displayed"):
+            self.engine.action(dict(action, choice=-1))
+        self.engine.action(action)
+        answered = self.db.get("tasks", task["id"])
+        self.assertEqual(answered["feedback"][-1], dict(question="Which release?", answer="May", detail=choices[0]["detail"]))
+        self.assertEqual((answered["status"], answered["receipts"]), ("queued", []))
+        self.assertNotIn("answer_choices", answered)
+
+    def test_formatting_legacy_question_preserves_decision_and_never_answers(self):
+        old = "Which date?\nThe May and June releases are both open."
+        task = self.engine.new_task("Prepare changelog", "A", status="question", question=old, decision_id="shared")
+        formatted = dict(question="Which release?", choices=[], context="Choose a cutoff.", answer="May")
+        with patch("worker.run_agent", return_value=formatted):
+            self.engine.format_existing_question((task["id"], task["version"]))
+        row = self.db.get("tasks", task["id"])
+        self.assertEqual((row["status"], row["decision_id"], row["feedback"]), ("question", "shared", []))
+        self.assertEqual((row["question"], row["question_context"]), ("Which release?", old))
+
     def test_agent_questions_and_independent_work(self):
-        def model(role, payload, model):
+        directories = {}
+        def model(role, payload, model, workdir):
+            task = payload["task"]
+            self.assertEqual(workdir.parent, self.engine.db.root.resolve() / "agent-workspaces")
+            self.assertTrue(workdir.is_dir())
+            self.assertEqual(directories.setdefault(task["id"], workdir), workdir)
             if role == "task":
                 if payload["task"]["title"] == "Blocked":
                     return dict(
@@ -307,6 +342,7 @@ class EngineTests(unittest.TestCase):
             for task in (a, b):
                 self.engine.process(task["id"])
                 self.assertEqual(self.db.get("tasks", task["id"])["status"], "question")
+            self.assertNotEqual(directories[a["id"]], directories[b["id"]])
             child = self.db.get("tasks", digest(a["id"], "Summarize notes"))
             self.engine.process(child["id"])
             self.assertEqual(self.db.get("tasks", child["id"])["status"], "done")
@@ -324,7 +360,7 @@ class EngineTests(unittest.TestCase):
             seen.append((c["label"], start, stop))
             return [self.raw(c["id"], start), self.raw("older", start - 1), self.raw("later", stop + 1)]
 
-        def infer(role, payload, model):
+        def infer(role, payload, model, workdir):
             if role == "improvement":
                 return dict(body="Remember indirect requests.", reason="A report supplied an example.")
             return dict(

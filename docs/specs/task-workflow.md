@@ -23,6 +23,11 @@ stateDiagram-v2
     Review --> Preparing: User requests revision
     Review --> Dismissed: User discards draft
     Review --> Sending: User confirms displayed action
+    Review --> Closed: User closes task locally
+    Preparing --> Closed: User closes task locally
+    Preparing --> Paused: Project or repository ignored
+    Review --> Paused: Exclusion retires preview
+    Paused --> Preparing: Exclusion removed
     Sending --> Checking: Provider confirms write
     Checking --> Complete: All criteria met
     Checking --> Preparing: Work remains
@@ -49,6 +54,12 @@ The diagram follows a task with a single proposed action. For multiple actions, 
 | A provider times out after dispatch | The dashboard shows the uncertain outcome and prevents an automatic resend that could duplicate the write. |
 | A teammate says “I'm fixing this” on the linked issue | Discovery records the skipped task and links the ownership evidence. No agent starts working on the fix. If the claim arrives during preparation, stop further work and withhold pending actions for that fix. |
 | A teammate is fixing the bug but asks the user to review their PR | The fix stays with the teammate. The distinct review request can become a task for the user. |
+
+## Excluding work and closing tasks
+
+The workspace ignore list persists across restarts. Ignoring a named project includes its descendants and their registered repositories. A GitHub repository matches across accounts and checkouts by owner and name, case-insensitively. An ignored checkout is also excluded from local activity. Skip matching repository polling, discovery, suggestions, task preparation and external delivery. Check the scope again when applying a worker result or dispatching a write. A request already handed to a provider can finish.
+
+Pause existing open tasks in an excluded scope and invalidate pending approvals. Removing an exclusion makes paused work eligible for preparation again and preserves due dates and receipts. Uncertain deliveries remain available for reconciliation. Closing a task is terminal and local. Later worker results, source refreshes and retries cannot reopen it or publish its draft.
 
 ## Related contracts
 
