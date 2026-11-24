@@ -53,12 +53,15 @@ flowchart LR
     CLI -->|Proposed action| Executor
     Executor -->|Authorized write| Sources["Connected Slack, mail or GitHub account"]
     Executor -->|Delivered commitment creates follow-up| Tasks
+    Hermes[Hermes agent] <-->|MCP bridge: context and schedule tools| ContextStore[Context store and schedules]
+    ContextStore -->|Due schedule| Tasks
+    ContextStore -->|Scoped, fresh context| CLI
     Checks[MeMyselfAI fixture tests or maintainer report] --> Findings[Self-improvement findings]
     Findings --> Tasks
     Tasks -->|Issue, fix branch, linked PR and code review| Executor
 ```
 
-The executor applies dry mode and the user's rules for each project and decision type. A promise in a delivered message creates a task of its own. Each task agent checks its completion criteria and records evidence in the dashboard.
+Hermes keeps a shared context store current through an MCP bridge and manages recurring tasks. It cannot send anything. The executor applies dry mode and the user's rules for each project and decision type. A promise in a delivered message creates a task of its own. Each task agent checks its completion criteria and records evidence in the dashboard.
 
 ## Planned direction: an inbox for a proactive agent you host
 
@@ -100,6 +103,7 @@ The first project for this workflow is MeMyselfAI itself. Tasks can test the app
 - [Decision rules, writing style, and trust](specs/delegation-and-style.md) defines when agents may act, how they learn the user's voice, and how the user decides to leave dry mode.
 - [Reviewing activity and learning from missed work](specs/activity-and-improvement.md) shows how an in-app report triggers recovery and improves future discovery using Markdown skills.
 - [Guided setup and VPS setup over SSH](specs/guided-setup.md) walks a new user through setup and installs and pairs a VPS from one of their SSH hosts.
+- [Shared context and schedules](specs/context-and-schedules.md) shows how the Hermes agent maintains context agents share, cleans stale context and creates or cancels schedules. It also lists planned transcript and collaborator support.
 - [Repository rules](../AGENTS.md) describe how to take a change from spec to verification.
 
 ## Running the desktop implementation

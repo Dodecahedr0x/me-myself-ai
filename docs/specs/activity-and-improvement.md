@@ -16,7 +16,7 @@ The same agent identifies a durable improvement. For example, if discovery overl
 
 ## Change behavior through Markdown
 
-The app loads local skills and supporting Markdown instructions at runtime. In dry mode, the investigation agent applies local workflow improvements as soon as they are ready. The next run uses the active revision. The dashboard shows the diff, supporting examples, and which runs used it, so the user can review or revert it afterward. These changes take effect without an app update. Standing writing-style changes still require approval, whether inferred or explicitly requested. The executor continues to enforce dry mode and user-defined authority.
+The app loads local skills and supporting Markdown instructions at runtime. In dry mode, the investigation agent applies local workflow improvements once they pass a [replay of previously accepted work](context-and-schedules.md#skill-revisions-are-tested-before-activation). The next run uses the active revision. The dashboard shows the diff, supporting examples, and which runs used it, so the user can review or revert it afterward. These changes take effect without an app update. Standing writing-style changes still require approval, whether inferred or explicitly requested. The executor continues to enforce dry mode and user-defined authority.
 
 ```mermaid
 flowchart LR

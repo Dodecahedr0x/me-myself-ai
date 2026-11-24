@@ -33,6 +33,8 @@ Choose **Connect app repository** to use your signed-in GitHub CLI for this repo
 
 In **Connections → Local activity**, connect **Claude** or **ChatGPT** to find unfinished follow-ups in completed desktop work sessions. The selected AI CLI receives excerpts from the last three hours. Regular chat history can be included by choosing a folder containing the provider’s extracted conversation export. Refresh the export to include newer cloud chats. Results appear in **Tasks → Suggested tasks**.
 
+**Context → Hermes** shows the schedules and shared context the [Hermes agent](https://github.com/NousResearch/hermes-agent) maintains. With Hermes installed and MeMyselfAI opened once, run `./scripts/connect-hermes.sh`. This registers the MeMyselfAI MCP bridge and two local Hermes jobs: an hourly context and schedule update, and a daily stale-context cleanup. Run `hermes gateway` so they fire. Hermes can only change local context and schedules. Scheduled tasks still follow dry mode. [Context and schedules spec](docs/specs/context-and-schedules.md)
+
 Tasks, drafts, history, worktrees, and Markdown skills live under `~/Library/Application Support/MeMyselfAI/`. Connector credentials are stored in macOS Keychain. The workflow and style files reflect active revisions. Review style suggestions and revert workflow revisions through **Skills & style**.
 
 **Settings → Agents** shows whether Claude Code, Codex CLI and the Hermes orchestrator are installed and signed in. **Sign in** opens each one's own login in Terminal. Task agents and Hermes act in the app only through its MCP server, scoped to their role and task. [Agents and the app MCP server](docs/specs/agents-and-app-mcp.md)

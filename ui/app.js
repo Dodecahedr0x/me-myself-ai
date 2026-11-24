@@ -4,7 +4,7 @@ const $ = selector => document.querySelector(selector);
 const esc = (value = "") => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const plain = value => typeof value === "string" ? value : value == null ? "" : JSON.stringify(value, null, 2);
 const titleCase = text => String(text ?? "").replace(/[_-]/g, " ").replace(/^./, c => c.toUpperCase());
-const viewNames = {overview:"Home", tasks:"Tasks", activity:"Activity", connections:"Connections", projects:"Projects", policies:"Decision rules", skills:"Skills & style", setup:"Setup", settings:"Settings"};
+const viewNames = {overview:"Home", tasks:"Tasks", activity:"Activity", connections:"Connections", projects:"Projects", context:"Context", policies:"Decision rules", skills:"Skills & style", setup:"Setup", settings:"Settings"};
 const paths = {
   ignore:'<circle cx="12" cy="12" r="9"/><path d="m6 6 12 12"/>',
   overview:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
@@ -34,6 +34,7 @@ const paths = {
   sync:'<path d="M20 5v5h-5m-11 9v-5h5M5.5 9a7.5 7.5 0 0 1 12.8-3l1.7 3M4 15l1.7 3A7.5 7.5 0 0 0 18.5 15"/>',
   search:'<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
   stack:'<path d="m3 8 9-5 9 5-9 5Zm0 5 9 5 9-5M3 17l9 5 9-5"/>',
+  context:'<circle cx="12" cy="12" r="3"/><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="20" r="2"/><path d="m7 7 3 3m7-3-3 3m-2 2v5"/>',
   flag:'<path d="M5 22V4m0 0c6-4 8 4 15 0v11c-7 4-9-4-15 0"/>', dot:'<circle cx="12" cy="12" r="4"/>', monitor:'<rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 21h8m-4-3v3"/>'
 };
 function icon(name, size = 18) {
@@ -88,7 +89,7 @@ function setIfChanged(el, html) {
 const recent = (list,key) => [...list].sort((a,b) => Number(b[key]||0)-Number(a[key]||0));
 function shell(view) {
   const nav = key => '<a href="#'+key+'" '+(view===key?'aria-current="page"':'')+'>'+icon(key,16)+'<span>'+esc(viewNames[key])+'</span></a>';
-  setIfChanged($("#sidebar"), '<div class="brand">'+mark+'<span>MeMyselfAI</span></div><nav><div class="navgroup">'+["overview","tasks","activity"].map(nav).join("")+'</div><div class="navgroup">'+["connections","projects","policies","skills"].map(nav).join("")+'</div></nav><div class="sidebar-foot">'+nav("setup")+nav("settings")+'</div>');
+  setIfChanged($("#sidebar"), '<div class="brand">'+mark+'<span>MeMyselfAI</span></div><nav><div class="navgroup">'+["overview","tasks","activity"].map(nav).join("")+'</div><div class="navgroup">'+["connections","projects","context","policies","skills"].map(nav).join("")+'</div></nav><div class="sidebar-foot">'+nav("setup")+nav("settings")+'</div>');
   const buttons = {
     overview:["New task","task","add"], tasks:["New task","task","add"],
     activity:["Report missed work","report","flag"], projects:["Add project","project","add"],
@@ -385,9 +386,37 @@ function parentField(project) {
 function projectsPage() {
   return section("Projects",button("Manage ignore list","ignorelist","ignore"),state.projects.map(p=>entry("projects",p.name,[p.global?"Workspace-wide":p.parent?"Under "+p.parent:null,...(p.repos||[])].filter(Boolean).join(" · ")||"No linked repositories",projectControls(p))).join("")||empty("No projects yet."));
 }
+const dayNames=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+function timing(s) {
+  if (s.once_at) return "Once at "+fullDate(s.once_at);
+  const days=s.days?.length && s.days.length<7 ? s.days.map(d=>dayNames[d]).join(", ") : "Every day";
+  return days+" at "+s.time;
+}
+function scheduleState(s) {
+  if (s.status==="active") return s.next?"Next "+fullDate(s.next):"Active";
+  if (s.status==="cancelled") return "Cancelled by "+(s.cancelled_by==="user"?"you":"Hermes")+": "+(s.cancel_reason||"");
+  return "Finished";
+}
+function contextPage() {
+  const hermes = state.hermes?.last_call ? "Hermes last worked on context and schedules "+relativeDate(state.hermes.last_call)+"." :
+    "Hermes is not connected. Run scripts/connect-hermes.sh so it can keep context current and manage schedules.";
+  const schedules = (state.schedules||[]).map(s=>entry("clock",s.title,
+    [timing(s),s.project,(s.origin==="inferred"?"Inferred: ":"You asked: ")+s.reason,scheduleState(s)].join(" · "),
+    s.status==="active"?button("Cancel","schedule_cancel",null,"secondary",'data-id="'+esc(s.id)+'"'):"")).join("");
+  const entries = (state.context||[]).map(e=>entry("context",e.subject,
+    [titleCase(e.kind),e.project,e.status==="retired"?"Retired: "+(e.retired_reason||""):e.stale?"Stale, withheld from agents until Hermes reviews it":"Review "+compactDate(e.review_at),e.body].join(" · "),
+    e.status==="retired"?button("Restore","context_restore",null,"quiet",'data-id="'+esc(e.id)+'"'):button("Retire","context_retire",null,"secondary",'data-id="'+esc(e.id)+'"'))).join("");
+  return '<div class="policy-note">'+icon("context")+'<span>'+esc(hermes)+'</span></div>'+
+    section("Schedules","",schedules||empty("No schedules yet. Ask for recurring work in a task, for example “every Friday, summarize open pull requests”."))+
+    section("What agents know","",entries||empty("No context yet."));
+}
 const modes = {auto:"Allow autonomous handling",review:"Require review",user:"Leave to me"};
 function policiesPage() {
+  const ready = (state.handoffs||[]).map(h=>entry("shield",titleCase(h.kind)+" in "+h.project,
+    h.delivered+" delivered in 30 days, none corrected, no missed work reported",
+    button("Allow autonomous handling","handoff",null,"secondary",'data-project="'+esc(h.project)+'" data-kind="'+esc(h.kind)+'"'))).join("");
   return '<div class="policy-note">'+icon("shield")+'<span>'+esc(state.settings.dry?"Dry mode requires approval for every external write.":"Live mode follows the rules below.")+'</span></div>'+
+    (ready?section("Ready to hand off","",ready):"")+
     (state.rules.length?state.rules.map(r=>entry("policies",titleCase(r.kind),r.project, '<span class="rule-mode">'+esc(modes[r.mode]||r.mode)+'</span>'+button("Edit","rule",null,"secondary",'data-project="'+esc(r.project)+'" data-kind="'+esc(r.kind)+'"'))).join(""):empty("No decision rules yet."));
 }
 function skillsPage() {
@@ -644,7 +673,7 @@ async function setupMutate(payload,message) {
   catch(e) { notify(e.message); }
   setupChecked=0; void refresh(); void loadSetup(true);
 }
-const pages = {setup:setupPage,overview,tasks:tasksPage,activity:activityPage,connections:connectionsPage,projects:projectsPage,policies:policiesPage,skills:skillsPage,settings:settingsPage};
+const pages = {setup:setupPage,overview,tasks:tasksPage,activity:activityPage,connections:connectionsPage,projects:projectsPage,context:contextPage,policies:policiesPage,skills:skillsPage,settings:settingsPage};
 function closeMenu() {
   document.body.classList.remove("menu-open"); $("#scrim").hidden=true;
   $(".menu-toggle")?.setAttribute("aria-expanded","false");
@@ -1231,6 +1260,10 @@ function handleAction(el) {
     case "reject_skill": void mutate({op:action,id},"Style suggestion declined."); return;
     case "accept_skill": void mutate({op:action,id},"Style guidance approved."); return;
     case "retry": void mutate({op:action,id},"Preparation queued."); return;
+    case "schedule_cancel": void mutate({op:action,id},"Schedule cancelled."); return;
+    case "context_retire": void mutate({op:action,id},"Context retired. Agents will no longer receive it."); return;
+    case "context_restore": void mutate({op:action,id},"Context restored."); return;
+    case "handoff": void mutate({op:"rule",project,kind,mode:"auto"},"Autonomous handling allowed. Dry mode still applies while it is on."); return;
     case "sync": void mutate({op:action},"Source sync requested."); return;
   }
 }
