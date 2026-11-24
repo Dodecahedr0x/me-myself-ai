@@ -17,6 +17,7 @@ import bugflow
 import orchestrator
 import selfcheck
 import sync as instances
+import vps_setup
 import github_signin
 import connectors
 import workspace_bridge
@@ -101,6 +102,10 @@ class Engine:
         self.mcp_url = None
         self.agents = agents.Agents(root, self.settings)
         self.orchestrator = orchestrator.Orchestrator(self)
+        # Guided setup and VPS setup over SSH. See docs/specs/guided-setup.md.
+        self.vps = vps_setup.VpsSetup(self.instances, self.settings, self.db.log,
+                                      Path(__file__).resolve().parent, open_terminal=agents.open_in_terminal)
+        self.gh_login_cache = (0.0, None)
         with self.db.atomic():
             settings = self.db.get("config", "settings")
             if not settings:
@@ -1886,6 +1891,8 @@ class Engine:
             return self.orchestrator.configure(d)
         if op == "agent_sign_in":
             return self.agents.open_sign_in(required(d, "agent", 16))
+        if op.startswith("setup_") or op.startswith("vps_"):
+            return self.setup_action(op, d)
         if op == "connect_app_repo":
             login = github_signin.active_login()
             account = digest("github.com account", login.casefold())
@@ -2214,6 +2221,89 @@ class Engine:
             else:
                 raise ValueError("Unknown action")
         self.wake.set()
+
+    def gh_login(self):
+        """The signed-in GitHub CLI account, if any, checked at most every two minutes."""
+        at, login = self.gh_login_cache
+        if time.monotonic() - at > 120:
+            try:
+                login = github_signin.active_login()
+            except Exception:
+                login = None
+            self.gh_login_cache = (time.monotonic(), login)
+        return login
+
+    def setup_state(self, refresh=False):
+        """Each setup step and whether it is ready, worked out from the workspace on every call."""
+        inventory = self.agents.inventory(refresh)
+        harness = {h["id"]: h for h in inventory["harnesses"]}
+        settings = self.settings()
+        provider = settings.get("provider")
+        local = self.db.get("local", "setup") or {}
+        connections = [c for c in self.db.rows("connections")
+                       if not c.get("github_parent") and not c.get("slack_parent")]
+        projects = [p for p in self.db.rows("projects") if p.get("repos")]
+        agent = harness.get(provider, {})
+        hermes = harness.get("hermes", {})
+        peers = []
+        for p in self.instances.peers():
+            if p.get("trusted"):
+                agents_there = ((p.get("info") or {}).get("capacity") or {}).get("agents") or {}
+                peers.append(dict(name=p["name"], platform=p.get("platform", ""), address=p.get("address", ""),
+                                  agent_ready=agents_there.get(provider) == "ready"))
+        steps = [
+            dict(id="agent", required=True, ready=agent.get("state") == "ready", state=agent.get("state", "unknown"),
+                 agent=provider, label=agent.get("label", provider), sign_in=agent.get("sign_in", ""),
+                 detail=agent.get("detail", "")),
+            dict(id="accounts", required=True, ready=bool(connections), count=len(connections),
+                 github_login=None if any(c["kind"] == "github" for c in connections) else self.gh_login()),
+            dict(id="projects", required=False, ready=bool(projects), count=len(projects),
+                 skipped="projects" in local.get("skipped", [])),
+            dict(id="orchestrator", required=False, ready=hermes.get("state") == "ready",
+                 state=hermes.get("state", "unknown"), sign_in=hermes.get("sign_in", "")),
+            dict(id="server", required=False, ready=bool(peers), peers=peers),
+            dict(id="delivery", required=False, ready=True, dry=settings.get("dry", True)),
+        ]
+        missing = [s["id"] for s in steps if s["required"] and not s["ready"]]
+        return dict(
+            steps=steps,
+            missing=missing,
+            dismissed=bool(missing) and set(missing) <= set(local.get("dismissed", [])),
+            first_run=not connections and not projects and not self.db.rows("tasks"),
+            vps=self.vps.state(),
+        )
+
+    def setup_action(self, op, d):
+        if op == "setup_connect_github":
+            # Reuses the GitHub CLI's existing login. Connecting only reads, like any connection.
+            login = github_signin.active_login()
+            self.connect_github_account(login, None)
+            self.wake.set()
+            return {"account": login}
+        if op in {"setup_dismiss", "setup_skip"}:
+            with self.db.atomic():
+                local = self.db.get("local", "setup") or {"id": "setup", "dismissed": [], "skipped": []}
+                if op == "setup_dismiss":
+                    local["dismissed"] = self.setup_state()["missing"]
+                else:
+                    step = required(d, "step", 20)
+                    if step != "projects":
+                        raise ValueError("Only the projects step can be skipped.")
+                    local["skipped"] = sorted(set(local.get("skipped", [])) | {step})
+                self.db.put("local", local)
+            return
+        if op == "vps_setup":
+            self.vps.start(required(d, "host", 255))
+            return
+        if op == "vps_password":
+            self.vps.password(d.get("password"))
+            return
+        if op == "vps_cancel":
+            self.vps.cancel()
+            return
+        if op == "vps_sign_in":
+            return self.vps.sign_in()
+        raise ValueError("Unknown action")
 
     def instance_action(self, op, d):
         sync = self.instances

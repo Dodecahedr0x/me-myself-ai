@@ -4,6 +4,10 @@ A VPS instance runs the same service as the Mac app, without a window. It keeps 
 
 Requirements: a Linux server you control with at least 2 GB of memory, SSH access, and either Docker or a Debian or Ubuntu system with systemd. Put the server's disk on encrypted storage if your provider offers it. Activity and drafts are stored on it in plain SQLite.
 
+## Easiest: from the Mac app
+
+Open **Setup** in the Mac app, pick one of the hosts from your SSH config under **Always-on server** and choose **Set up server**. The app copies itself to the server, runs the systemd installer below, opens port 8802 if `ufw` is on, installs your task agent and pairs the server with your Mac. It asks for a sudo password only if the server needs one, and never saves it. Then choose **Sign in on server** to sign in the task agent there. See [guided setup](specs/guided-setup.md#vps-setup-over-ssh). The manual options below do the same by hand.
+
 ## Option A: systemd
 
 On the server, from a checkout of this repository:

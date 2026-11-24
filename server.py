@@ -128,6 +128,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/agents":
                 refresh = urlsplit(self.path).query == "refresh=1"
                 return self.output(200, json.dumps(s.engine.agents.inventory(refresh)).encode())
+            if path == "/api/setup":
+                refresh = urlsplit(self.path).query == "refresh=1"
+                return self.output(200, json.dumps(s.engine.setup_state(refresh), ensure_ascii=False).encode())
             if path not in {"/api/state", "/api/connectors"}:
                 return self.output(404)
             data = s.engine.state() if path == "/api/state" else SCHEMAS

@@ -135,6 +135,18 @@ def _state(installed, version, minimum, signed_in, error):
     return "ready" if signed_in else "sign_in"
 
 
+def open_in_terminal(command):
+    """Run a shell command in a new Terminal window on macOS. Returns False where that isn't possible."""
+    if sys.platform != "darwin":
+        return False
+    script = 'tell application "Terminal"\nactivate\ndo script ' + json.dumps(command) + "\nend tell"
+    try:
+        subprocess.run(["/usr/bin/osascript", "-e", script], capture_output=True, timeout=30, check=True)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
+
+
 class Agents:
     """Cached readiness of every harness on this instance."""
 
@@ -196,14 +208,7 @@ class Agents:
         command = " ".join(shlex.quote(p) for p in sign_in_command(name, self.root, self.subscription()))
         with self.lock:
             self.cache = None
-        if sys.platform != "darwin":
-            return {"command": command, "opened": False}
-        script = 'tell application "Terminal"\nactivate\ndo script ' + json.dumps(command) + "\nend tell"
-        try:
-            subprocess.run(["/usr/bin/osascript", "-e", script], capture_output=True, timeout=30, check=True)
-        except (OSError, subprocess.SubprocessError):
-            return {"command": command, "opened": False}
-        return {"command": command, "opened": True}
+        return {"command": command, "opened": open_in_terminal(command)}
 
     def write_hermes_config(self, mcp_command, mcp_env):
         """Write Hermes' private config. The app owns this file and rewrites it on every start."""

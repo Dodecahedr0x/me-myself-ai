@@ -229,3 +229,21 @@ details .facts {margin-top:8px}
 .section-note { margin: 0 0 8px; color: var(--muted, #6b6b66); font-size: 13px; }
 
 .pairing-code code { font-size: 1.25rem; letter-spacing: 0.06em; user-select: all; }
+
+/* Guided setup */
+.setup-card {display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-left:3px solid var(--marker);border-radius:8px;background:var(--surface);padding:10px 14px;margin:0 0 16px}
+.setup-card .entry-text p {color:var(--muted);font-size:13px;line-height:1.45}
+.setup-step {border-bottom:1px solid var(--line)}
+.setup-step > .entry {border-bottom:0}
+.setup-step.ready .entry-text strong {font-weight:500}
+.setup-step .entry-text strong .status {margin-left:8px;vertical-align:1px}
+.vps-form {display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap;margin:4px 0 10px 36px}
+.vps-form .field {flex:1;min-width:240px;margin:0}
+.vps-run {margin:0 0 12px 36px}
+.vps-run h3 {font-size:13px;font-weight:600}
+.vps-error {color:var(--error);font-size:13px;line-height:1.45;margin:4px 0 8px;overflow-wrap:anywhere}
+.vps-steps {list-style:none;margin:6px 0;padding:0;display:grid;gap:6px}
+.vps-steps li {display:grid;grid-template-columns:76px 1fr;gap:8px;align-items:baseline;font-size:13px}
+.vps-steps small {display:block;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+@media (max-width:640px) {.setup-card{flex-wrap:wrap}.vps-form,.vps-run{margin-left:0}}
+.vps-run .vps-form {margin-left:0}

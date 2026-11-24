@@ -4,7 +4,7 @@ const $ = selector => document.querySelector(selector);
 const esc = (value = "") => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const plain = value => typeof value === "string" ? value : value == null ? "" : JSON.stringify(value, null, 2);
 const titleCase = text => String(text ?? "").replace(/[_-]/g, " ").replace(/^./, c => c.toUpperCase());
-const viewNames = {overview:"Home", tasks:"Tasks", activity:"Activity", connections:"Connections", projects:"Projects", policies:"Decision rules", skills:"Skills & style", settings:"Settings"};
+const viewNames = {overview:"Home", tasks:"Tasks", activity:"Activity", connections:"Connections", projects:"Projects", policies:"Decision rules", skills:"Skills & style", setup:"Setup", settings:"Settings"};
 const paths = {
   overview:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   tasks:'<rect x="5" y="4" width="15" height="17" rx="2"/><path d="M9 4V2m7 2V2M9 10h7m-7 4h5"/>',
@@ -13,6 +13,7 @@ const paths = {
   policies:'<path d="M4 6h4m5 0h7M4 12h9m5 0h2M4 18h2m5 0h9"/><circle cx="10.5" cy="6" r="2.2"/><circle cx="15.5" cy="12" r="2.2"/><circle cx="8.5" cy="18" r="2.2"/>',
   skills:'<path d="M3 5c4-1 6 0 9 2 3-2 5-3 9-2v14c-4-1-6 0-9 2-3-2-5-3-9-2Zm9 2v14"/>',
   settings:'<path d="m9.2 4 .7-2h4.2l.7 2 2 .9 2.1-.4 2.1 3.6-1.4 1.6.2 2.3 1.2 1.7-2.1 3.6-2-.3-2 1-.8 2h-4l-.8-2-2-1-2 .3-2.1-3.6 1.3-1.7.1-2.3-1.4-1.6L5.3 4.5l2 .4Z"/><circle cx="12" cy="11.5" r="3"/>',
+  setup:'<path d="M9 6h11M9 12h11M9 18h11"/><path d="m3.5 6 1.5 1.5L7.5 5M3.5 12l1.5 1.5L7.5 11"/><circle cx="5" cy="18" r="1.6"/>',
   shield:'<path d="m12 2 8 3.5v6.2c0 5-3.9 8-8 10.3-4.1-2.3-8-5.3-8-10.3V5.5Z"/><path d="m8.8 11.6 2.2 2.1 4.4-4.6"/>',
   add:'<path d="M12 5v14M5 12h14"/>', arrow:'<path d="M4 12h15m-6-6 6 6-6 6"/>', chevron:'<path d="m9 5 7 7-7 7"/>',
   menu:'<path d="M3 5h18M3 12h18M3 19h18"/>', close:'<path d="m5 5 14 14m0-14L5 19"/>',
@@ -47,6 +48,7 @@ let activityProject = "", activityQuery = "", activityConnection = "";
 const providerNames = {claude:"Claude Code", codex:"Codex CLI"};
 let providers = null, providersPending = false, providersChecked = 0;
 let agentSetup = null, agentsPending = false, agentsChecked = 0;
+let setup = null, setupPending = false, setupChecked = 0, setupOpened = false, hostDraft = "";
 const agentStates = {ready:"Ready",sign_in:"Sign in needed",not_installed:"Not installed",unsupported_version:"Unsupported version",unknown:"Status unavailable"};
 const subscriptionNames = {claude:"Claude subscription",codex:"ChatGPT subscription"};
 const button = (label, action, glyph, style = "secondary", attrs = "") => '<button type="button" class="btn '+style+'" data-action="'+action+'" '+attrs+'>'+ (glyph ? icon(glyph,16) : "") +esc(label)+'</button>';
@@ -67,7 +69,7 @@ function setIfChanged(el, html) {
 const recent = (list,key) => [...list].sort((a,b) => Number(b[key]||0)-Number(a[key]||0));
 function shell(view) {
   const nav = key => '<a href="#'+key+'" '+(view===key?'aria-current="page"':'')+'>'+icon(key,16)+'<span>'+esc(viewNames[key])+'</span></a>';
-  setIfChanged($("#sidebar"), '<div class="brand">'+mark+'<span>MeMyselfAI</span></div><nav><div class="navgroup">'+["overview","tasks","activity"].map(nav).join("")+'</div><div class="navgroup">'+["connections","projects","policies","skills"].map(nav).join("")+'</div></nav><div class="sidebar-foot">'+nav("settings")+'</div>');
+  setIfChanged($("#sidebar"), '<div class="brand">'+mark+'<span>MeMyselfAI</span></div><nav><div class="navgroup">'+["overview","tasks","activity"].map(nav).join("")+'</div><div class="navgroup">'+["connections","projects","policies","skills"].map(nav).join("")+'</div></nav><div class="sidebar-foot">'+nav("setup")+nav("settings")+'</div>');
   const buttons = {
     overview:["New task","task","add"], tasks:["New task","task","add"],
     activity:["Report missed work","report","flag"], projects:["Add project","project","add"],
@@ -166,7 +168,7 @@ function overview() {
   const styleReviews = state.skills.filter(s=>s.kind==="style" && !s.active && s.status==="pending")
     .map(s=>'<button class="skill-row" data-action="skill" data-id="'+esc(s.id)+'"><span class="row-title"><strong>'+esc(s.body)+'</strong></span>'+icon("chevron",14)+'</button>').join("");
   const manage = '<a class="btn secondary" href="#connections">Manage connections</a>';
-  return '<section class="home-queue"><div class="queue-heading"><h2>Task queue</h2><div class="counters">'+summary+'</div>'+link("All tasks","tasks")+'</div>'+queue+'</section>'+orchestratorSection()+taskSuggestions(false)+
+  return setupCard()+'<section class="home-queue"><div class="queue-heading"><h2>Task queue</h2><div class="counters">'+summary+'</div>'+link("All tasks","tasks")+'</div>'+queue+'</section>'+orchestratorSection()+taskSuggestions(false)+
     '<div class="overview-grid">'+section("Recent activity",link("View log","activity"),events.length?timeline(events):empty("No activity yet."))+
     '<div>'+section("Connections",manage,"")+
     (projects?section("Projects",link("View all","projects"),projects):"")+
@@ -392,7 +394,107 @@ function settingsPage() {
     instancesSection()+
     section("Sample workspace","",entry("stack","Load sample work","Add fixture tasks and activity to explore the workspace.",button("Load sample","demo",null)));
 }
-const pages = {overview,tasks:tasksPage,activity:activityPage,connections:connectionsPage,projects:projectsPage,policies:policiesPage,skills:skillsPage,settings:settingsPage};
+// Guided setup. See docs/specs/guided-setup.md.
+const stepTitles={agent:"Task agent",accounts:"Accounts",projects:"Projects",orchestrator:"Orchestrator",server:"Always-on server",delivery:"Delivery"};
+const pill=(kind,label)=>'<span class="status '+kind+'"><i></i>'+esc(label)+'</span>';
+const vpsActive=()=>["running","needs_password"].includes(setup?.vps?.run?.status);
+async function loadSetup(force=false) {
+  const wait=vpsActive()?1500:force?0:20000;
+  if (setupPending || Date.now()-setupChecked<wait) return;
+  setupPending=true; setupChecked=Date.now();
+  try { setup=await request("/api/setup"+(force?"?refresh=1":"")); }
+  catch { /* keep the last known state */ }
+  finally { setupPending=false; }
+  if (!setupOpened && setup) {
+    setupOpened=true;
+    if (!location.hash && setup.first_run) { location.hash="setup"; return; }
+  }
+  if (["overview","setup"].includes(activeView)) render();
+}
+function setupCard() {
+  if (!setup || !setup.missing.length || setup.dismissed) return "";
+  const next=setup.steps.find(s=>s.id===setup.missing[0]);
+  const left=setup.missing.length===1?"One step needs you":setup.missing.length+" steps need you";
+  return '<section class="setup-card"><div class="entry-text"><strong>Finish setting up · '+esc(left)+'</strong><p>Next: '+esc(stepTitles[next.id])+'. '+esc(stepSummary(next))+'</p></div><div class="entry-actions">'+
+    '<a class="btn primary" href="#setup">Continue setup</a>'+button("Dismiss","setup-dismiss",null,"quiet")+'</div></section>';
+}
+function stepSummary(s) {
+  const agent=providerNames[s.agent]||s.label;
+  switch (s.id) {
+    case "agent": return s.ready?agent+" is installed and signed in.":s.state==="sign_in"?agent+" needs you to sign in once.":s.state==="not_installed"?"Install "+agent+" on this Mac, then choose Check again.":agent+": "+(agentStates[s.state]||"status unavailable")+".";
+    case "accounts": return s.ready?s.count+(s.count===1?" account":" accounts")+" connected.":s.github_login?"Your GitHub CLI is signed in as @"+s.github_login+". Connect it in one click.":"Connect where your work arrives: mail, Slack or GitHub.";
+    case "projects": return s.ready?s.count+(s.count===1?" project has":" projects have")+" repositories.":s.skipped?"Skipped. Tasks go to Global until you add a project.":"Group repositories under a project so coding tasks get their own worktrees.";
+    case "orchestrator": return s.ready?"Hermes is ready and runs discovery sweeps.":s.state==="sign_in"?"Hermes needs you to sign in once.":"Optional. Install Hermes to let an orchestrator sweep your accounts on a schedule.";
+    case "server": return s.ready?"Paired with "+s.peers.map(p=>p.name+(p.agent_ready?"":" (task agent not signed in yet)")).join(", ")+".":"Optional. Keep working while this Mac sleeps: pick one of your SSH hosts and the app installs and pairs it.";
+    case "delivery": return s.dry?"Dry mode: every send and repository write waits for your approval.":"Live mode: project decision rules govern delivery.";
+  }
+  return "";
+}
+function stepPill(s) {
+  if (s.ready) return pill("complete","Ready");
+  if (s.id==="projects" && s.skipped) return pill("neutral","Skipped");
+  if (s.id==="server" && vpsActive()) return pill("progress","Setting up");
+  return s.required?pill("attention","Needs you"):pill("neutral","Optional");
+}
+function stepActions(s) {
+  switch (s.id) {
+    case "agent": return (s.state==="sign_in"?button("Sign in","agent-sign-in",null,"primary",'data-agent="'+esc(s.agent)+'"'):"")+(s.ready?"":'<a class="btn quiet" href="#settings">Change agent</a>');
+    case "accounts": return s.ready?'<a class="btn quiet" href="#connections">Manage</a>':(s.github_login?button("Connect GitHub as @"+s.github_login,"setup-github","github","primary"):"")+'<a class="btn secondary" href="#connections">Other accounts</a>';
+    case "projects": return s.ready?'<a class="btn quiet" href="#projects">Manage</a>':button("Add project","project","add","secondary")+(s.skipped?"":button("Skip","setup-skip",null,"quiet",'data-step="projects"'));
+    case "orchestrator": return s.state==="sign_in"?button("Sign in","agent-sign-in",null,"secondary",'data-agent="hermes"'):"";
+    case "server": {
+      const run=setup.vps.run, unsigned=s.peers.some(p=>!p.agent_ready);
+      return run?.status==="done"&&unsigned?button("Sign in on server","vps-sign-in",null,"primary"):"";
+    }
+  }
+  return "";
+}
+function vpsForm() {
+  const options=setup.vps.hosts.map(h=>'<option value="'+esc(h)+'"></option>').join("");
+  const value=hostDraft||setup.vps.run?.host||setup.vps.hosts.find(h=>/vps|server/i.test(h))||setup.vps.hosts[0]||"";
+  return '<form class="vps-form" id="vps-form"><label class="field"><span>SSH host</span><input id="vps-host" name="host" list="ssh-hosts" autocomplete="off" spellcheck="false" required value="'+esc(value)+'" placeholder="A Host from ~/.ssh/config, or user@host"><datalist id="ssh-hosts">'+options+'</datalist>'+
+    '<small>'+(setup.vps.hosts.length?setup.vps.hosts.length+" hosts found in your SSH config. ":"No hosts found in ~/.ssh/config. ")+'The app installs the service with systemd, opens port 8802 if ufw is on, installs your task agent and pairs the server with this Mac.</small></label>'+
+    '<button type="submit" class="btn primary">'+(setup.vps.run?.status==="failed"?"Retry setup":"Set up server")+'</button></form>';
+}
+function vpsProgress() {
+  const run=setup?.vps?.run;
+  if (!run) return "";
+  const mark={done:"complete",running:"progress",failed:"attention",pending:"neutral"};
+  const names={done:"Done",running:"Working",failed:"Failed",pending:"Waiting"};
+  const steps=run.steps.map(st=>'<li>'+pill(mark[st.status],names[st.status])+'<span><strong>'+esc(st.label)+'</strong>'+(st.detail?'<small>'+esc(st.detail)+'</small>':"")+'</span></li>').join("");
+  const head={running:"Setting up "+run.host+"…",needs_password:run.host+" needs your sudo password",failed:"Setup of "+run.host+" stopped",done:run.host+" is set up",cancelled:"Setup of "+run.host+" cancelled"}[run.status]||run.host;
+  const password=run.status==="needs_password"?'<form class="vps-form" id="vps-password-form"><label class="field"><span>Sudo password for '+esc(run.host)+'</span><input id="vps-password" type="password" autocomplete="current-password" required>'+
+    '<small>'+esc(run.password_error||"Used once for this setup and never saved.")+'</small></label><button type="submit" class="btn primary">Continue</button>'+button("Cancel","vps-cancel",null,"quiet")+'</form>':"";
+  const cancel=run.status==="running"?button("Cancel","vps-cancel",null,"quiet"):"";
+  const after=run.status==="done"?'<p class="section-note">Connections and the orchestrator move to the server by themselves. Sign in its task agent once so it can run tasks while this Mac sleeps.</p>':"";
+  return '<div class="vps-run"><div class="section-title"><h3>'+esc(head)+'</h3>'+cancel+'</div>'+(run.error?'<p class="vps-error" role="alert">'+esc(run.error)+'</p>':"")+password+'<ol class="vps-steps">'+steps+'</ol>'+after+'</div>';
+}
+function setupPage() {
+  if (!setup) return empty("Checking your setup…");
+  const glyphs={agent:"working",accounts:"connections",projects:"projects",orchestrator:"stack",server:"sync",delivery:"shield"};
+  const rows=setup.steps.map(s=>{
+    const extra=s.id==="server"?(!vpsActive()?vpsForm():"")+'<div id="vps-progress">'+vpsProgress()+'</div>':"";
+    return '<div class="setup-step'+(s.ready?' ready':'')+'"><div class="entry"><div class="source-icon">'+icon(s.ready?"check":glyphs[s.id])+'</div><div class="entry-text"><strong>'+esc(stepTitles[s.id])+' '+stepPill(s)+'</strong><p>'+esc(stepSummary(s))+'</p></div><div class="entry-actions">'+stepActions(s)+'</div></div>'+extra+'</div>';
+  }).join("");
+  const intro=setup.missing.length?"The app checks each step itself and does what it can. "+(setup.missing.length===1?"One step needs you.":setup.missing.length+" steps need you."):"Everything required is ready. The optional steps below add more.";
+  return section("Set up MeMyselfAI",button("Check again","setup-refresh","sync","quiet"),'<p class="section-note">'+esc(intro)+'</p>'+rows);
+}
+async function vpsStart(host) {
+  try { await request("/api/action",{op:"vps_setup",host}); hostDraft=""; setupChecked=0; await loadSetup(); }
+  catch(e) { notify(e.message); }
+}
+async function vpsSignIn() {
+  try {
+    const r=await request("/api/action",{op:"vps_sign_in"});
+    notify(r.opened?"Sign-in opened in Terminal. Finish it there; the server reports ready within a minute.":"Run this in a terminal: "+r.command);
+  } catch(e) { notify(e.message); }
+}
+async function setupMutate(payload,message) {
+  try { const r=await request("/api/action",payload); if (message) notify(typeof message==="function"?message(r):message); }
+  catch(e) { notify(e.message); }
+  setupChecked=0; void refresh(); void loadSetup(true);
+}
+const pages = {setup:setupPage,overview,tasks:tasksPage,activity:activityPage,connections:connectionsPage,projects:projectsPage,policies:policiesPage,skills:skillsPage,settings:settingsPage};
 function closeMenu() {
   document.body.classList.remove("menu-open"); $("#scrim").hidden=true;
   $(".menu-toggle")?.setAttribute("aria-expanded","false");
@@ -409,9 +511,11 @@ function render() {
   if (activeView===view && $("#main").contains(document.activeElement) && ["INPUT","SELECT"].includes(document.activeElement.tagName)) {
     if (view==="tasks") { setIfChanged($("#task-list"),taskList()); return; }
     if (view==="activity") { setIfChanged($("#activity-list"),activityList()); return; }
+    if (view==="setup") { const p=$("#vps-progress"); if (p && !p.contains(document.activeElement)) setIfChanged(p,vpsProgress()); return; }
   }
   activeView=view; setIfChanged($("#main"),pages[view]());
   if (view==="settings") { void loadProviders(); void loadAgents(); }
+  if (view==="setup" || view==="overview") void loadSetup();
   document.title=viewNames[view]+" · MeMyselfAI";
   if (switched) { closeMenu(); $("#main").scrollTop=0; window.scrollTo(0,0); }
 }
@@ -439,6 +543,7 @@ async function refresh() {
     const result=await request("/api/state");
     if (!Array.isArray(result.tasks)) throw new Error("The local service returned an incomplete workspace.");
     Object.assign(state,result); loaded=true; $("#network").hidden=true; render();
+    if (vpsActive() || !setupOpened) void loadSetup();
     if (dialogState?.type==="detail") {
       const fresh=state.tasks.find(t=>String(t.id)===String(dialogState.task.id));
       if (!fresh || JSON.stringify(fresh)!==dialogState.signature) {
@@ -780,6 +885,12 @@ function handleAction(el) {
     case "orchestrator-run": void mutate({op:"orchestrator_settings",run_now:true},"Sweep requested."); return;
     case "orchestrator-toggle": void mutate({op:"orchestrator_settings",enabled:!state.orchestrator.enabled},state.orchestrator.enabled?"Orchestrator paused.":"Orchestrator resumed."); return;
     case "agent-sign-in": void signInAgent(el.dataset.agent); return;
+    case "setup-refresh": setupChecked=0; void loadSetup(true); return;
+    case "setup-github": void setupMutate({op:"setup_connect_github"},r=>"Connected GitHub as @"+r.account+"."); return;
+    case "setup-skip": void setupMutate({op:"setup_skip",step:el.dataset.step}); return;
+    case "setup-dismiss": void setupMutate({op:"setup_dismiss"},"Setup hidden. It's still under Setup in the sidebar."); return;
+    case "vps-cancel": void setupMutate({op:"vps_cancel"},"Server setup cancelled."); return;
+    case "vps-sign-in": void vpsSignIn(); return;
     case "instance-code": void pairingCode(); return;
     case "instance-checkout": openForm("instance_checkout","Add a checkout on this instance",input("path","Path of a Git checkout",{required:true,placeholder:"/home/me/src/project"}),"Add",{},"Coding tasks for this repository's origin can then move to this instance with their worktree."); return;
     case "run-on": void mutate({op:"move",items:["task:"+el.dataset.id],to:el.dataset.peer},"Move requested. It happens once the task is idle and the instances sync."); return;
@@ -890,6 +1001,7 @@ document.addEventListener("input",event=>{
     event.target.form.elements.client_id.required=rotating && !dialogState.registration.configured;
   }
   const el=event.target;
+  if (el.id==="vps-host") hostDraft=el.value;
   if (el.id==="task-search") {query=el.value;setIfChanged($("#task-list"),taskList());}
   if (el.id==="activity-search") {activityQuery=el.value;setIfChanged($("#activity-list"),activityList());}
   if (el.closest("#editor")) rememberForm();
@@ -908,6 +1020,13 @@ document.addEventListener("change",event=>{
 });
 document.addEventListener("submit",event=>{
   if (event.target.id==="auth-form") {event.preventDefault();void submitSignIn(event.target);return;}
+  if (event.target.id==="vps-form") {event.preventDefault();void vpsStart($("#vps-host").value.trim());return;}
+  if (event.target.id==="vps-password-form") {
+    event.preventDefault();
+    const field=$("#vps-password"), password=field.value; field.value="";
+    void setupMutate({op:"vps_password",password});
+    return;
+  }
   if (event.target.id!=="editor") return;
   event.preventDefault();
   const form=event.target, ctx=dialogState, fields=Object.fromEntries(new FormData(form)), op=ctx.type;

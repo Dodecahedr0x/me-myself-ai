@@ -15,6 +15,9 @@ flowchart LR
     Suggestions --> Home
     Activity -->|Recent activity| Home
     Home -->|Manage connections| Accounts[Connections]
+    Setup[Setup guide] -->|Checks agent, accounts, projects, orchestrator| Home
+    Setup -->|Chosen SSH host| VpsSetup[VPS setup over SSH]
+    VpsSetup -->|Install, start, pair| VPS[VPS instance]
     Connectors -->|Per-account history| Activity[Activity log]
     Accounts -->|Choose account and source| SignIn[Workspace account sign-in]
     SignIn -->|Connect Google| Workspace[Bundled Google Workspace extension]
@@ -87,6 +90,7 @@ The first project for this workflow is MeMyselfAI itself. Tasks can test the app
 - [Task agents and completion](specs/task-execution.md) defines isolation, follow-ups, and the evidence needed to close bugs and emails.
 - [Decision rules, writing style, and trust](specs/delegation-and-style.md) defines when agents may act, how they learn the user's voice, and how the user decides to leave dry mode.
 - [Reviewing activity and learning from missed work](specs/activity-and-improvement.md) shows how an in-app report triggers recovery and improves future discovery using Markdown skills.
+- [Guided setup and VPS setup over SSH](specs/guided-setup.md) walks a new user through setup and installs and pairs a VPS from one of their SSH hosts.
 - [Repository rules](../AGENTS.md) describe how to take a change from spec to verification.
 
 ## Running the desktop implementation
