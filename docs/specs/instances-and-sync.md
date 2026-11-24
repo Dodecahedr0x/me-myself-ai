@@ -1,6 +1,6 @@
 # Instances, sync and sharing work
 
-**Status** — Draft, not implemented. Covers [US-25 through US-29](../user-stories.md). Changes the "one process owns a data directory" rule in the [desktop runtime](desktop-runtime.md). That rule still holds per instance, but several instances can now share one workspace.
+**Status** — Draft. Phase 1 (headless Linux service) is implemented. See [phase 1 status](#phase-1-status) and the [VPS guide](../vps.md). Covers [US-25 through US-29](../user-stories.md). Changes the "one process owns a data directory" rule in the [desktop runtime](desktop-runtime.md). That rule still holds per instance, but several instances can now share one workspace.
 
 ## Intent
 
@@ -196,6 +196,19 @@ Each phase ships with its acceptance criteria below passing.
 - **Phase 2, pairing and sync.** Pairing with a valid code succeeds and shows matching fingerprints on both sides. An expired, reused or wrong code fails. A task created on the laptop appears on the VPS within 30 seconds, and the reverse. A connection made on the laptop polls from the VPS after a handoff, without signing in again there. Captured sync traffic contains no plaintext credential. Editing a title on both while cut off converges to the later edit on both. Removing an instance rotates the workspace key and offers reconnection for every connection.
 - **Phase 2, ownership.** A fault-injecting harness runs two and three instances under random disconnections, pauses, crashes and restarts, including during handoffs. With no takeover, no item is ever acted on by two instances, every fixture write is dispatched at most once, and no item ends with no owner. With the VPS stopped, the laptop keeps running and sending for its own tasks. A crash between send intent and receipt leads to reconciliation, not a blind resend. A change carrying an old epoch is refused.
 - **Phase 3.** With the laptop's slots full, a new task is handed to the VPS and runs there. With the preference *Overflow only* on the VPS and laptop slots free, it runs on the laptop. A task needing a desktop-only source never runs on the VPS. Putting the laptop to sleep hands its tasks and connections to the VPS, and a moved coding task keeps its worktree edits. A forced takeover after typed confirmation stops the old instance when it reconnects, and its unsent intents are reconciled before any resend.
+
+## Phase 1 status
+
+Implemented:
+
+- **The same service runs headless on Linux.** Data lives in `$XDG_DATA_HOME/memyselfai` by default. `--port` fixes the port for SSH tunnels. `--launch-file` writes the one-time dashboard link to a file readable only by its owner. `SIGUSR1` issues a fresh link. `--bind` is meant for containers whose port is published on loopback.
+- **Encrypted credential store** (`vault.py`). Where macOS Keychain is unavailable, connector credentials are sealed with AES-256-GCM. Each record is bound to its identity, so a ciphertext cannot be reused for another identity. The key comes from a systemd credential, a key file, or a `0600` file created in the data directory. The store needs the `cryptography` package.
+- **Docker image and compose file.** The image runs as a non-root user, keeps everything persistent in one volume and publishes the port on loopback only. **A systemd installer** (`deploy/install-vps.sh`) adds a dedicated user, sandboxing directives and a host-bound encrypted credential when `systemd-creds` is available. `deploy/vps-open.sh` opens the tunnel and a fresh link.
+
+Still open in phase 1:
+
+- Verifying Google browser sign-in on a server.
+- The systemd installer has been syntax-checked and run in a container without systemd. It has not been run on a real systemd host.
 
 ## Future work: organisation gateway
 

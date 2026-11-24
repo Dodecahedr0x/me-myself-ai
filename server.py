@@ -9,18 +9,26 @@ import mimetypes
 import os
 from pathlib import Path
 import secrets
+import signal
 import subprocess
 import sys
 import threading
 from urllib.parse import urlsplit
 
 import app_mcp
+import connectors
 import worker
 from engine import Engine
 from connectors import SCHEMAS
 
 UI = Path(__file__).resolve().parent / "ui"
-DEFAULT_DATA = Path.home() / "Library/Application Support/MeMyselfAI"
+def default_data():
+    if sys.platform == "darwin":
+        return Path.home() / "Library/Application Support/MeMyselfAI"
+    return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "memyselfai"
+
+
+DEFAULT_DATA = default_data()
 
 
 _folder_picker_lock = threading.Lock()
@@ -53,8 +61,10 @@ end try'''
 class HTTP(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, engine, port=0):
-        super().__init__(("127.0.0.1", port), Handler)
+    def __init__(self, engine, port=0, bind="127.0.0.1"):
+        # Inside a container the service binds all interfaces, and the container's port is published
+        # on the host's loopback only. The dashboard origin stays http://127.0.0.1:<port>.
+        super().__init__((bind, port), Handler)
         self.engine = engine
         self.session = secrets.token_urlsafe(32)
         self.csrf = secrets.token_urlsafe(32)
@@ -180,22 +190,55 @@ class Handler(BaseHTTPRequestHandler):
             self.output(500, b'{"error":"The action failed. Inspect the activity history."}')
 
 
+def write_private(path, text):
+    temporary = Path(str(path) + ".tmp")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    os.replace(temporary, path)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA)
     parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--bind", default="127.0.0.1",
+                        help="Listen address. Use 0.0.0.0 only inside a container published on loopback.")
+    parser.add_argument("--launch-file", type=Path,
+                        help="Also write the one-time dashboard link to this file, readable only by you.")
     args = parser.parse_args()
     os.umask(0o077)
     args.data.mkdir(parents=True, exist_ok=True)
+    source = connectors.configure_secrets(args.data)
+    if source:
+        print(f"Credentials: encrypted file store, key from {source}.", file=sys.stderr, flush=True)
     with (args.data / "app.lock").open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             sys.exit("This workspace is already open.")
         engine = Engine(args.data)
-        server = HTTP(engine, args.port)
+        server = HTTP(engine, args.port, args.bind)
         engine.start()
-        print(server.launch_url, flush=True)
+
+        def announce():
+            # With a link file, keep the one-time link out of service logs.
+            if args.launch_file:
+                write_private(args.launch_file, server.launch_url + "\n")
+                print(f"Dashboard link written to {args.launch_file}", flush=True)
+            else:
+                print(server.launch_url, flush=True)
+
+        announce()
+
+        def new_link(*_):
+            # SIGUSR1 replaces the one-time link, for example to open the dashboard in another browser.
+            server.ticket = secrets.token_urlsafe(32)
+            server.launch_url = server.origin + "/launch/" + server.ticket
+            announce()
+
+        if hasattr(signal, "SIGUSR1"):
+            signal.signal(signal.SIGUSR1, new_link)
         try:
             server.serve_forever()
         finally:

@@ -13,6 +13,8 @@ open build/MeMyselfAI.app
 
 For the browser interface, run `./scripts/run-local.sh` and open the one-time local URL it prints. Closing the desktop window leaves the agent running. Quit MeMyselfAI to stop it.
 
+To run it on a Linux server instead, with Docker or systemd, see [Running MeMyselfAI on a VPS](docs/vps.md).
+
 ## Try the workflow
 
 To use the app on itself, open **Tasks → Improve MeMyselfAI**. **Run checks** exercises the installed dashboard request handlers and GitHub bug workflow against fixtures. **Report a finding** captures a problem you observed. Both put the result in the **MeMyselfAI** project. A failed check links directly to its finding.

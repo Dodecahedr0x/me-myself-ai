@@ -1,0 +1,23 @@
+# Headless MeMyselfAI. Create the credential key first:
+#   (umask 077 && openssl rand -hex 32 > vault.key)
+# Then: docker compose up -d --build. See docs/vps.md.
+services:
+  memyselfai:
+    build: .
+    restart: unless-stopped
+    ports:
+      # Loopback only. Reach the dashboard through an SSH tunnel, never a public port.
+      - "127.0.0.1:8801:8801"
+    volumes:
+      - memyselfai-data:/data
+    environment:
+      MEMYSELFAI_VAULT_KEY_FILE: /run/secrets/memyselfai-vault-key
+    secrets:
+      - memyselfai-vault-key
+
+volumes:
+  memyselfai-data:
+
+secrets:
+  memyselfai-vault-key:
+    file: ./vault.key

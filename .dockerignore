@@ -1,0 +1,9 @@
+.git
+.claude
+build
+tests
+docs
+desktop
+vault.key
+*.pyc
+__pycache__

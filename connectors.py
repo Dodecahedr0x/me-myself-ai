@@ -4,9 +4,11 @@ import ctypes
 import datetime as dt
 import imaplib
 import json
+import os
 import re
 import smtplib
 import ssl
+import sys
 import time
 import threading
 
@@ -155,6 +157,29 @@ class _Keychain:
                 self.cf.CFRelease(item)
 
 
+_vault = None
+
+
+def configure_secrets(root):
+    """Use the encrypted file store where macOS Keychain is unavailable, such as on a Linux VPS."""
+    global _vault
+    if sys.platform == "darwin" and not os.environ.get("MEMYSELFAI_FILE_VAULT"):
+        return None
+    import vault
+
+    _vault = vault.FileVault(root)
+    return _vault.source
+
+
+def _store():
+    if _vault is not None:
+        return _vault
+    try:
+        return _Keychain()
+    except OSError as exc:
+        raise RuntimeError("The credential store is not configured on this instance.") from exc
+
+
 OAUTH_PREFIX = "memyselfai:oauth:v1:"
 _key_locks = [threading.RLock() for _ in range(32)]
 
@@ -167,16 +192,16 @@ def store_secret(identity, secret):
     if not isinstance(secret, str) or not secret or re.search(r"[\x00\r\n]", secret):
         raise ValueError("Enter a valid credential.")
     with _key_lock(identity):
-        _Keychain().access("store", identity, secret)
+        _store().access("store", identity, secret)
 
 
 def delete_secret(identity):
     with _key_lock(identity):
-        _Keychain().access("delete", identity)
+        _store().access("delete", identity)
 
 
 def _secret(identity):
-    return _Keychain().access("read", identity)
+    return _store().access("read", identity)
 
 
 def github_credential(conn):
