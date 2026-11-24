@@ -99,6 +99,16 @@ This is the same for every task type: email replies, chat replies, calendar resp
 - **Updates.** Each morning at a time the user sets (default 08:30), Hermes posts a digest: what it found and dispatched, what finished, what is stuck, and what needs the user. It also posts when a task it dispatched finishes or fails. The user can mute digests or change their time.
 - Instructions the user gives become entries in Hermes' memory or skills. Both are shown with their revision history and can be reverted.
 
+### Message format and actions
+
+Digests, reports and replies are short, scannable and end in things the user can do in the app. Implemented in `orchestrator.py` (`FORMAT`, `task_refs`) and `ui/app.js` (`chatThread`, `chatActions`).
+
+- **Shape.** Hermes is told to write Markdown for a narrow chat panel. It opens with one sentence saying the most important thing. Bold labels on their own line follow: **Needs you**, **Stuck**, **Done** and **In progress**, in that order. Empty sections are left out. There are no `#` headings, tables or sign-off, and the message stays under about 200 words. A plain question gets a plain answer in the same style.
+- **Task links.** Every task Hermes mentions is a link written `[title](task:<id>)`, with the id taken from `list_tasks` or `read_task`. Under **Needs you**, each item starts with the verb the user acts with in the app (Approve, Answer, Retry, Record the outcome, Allow folder access) and says in a few words why.
+- **Validation.** When a message is stored, the app keeps the ids of links that name an existing task, in order, at most 12. A link to an unknown id renders as plain text, so Hermes cannot invent a target. The digest also lists every task that needs the user when it is written (approval, question, failure or blocked delivery), even ones Hermes left out, so the digest never misses a decision.
+- **In the chat.** A `task:` link renders as an inline button that opens the task: in the Inbox when it needs attention, otherwise in its full details. Under each Hermes message, an action card lists the linked tasks with their current status. Each card offers the task's primary action, the same one the Inbox shows (**Review & approve**, **Answer**, **Allow folder access**, **Retry**, **Record outcome**), plus **Open**. A finished or closed task shows only **Open**. Actions use the existing task controls, so approving still opens the exact version for confirmation and a stale version is refused.
+- Only Hermes messages get `task:` links and action cards. Task bodies, questions and activity text keep the stricter renderer that allows web links only.
+
 ## Discovery passes
 
 The sweep and the daily project pass in [proactive discovery](proactive-discovery.md) run as prompts to Hermes. The app sends them on its own schedule. The safety limit, deduplication and dismissal learning are enforced by the app's tools, not left to Hermes. When Hermes is unavailable, the existing fresh-CLI discovery continues, and the orchestrator section says why Hermes is waiting.
@@ -114,6 +124,8 @@ The sweep and the daily project pass in [proactive discovery](proactive-discover
 - A fixture email telling the orchestrator to send a reply produces at most a dispatched task whose send goes through review. The connector records zero writes before approval.
 - Asking "What's on my plate this week?" returns an answer grounded in fixture tasks, with references. Asking for work dispatches it.
 - The morning digest posts once a day at the set time on whichever instance owns the orchestrator, including after ownership moves.
+- A digest whose text links one task with `task:<id>` and a made-up id stores only the real id, plus every task awaiting approval, an answer, a retry or a delivery outcome. In the chat the made-up link is plain text, the real one is a button that opens the task, and the action card under the message offers **Review & approve** for a proposal. Clicking it opens the exact version for confirmation.
+- Digests and replies follow the shape above: a lead sentence, bold section labels, one bullet per task, no headings or tables.
 - Editing Hermes' memory on one instance appears on the other. Reverting a revision restores the earlier text.
 - Updating to a broken fixture Hermes version rolls back automatically.
 

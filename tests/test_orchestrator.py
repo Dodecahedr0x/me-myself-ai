@@ -24,6 +24,10 @@ toolsets = args[args.index("-t") + 1].split(",")
 assert "memyselfai" in toolsets and not {"terminal", "file", "browser", "web", "messaging"} & set(toolsets)
 home = os.environ["HERMES_HOME"]
 mode = json.load(open(os.path.join(home, "fake.json")))
+if mode.get("reply"):
+    assert "task:ID" in prompt and "**Needs you**" in prompt
+    print(mode["reply"])
+    sys.exit(0)
 if mode.get("dump"):
     # Hermes driven as a subprocess records the provider's refusal in a request dump.
     os.makedirs(os.path.join(home, "sessions"), exist_ok=True)
@@ -167,6 +171,21 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(roles[1][0], "hermes")
         self.assertIn("What is on my plate this week?", roles[1][1])
         self.assertFalse(self.orch.config()["pending"])
+
+    def test_messages_link_only_real_tasks_and_the_digest_lists_what_needs_the_user(self):
+        base = dict(project="", body="", source="local", created=self.now)
+        for ident, status in (("a1", "review"), ("b2", "question"), ("c3", "done"), ("d4", "failed")):
+            self.db.put("tasks", dict(base, id=ident, title="Task " + ident, status=status, version=1))
+        reply = ("Two things need you.\n\n**Needs you**\n- Approve [Task a1](task:a1): reply is ready.\n"
+                 "- Answer [Made up](task:zz9).\n\n**Done**\n- [Task c3](task:c3)")
+        self.mode({"reply": reply})
+        self.orch.ask("What's on my plate?")
+        self.orch.run("prompt")
+        message = self.orch.messages()[-1]
+        self.assertEqual((message["role"], message["tasks"]), ("hermes", ["a1", "c3"]))
+        self.assertIn("task:zz9", message["text"])
+        self.orch.run("digest")
+        self.assertEqual(self.orch.messages()[-1]["tasks"], ["a1", "c3", "b2", "d4"])
 
     def test_failure_backs_off_and_answers_the_user(self):
         self.mode({"fail": True})

@@ -231,7 +231,7 @@ const chatPrompts = [
 ];
 function reportPrompt() {
   const span=reportPeriod==="today"?"today":"over the last "+reportPeriods[reportPeriod][0];
-  return "Report on my activity "+span+": what came in, what you dispatched, what finished, what failed and what is waiting for me.";
+  return "Report on my activity "+span+": what came in, what you dispatched, what finished, what failed and what is waiting for me. Link each task and lead with what I need to do.";
 }
 function dayStart(offset=0) {
   const d=new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()-offset); return d.getTime()/1000;
@@ -304,9 +304,27 @@ function chatThread() {
   if (!o) return empty("Hermes is not available on this instance.");
   const who={user:"You",hermes:"Hermes",app:"MeMyselfAI"};
   const messages=(o.messages||[]).map(m=>'<div class="chat-msg '+esc(m.role)+'"><div class="chat-meta"><strong>'+esc(who[m.role]||m.role)+'</strong><time title="'+esc(fullDate(m.at))+'">'+esc(relativeDate(m.at))+'</time></div>'+
-    (m.role==="user"?'<p class="message-text">'+esc(m.text)+'</p>':'<div class="markdown-body">'+taskMarkdown.render(plain(m.text))+'</div>')+'</div>').join("");
+    (m.role==="user"?'<p class="message-text">'+esc(m.text)+'</p>':m.role==="hermes"?'<div class="markdown-body">'+chatMarkdown.render(plain(m.text),{tasks:(m.tasks||[]).map(String)})+'</div>'+chatActions(m.tasks):'<div class="markdown-body">'+taskMarkdown.render(plain(m.text))+'</div>')+'</div>').join("");
   const typing=o.pending||chatSending?'<div class="chat-msg hermes typing" aria-label="Hermes is answering"><span></span><span></span><span></span></div>':"";
   return messages+typing || '<div class="chat-empty">'+icon("review",22)+'<p>Ask Hermes what is on your plate, why a task is stuck, or for a report on your activity. It reads your connected accounts and can start tasks. Anything it prepares to send still waits for your approval.</p></div>';
+}
+// One card per task a Hermes message links, with its current status and primary action.
+// See docs/specs/hermes-orchestrator.md#message-format-and-actions.
+function chatActions(ids) {
+  const tasks=(ids||[]).map(findTask).filter(Boolean);
+  if (!tasks.length) return "";
+  return '<ul class="chat-actions" aria-label="Tasks in this message">'+tasks.map(t=>{
+    const id='data-id="'+esc(t.id)+'"', primary=taskPrimary(t);
+    return '<li><button type="button" class="task-ref" data-action="chat-open-task" '+id+'>'+esc(t.title)+'</button>'+inboxPill(t)+
+      '<span class="chat-action-buttons">'+(primary?button(primary[1],primary[0],primary[2],"primary",id):"")+button("Open","chat-open-task",null,"quiet",id)+'</span></li>';
+  }).join("")+'</ul>';
+}
+function openTaskFromChat(id) {
+  const t=findTask(id); if (!t) return;
+  if (!inboxKind(t)) { showDialog("detail",t.title,detailTask(t),{task:t,signature:JSON.stringify(t)}); return; }
+  inboxFilter="all";
+  if (activeView!=="inbox") location.hash="inbox";
+  selectInboxTask(t.id);
 }
 function chatComposer() {
   const busy=!!(state.orchestrator?.pending||chatSending), off=!state.orchestrator;
@@ -959,10 +977,14 @@ function inboxCallout(t) {
   }
   return "";
 }
+const primaryActions={review_proposal:["Review & approve","inspect"],answer:["Answer","reply"],"folder-access":["Allow folder access","projects"],retry:["Retry","sync"],reconcile:["Record outcome","check"]};
+function taskPrimary(t, names=taskActionNames(t)) {
+  const first=names.find(n=>primaryActions[n] && !(n==="answer" && t.answer_choices?.length) && !(n==="retry" && t.status!=="failed"));
+  return first?[first,...primaryActions[first]]:null;
+}
 function inboxActions(t) {
-  const id='data-id="'+esc(t.id)+'"', names=taskActionNames(t);
-  const primary={review_proposal:["Review & approve","inspect"],answer:["Answer","reply"],"folder-access":["Allow folder access","projects"],retry:["Retry","sync"],reconcile:["Record outcome","check"]};
-  const first=names.find(n=>primary[n] && !(n==="answer" && t.answer_choices?.length) && !(n==="retry" && t.status!=="failed"));
+  const id='data-id="'+esc(t.id)+'"', names=taskActionNames(t), primary=primaryActions;
+  const first=taskPrimary(t,names)?.[0];
   const buttons=names.filter(n=>n!=="feedback").map(n=>{
     const [,glyph,key]=taskShortcuts[n], [label]=n===first?primary[n]:taskShortcuts[n];
     return button(label,n,glyph,n===first?"primary":"secondary",id+' aria-keyshortcuts="'+key+'" title="'+esc(label)+' ('+key+')"');
@@ -1576,6 +1598,7 @@ function handleAction(el) {
     case "chat-report": void sendChat(reportPrompt()); return;
     case "chat-quick": void sendChat(el.dataset.text); return;
     case "chat-focus": $("#chat-text")?.focus(); return;
+    case "chat-open-task": openTaskFromChat(id); return;
     case "orchestrator-run": void mutate({op:"orchestrator_settings",run_now:true},"Sweep requested."); return;
     case "orchestrator-toggle": void mutate({op:"orchestrator_settings",enabled:!state.orchestrator.enabled},state.orchestrator.enabled?"Orchestrator paused.":"Orchestrator resumed."); return;
     case "agent-sign-in": void signInAgent(el.dataset.agent); return;

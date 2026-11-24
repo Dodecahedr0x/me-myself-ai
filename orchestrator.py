@@ -42,6 +42,17 @@ How to act:
 - A safety limit allows {remaining} more new tasks today. Dispatch the most urgent first.
 - Keep your final answer short: what you dispatched and why, in plain sentences."""
 
+# How digests, reports and replies are written. See docs/specs/hermes-orchestrator.md#message-format-and-actions.
+FORMAT = """Write your answer as Markdown for a narrow chat panel in the app. The user reads it in seconds.
+- Open with one sentence that says the most important thing.
+- Then sections, each a bold label on its own line, in this order: **Needs you**, **Stuck**, **Done**,
+  **In progress**. Leave out empty sections. One bullet per task. No # headings, no tables, no sign-off.
+- Link every task you mention as [task title](task:ID), with its id from list_tasks or read_task.
+  Never invent an id; mention something without a task in plain text.
+- Under **Needs you**, start each bullet with what the user does in the app: Approve, Answer, Retry,
+  Record the outcome or Allow folder access, then say why in a few words. Do not ask what they want.
+- Stay under 200 words. A simple question gets a short answer in the same style."""
+
 PURPOSES = {
     "sweep": """Sweep: search recent activity for unanswered requests, promises the user made, and
 deadlines. Dispatch each one as above.
@@ -61,12 +72,21 @@ whose work is done. Then call schedule_list and cancel inferred schedules whose 
 Leave schedules with origin user unless the user asked to stop them. Answer with a one-line summary.""",
     "digest": """Morning digest: review today's tasks and recent activity. Write a short update for the
 user: what you dispatched, what finished, and what is stuck. Mention only what genuinely needs them,
-such as a reply waiting for their approval. Post it with post_update and also return it as your answer.""",
+such as a reply waiting for their approval. Post it with post_update and also return it as your answer.
+""" + FORMAT,
     "prompt": """The user wrote to you. Answer them using the workspace tools. If they ask for work to be
-done, dispatch it. Recent conversation, oldest first:
+done, dispatch it.
+
+""" + FORMAT + """
+
+Recent conversation, oldest first:
 {thread}
 User: {text}""",
 }
+
+TASK_LINK = re.compile(r"\]\(task:([A-Za-z0-9_-]{1,200})\)")
+ATTENTION = ("review", "question", "failed", "uncertain")
+MAX_REFS = 12
 
 
 class Orchestrator:
@@ -96,9 +116,22 @@ class Orchestrator:
     def messages(self):
         return sorted(self.db.rows("orchestrator_thread"), key=lambda m: m["at"])
 
-    def add_message(self, role, text):
+    def task_refs(self, text, attention=False):
+        """Ids of real tasks linked as task:<id>, in order; with attention, every task that needs the user."""
+        refs = []
+        for ident in TASK_LINK.findall(text):
+            if ident not in refs and self.db.get("tasks", ident):
+                refs.append(ident)
+        if attention:
+            waiting = sorted((t for t in self.db.rows("tasks") if t["status"] in ATTENTION),
+                             key=lambda t: t["created"], reverse=True)
+            refs += [t["id"] for t in waiting if t["id"] not in refs]
+        return refs[:MAX_REFS]
+
+    def add_message(self, role, text, tasks=()):
         with self.db.atomic():
-            self.db.put("orchestrator_thread", dict(id=uuid.uuid4().hex, at=self.engine.now(), role=role, text=text))
+            self.db.put("orchestrator_thread", dict(id=uuid.uuid4().hex, at=self.engine.now(), role=role, text=text,
+                                                    tasks=list(tasks)))
             rows = self.messages()
             for old in rows[: max(0, len(rows) - THREAD_LIMIT)]:
                 self.db.delete("orchestrator_thread", old["id"])
@@ -273,10 +306,10 @@ class Orchestrator:
         elif purpose == "digest":
             local = datetime.datetime.fromtimestamp(self.engine.now()).astimezone()
             changes.update(last_digest=local.date().isoformat())
-            self.add_message("hermes", answer[:8000])
+            self.add_message("hermes", answer[:8000], self.task_refs(answer[:8000], attention=True))
         else:
             changes.update(pending="")
-            self.add_message("hermes", answer[:8000])
+            self.add_message("hermes", answer[:8000], self.task_refs(answer[:8000]))
         self.save(**changes)
 
     def logged_error(self, since):
