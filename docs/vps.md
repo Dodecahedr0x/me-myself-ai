@@ -1,6 +1,6 @@
 # Running MeMyselfAI on a VPS
 
-A VPS instance runs the same service as the Mac app, without a window. It keeps polling your accounts, running the orchestrator and working on tasks while your laptop is closed. You reach its dashboard through an SSH tunnel. The service never opens a public port. This is phase 1 of [instances, sync and sharing work](specs/instances-and-sync.md). A VPS and a laptop do not sync with each other yet.
+A VPS instance runs the same service as the Mac app, without a window. It keeps polling your accounts, running the orchestrator and working on tasks while your laptop is closed. You reach its dashboard through an SSH tunnel. The service never opens a public port. It can also pair with the Mac app so both share one workspace. See [pairing with your laptop](#pairing-with-your-laptop) and [instances, sync and sharing work](specs/instances-and-sync.md).
 
 Requirements: a Linux server you control with at least 2 GB of memory, SSH access, and either Docker or a Debian or Ubuntu system with systemd. Put the server's disk on encrypted storage if your provider offers it. Activity and drafts are stored on it in plain SQLite.
 
@@ -12,7 +12,7 @@ On the server, from a checkout of this repository:
 sudo ./deploy/install-vps.sh
 ```
 
-The script installs Python 3, the `cryptography` package, Git and Node.js. It creates a `memyselfai` system user, copies the app to `/opt/memyselfai` and keeps the workspace in `/var/lib/memyselfai/workspace`. It then starts `memyselfai.service` on loopback port 8801. Running it again updates the code and keeps your data.
+The script installs Python 3, the `cryptography` package, Git and Node.js. It creates a `memyselfai` system user, copies the app to `/opt/memyselfai` and keeps the workspace in `/var/lib/memyselfai/workspace`. It then starts `memyselfai.service` on loopback port 8801, with the sync listener on port 8802. Set `MEMYSELFAI_SYNC_PORT=` (empty) to leave sync off. Running it again updates the code and keeps your data.
 
 Connector credentials are stored in `vault.json` in the workspace, encrypted with AES-256-GCM. The key is a systemd credential, `memyselfai-vault-key`. When `systemd-creds` is available, the key is stored encrypted in `/etc/credstore.encrypted` and bound to this host's TPM or credential secret. Otherwise it is a root-only file in `/etc/credstore`. Back up the key with the workspace. Without it, the stored credentials cannot be read, and you would need to reconnect the accounts.
 
@@ -24,7 +24,7 @@ git clone <this repository> memyselfai && cd memyselfai
 docker compose up -d --build
 ```
 
-The container runs as user 10001. The workspace, the agent CLIs you install and their sign-ins live in the `memyselfai-data` volume. The port is published on the server's loopback only. `vault.key` is the credential key: keep it out of the repository (it is ignored) and back it up.
+The container runs as user 10001. The workspace, the agent CLIs you install and their sign-ins live in the `memyselfai-data` volume. The dashboard port is published on the server's loopback only. The sync port 8802 is public. `vault.key` is the credential key: keep it out of the repository (it is ignored) and back it up.
 
 ## Opening the dashboard
 
@@ -55,6 +55,18 @@ docker compose exec -it memyselfai claude auth login
 
 Install Hermes with its own installer as the same user, then use the **Sign in** command shown in Settings → Agents. On Linux, Claude Code stores its login in `~/.claude/.credentials.json`, which Hermes also reads. Logins on the VPS are separate from your Mac's.
 
+## Pairing with your laptop
+
+The VPS accepts paired instances on port 8802. Allow that port in the server's firewall. Only instances you pair get past the pairing step, and all sync traffic uses mutual TLS with pinned certificates. Your laptop dials out, so it needs no open port.
+
+1. In the VPS dashboard, open Settings → Instances and choose **Add instance**. A code appears. It works once, for 10 minutes.
+2. In the Mac app, open Settings → Instances, choose **Join** and enter `your-server:8802` and the code.
+3. Back in the VPS dashboard, check that the fingerprint shown for the laptop matches the one the laptop shows for itself. Then choose **Confirm**.
+
+Tasks, projects, rules, activity and logins from the app's credential store now sync both ways within seconds. Each task, connection and the orchestrator has one owner instance, shown on its row. Only the owner works on it, polls it or sends for it. To let the VPS poll your accounts while the laptop sleeps, choose **Hand over connections** on the VPS row. **Take connections back** reverses it. Approving a draft on either instance sends it from the task's owner.
+
+Logins held by other tools do not sync: `gh` sign-ins, Google sign-ins through a browser profile, and AI subscriptions. Sign those in on each instance. **Remove** stops syncing with an instance and rotates the workspace key. The removed instance keeps the logins it had, so reconnect each account afterwards to revoke them.
+
 ## What works on a VPS today
 
 | Feature | VPS |
@@ -65,4 +77,4 @@ Install Hermes with its own installer as the same user, then use the **Sign in**
 | Google browser sign-in | Not yet verified. The consent page opens a browser on the server. Use IMAP mail meanwhile. |
 | Local folders, frontmost app, Claude and ChatGPT desktop chats | No. These are Mac-only sources. |
 | Native folder picker | No. Type repository paths on the server instead. |
-| Sync with your Mac | Not yet (phase 2) |
+| Sync with your Mac | Yes: pairing, shared tasks and logins, handing over connections and the orchestrator. Automatic splitting by capacity is phase 3. |

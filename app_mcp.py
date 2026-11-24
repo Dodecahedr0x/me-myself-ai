@@ -292,16 +292,43 @@ class Tools:
             existing = self.db.get("tasks", e["id"])
             if existing:
                 return {"status": "exists", "task": existing["id"], "task_status": existing["status"]}
+            if not self.engine.owns("connection:" + c["id"]):
+                # Only the connection's owner creates tasks from its evidence. It picks this up after sync.
+                if self.db.get("dispatch_requests", e["id"]):
+                    return {"status": "exists", "task": e["id"], "task_status": "forwarded"}
+                self.spend(session)
+                self.db.put("dispatch_requests", dict(
+                    id=e["id"], connection=c["id"], type=kind, title=title, body=body, project=project,
+                    role=session.role, done=False))
+                return {"status": "forwarded", "task": e["id"],
+                        "owner": self.engine.instances.owner_name("connection:" + c["id"])}
             self.spend(session)
-            raw = e["raw"]
-            self.engine.new_task(
-                title, project, body, id=e["id"], event=e["id"], source=c["kind"],
-                kind=TASK_TYPES[kind]["kind"], task_type=kind, reason="Dispatched by the orchestrator",
-                origin=session.role,
-                account=raw["account"], destination=raw["destination"], url=raw.get("url", ""),
-            )
+            self._create(e, c, kind, title, body, project, session.role)
         self.engine.wake.set()
         return {"status": "queued", "task": e["id"]}
+
+    def _create(self, e, c, kind, title, body, project, role):
+        raw = e["raw"]
+        self.engine.new_task(
+            title, project, body, id=e["id"], event=e["id"], source=c["kind"],
+            kind=TASK_TYPES[kind]["kind"], task_type=kind, reason="Dispatched by the orchestrator",
+            origin=role, account=raw["account"], destination=raw["destination"], url=raw.get("url", ""),
+        )
+
+    def fulfil(self, request_id):
+        """On the connection's owner: create the task another instance's orchestrator dispatched."""
+        with self.engine.dispatch_lock, self.db.atomic():
+            request = self.db.get("dispatch_requests", request_id)
+            if not request or request.get("done") or not self.engine.owns("connection:" + request["connection"]):
+                return
+            e = self.db.get("events", request_id)
+            c = self.db.get("connections", request["connection"])
+            if e and c and not self.db.get("tasks", request_id):
+                known = any(p["name"] == request["project"] for p in self.db.rows("projects"))
+                project = request["project"] if known else e.get("project") or self.engine.global_project
+                self._create(e, c, request["type"], request["title"], request["body"], project, request["role"])
+            self.db.put("dispatch_requests", {**request, "done": True})
+        self.engine.wake.set()
 
     def post_update(self, session, args):
         self.db.log("Orchestrator update", _text(args, "text", 4000))

@@ -5,9 +5,13 @@ services:
   memyselfai:
     build: .
     restart: unless-stopped
+    # A minimal init as PID 1 reaps the agent CLIs' child processes when they are stopped.
+    init: true
     ports:
       # Loopback only. Reach the dashboard through an SSH tunnel, never a public port.
       - "127.0.0.1:8801:8801"
+      # Sync with your paired instances. Mutual TLS; only paired instances get past pairing.
+      - "8802:8802"
     volumes:
       - memyselfai-data:/data
     environment:

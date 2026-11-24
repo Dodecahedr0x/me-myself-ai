@@ -5,6 +5,8 @@
 set -eu
 
 PORT="${MEMYSELFAI_PORT:-8801}"
+# Paired instances connect here with mutual TLS. Set MEMYSELFAI_SYNC_PORT= (empty) to turn it off.
+SYNC_PORT="${MEMYSELFAI_SYNC_PORT-8802}"
 APP=/opt/memyselfai
 HOME_DIR=/var/lib/memyselfai
 DATA="$HOME_DIR/workspace"
@@ -76,7 +78,7 @@ Environment=HOME=$HOME_DIR
 Environment=NPM_CONFIG_PREFIX=$HOME_DIR/.local
 Environment=PATH=$HOME_DIR/.local/bin:/usr/local/bin:/usr/bin:/bin
 $KEY_LINE
-ExecStart=/usr/bin/env python3 -B $APP/server.py --data $DATA --port $PORT --launch-file $DATA/launch-url
+ExecStart=/usr/bin/env python3 -B $APP/server.py --data $DATA --port $PORT --launch-file $DATA/launch-url${SYNC_PORT:+ --sync-port $SYNC_PORT}
 Restart=on-failure
 RestartSec=5
 UMask=0077
@@ -106,7 +108,8 @@ rm -rf "$APP.old"
 
 cat <<EOF
 
-MeMyselfAI is running on this server's loopback port $PORT.
+MeMyselfAI is running on this server's loopback port $PORT.${SYNC_PORT:+
+Paired instances reach it on port $SYNC_PORT. Allow that port in your firewall to sync with your laptop.}
 
 From your computer:
   ./deploy/vps-open.sh <user>@<this-server>

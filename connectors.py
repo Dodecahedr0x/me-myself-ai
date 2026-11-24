@@ -180,6 +180,9 @@ def _store():
         raise RuntimeError("The credential store is not configured on this instance.") from exc
 
 
+# Set by the sync layer so logins reach paired instances, sealed with the workspace key.
+secret_listener = None
+
 OAUTH_PREFIX = "memyselfai:oauth:v1:"
 _key_locks = [threading.RLock() for _ in range(32)]
 
@@ -193,11 +196,15 @@ def store_secret(identity, secret):
         raise ValueError("Enter a valid credential.")
     with _key_lock(identity):
         _store().access("store", identity, secret)
+    if secret_listener:
+        secret_listener(identity, secret)
 
 
 def delete_secret(identity):
     with _key_lock(identity):
         _store().access("delete", identity)
+    if secret_listener:
+        secret_listener(identity, None)
 
 
 def _secret(identity):

@@ -206,6 +206,9 @@ def main():
                         help="Listen address. Use 0.0.0.0 only inside a container published on loopback.")
     parser.add_argument("--launch-file", type=Path,
                         help="Also write the one-time dashboard link to this file, readable only by you.")
+    parser.add_argument("--sync-port", type=int,
+                        help="Accept paired instances on this port (mutual TLS). Off unless set.")
+    parser.add_argument("--sync-bind", default="0.0.0.0", help="Listen address for --sync-port.")
     args = parser.parse_args()
     os.umask(0o077)
     args.data.mkdir(parents=True, exist_ok=True)
@@ -220,6 +223,10 @@ def main():
         engine = Engine(args.data)
         server = HTTP(engine, args.port, args.bind)
         engine.start()
+        if args.sync_port:
+            port = engine.instances.listen(args.sync_bind, args.sync_port, capacity=engine.capacity)
+            print(f"Sync listener on {args.sync_bind}:{port}, fingerprint {engine.instances.fingerprint}",
+                  file=sys.stderr, flush=True)
 
         def announce():
             # With a link file, keep the one-time link out of service logs.

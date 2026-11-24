@@ -25,5 +25,5 @@ COPY --chown=root:root deploy/container-start.sh /app/container-start.sh
 
 USER memyselfai
 VOLUME /data
-EXPOSE 8801
+EXPOSE 8801 8802
 CMD ["/bin/sh", "/app/container-start.sh"]

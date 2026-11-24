@@ -1,6 +1,6 @@
 # Instances, sync and sharing work
 
-**Status** — Draft. Phase 1 (headless Linux service) is implemented. See [phase 1 status](#phase-1-status) and the [VPS guide](../vps.md). Covers [US-25 through US-29](../user-stories.md). Changes the "one process owns a data directory" rule in the [desktop runtime](desktop-runtime.md). That rule still holds per instance, but several instances can now share one workspace.
+**Status** — Draft. Phase 1 (headless Linux service) and phase 2 (pairing, sync and ownership) are implemented as described in [phase 2 design](#phase-2-design). See [phase 1 status](#phase-1-status), [phase 2 status](#phase-2-status) and the [VPS guide](../vps.md). Phase 3 is planned. Covers [US-25 through US-29](../user-stories.md). Changes the "one process owns a data directory" rule in the [desktop runtime](desktop-runtime.md). That rule still holds per instance, but several instances can now share one workspace.
 
 ## Intent
 
@@ -209,6 +209,64 @@ Still open in phase 1:
 
 - Verifying Google browser sign-in on a server.
 - The systemd installer has been syntax-checked and run in a container without systemd. It has not been run on a real systemd host.
+
+## Phase 2 design
+
+This section fixes the details phase 2 implements. Where it narrows the sections above, it wins until phase 3.
+
+**Transport.** An instance that should be reachable starts a sync listener with `--sync-port` (default off). The listener is plain HTTPS with mutual TLS. Each instance has a self-signed P-256 certificate created with `openssl` at first start. Its SHA-256 fingerprint is its identity. The listener trusts only the certificates of paired peers. Everything except the pairing request needs a client certificate from a trusted peer. A laptop has no listener and dials out. One exchange carries changes both ways, so a peer that cannot dial back still receives everything. Instances exchange every 5 seconds and right after a local change.
+
+**Pairing.**
+
+1. **Add instance** on the reachable instance, usually the VPS, shows a code: 120 random bits, valid for 10 minutes, one at a time.
+2. **Join** on the other instance takes the address and the code. It connects, reads the listener's certificate, and sends its own certificate with an HMAC of both fingerprints keyed by the code. The listener checks the proof and answers with a proof of its own. The code is then spent. A man in the middle would have to know the code. Five wrong proofs spend the code too.
+3. Both sides show both fingerprints. The joiner trusts the listener at once, because the code proved it. The listener trusts the joiner only after the user presses **Confirm** there. Until then, its exchanges are refused with "awaiting confirmation".
+4. The workspace key is sent on the first confirmed exchange. Whichever side has the newer key version gives it to the other.
+
+Data on both sides merges. The joiner does not need to be empty.
+
+**The change log.** Once an instance has a peer, every write to synced data also appends a change to its log: origin instance, origin sequence, hybrid logical clock, record, field, value and ownership epoch. Instances exchange log entries by their local sequence. They store and relay entries from third instances, so three instances converge through any connected path. Applying a change is idempotent by origin and sequence. Fields merge by last writer wins on the clock, with ties broken by instance ID. A task's state is a field like any other, so it is not merged from an event log. Ownership makes that safe, because only the owner moves a task's state forward. Activity entries are appended, never merged. When an instance first gains a peer, it writes all its current records to the log as a baseline.
+
+Not synced: the instance's own identity and peers, and the per-instance settings for the AI CLI and the orchestrator's subscription.
+
+**Logins.** Secrets in the app's own credential store, the macOS Keychain or the encrypted file store, travel as `@secret` changes. Each is sealed with the workspace key: an HMAC-SHA256 keystream with a separate HMAC-SHA256 tag over identity, nonce and ciphertext. This uses only the standard library, because the Mac service has no `cryptography` package. The receiver unseals it into its own store. Logins held by other tools do not sync: `gh` sign-ins, Google sign-ins through a browser profile, and AI subscriptions. A connection that relies on one of them polls only from an instance where that login exists. Google browser-profile connections are always desktop-only.
+
+**Ownership records.** The `owners` records hold `{item, owner, epoch}` for `task:<id>`, `connection:<id>` and `orchestrator`. Creating a task or connection writes its owner record before the row, so a peer never sees the row without it. At start, an instance claims any item that has no record and the orchestrator if nobody owns it. Owner records merge by the higher epoch, not by clock. Two records with the same epoch and different owners can arise only when two workspaces that each held the item are paired. The lower instance ID then wins on both sides, and the event is logged.
+
+**Handoff through the log.** Phase 2 makes handoffs records in the synced log, so they work across the one-way dialing path:
+
+1. The owner writes an offer `{item, epoch: current+1, from, to}` and from then on does not act on the item. It offers only an idle item: no agent running and no send in flight.
+2. The receiver sees the offer. If its owner record is at `epoch-1` and the offer is not cancelled, it writes the owner record `{owner: itself, epoch}` and answers `confirmed`. Only then does it act.
+3. If 10 minutes pass with no answer, the owner marks the offer cancelled. The receiver answers `cancel_ack` only if it has not already confirmed. The owner acts again only after it sees `cancel_ack`. If it sees the receiver's higher owner record instead, the handoff happened.
+
+An offer is pending until it is answered `cancel_ack` or the receiver's owner record arrives. While it is pending, neither side acts.
+
+**Fencing.** A change to a task or connection carries the writer's view of the owner epoch. A peer refuses changes with an older epoch than its own record and logs "Refused change from an older owner".
+
+**Checks in the engine.** The scheduler runs agents, polls connections, discovers events and sends only for items this instance owns. It also checks ownership again before saving an agent's result. Events are processed by the owner of their connection. An approval pressed on an instance that does not own the task is recorded for that exact version and synced. The owner then sends that version. When the orchestrator dispatches evidence from a connection another instance owns, it records a dispatch request. The connection's owner creates the task. Before a send, the owner records a send intent on the task: version, epoch and instance. A send that was in progress during a crash becomes `uncertain` at restart, as before. It is reconciled, never resent blindly.
+
+**Instances view.** Settings → Instances shows this instance's name and fingerprint, then each peer: platform, last exchange, slots, agent readiness and the items it owns. It offers **Add instance** (code), **Join**, **Confirm** or **Reject** for a pending peer, **Hand over connections**, **Hand over the orchestrator**, **Take back**, and **Remove**. Removing a peer revokes it on every reachable instance, rotates the workspace key, re-seals every login and flags each connection with **Reconnect to revoke old login**.
+
+**Left to phase 3:** capacity-based handoffs, planned absence, worktree bundles, **Run on…** and **Take over**. Phase 2 also does not sign handoff records with the instance key. Paired instances trust each other fully, and records arrive only over mutual TLS from a paired peer. A refresh token rotated by a non-owner during a send is a known risk until owners refresh on request.
+
+## Phase 2 status
+
+Implemented in `sync.py`, with checks in the engine, the app MCP server and the dashboard:
+
+- Instance identity, pairing with a one-time code, confirmation on the listening instance, and the mutual TLS listener (`--sync-port`). The installer and the Docker image turn the listener on at port 8802.
+- The change log with hybrid logical clocks, per-field last writer wins, relaying through any peer, and a baseline at first pairing. Activity and logins sync. Logins are sealed with the workspace key.
+- Owner records, creation by the connection's owner (dispatch requests), handoffs through the log with the 10-minute cancellation, fencing by epoch, approval relay to the owner, and send intents.
+- Settings → Instances, owner labels on task and connection rows, and Remove with key rotation and reconnect flags.
+
+Verified:
+
+- `tests/test_sync.py`: sealing, log convergence and idempotence, cut-off edits converging to the later one, local-only settings, logins absent from captured exchange bodies, key rotation on remove, handoff, cancellation and the cancel/confirm race, fencing of an older epoch, and move requests.
+- Pairing over real mutual TLS on loopback: matching fingerprints, refusal before confirmation, refused wrong, reused and expired codes, and refusal of an unpaired client certificate.
+- Two full engines: a task runs only on its owner, an approval on the non-owner is sent by the owner, a connection polls only from the VPS after a handoff, and an orchestrator dispatch is forwarded to the connection's owner.
+- The fault harness runs two and three instances for 400 random steps per seed: partitions, crashes (including between send intent and send), offers, timeouts and new items. After every step, no item has two acting owners and no fixture write is sent twice. After healing, every item has exactly one owner. It fails when the owner is allowed to act during an offer, or to resume after cancelling without the receiver's acknowledgement.
+- End to end between this Mac and the Docker image: pairing with a refused wrong code, matching fingerprints, a task in each direction (the first exchange took 10.7 seconds, later ones about 5), a login arriving in the VPS encrypted store with no plaintext in `vault.json`, and a connection polled by the VPS right after it took ownership at epoch 2.
+
+Not verified yet: pairing across the internet to a real VPS, sync behaviour on large workspaces (the baseline sends every record and activity entry), and the Instances view in a browser.
 
 ## Future work: organisation gateway
 

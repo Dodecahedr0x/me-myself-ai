@@ -90,7 +90,7 @@ function taskContext(t) {
   const name = provider === "github" ? "GitHub" : titleCase(provider);
   const source = [name, origin.workspace, origin.channel || origin.account].filter(Boolean).join(" · ");
   const repository = origin.repository || t.repository || (evidence?.source === "Git" && evidence.folder);
-  return [["Project", t.project], ["Repository", repository], ["Source", source]].filter(([, value])=>value);
+  return [["Project", t.project], ["Repository", repository], ["Source", source], ["On", t.owner]].filter(([, value])=>value);
 }
 function contextLine(t) {
   const fields = taskContext(t).map(([label,value])=>
@@ -230,7 +230,7 @@ function connectionsPage() {
   const accounts = state.connections.map(c=>{
     const id='data-id="'+esc(c.id)+'"';
     const browse=c.repositories?button("Browse work","github-work",null,"secondary",id):"";
-    const row=entry(c.kind,c.label||titleCase(c.kind),[c.auth_method==="gh_account"?"":c.identity,c.google_services?.join(", ")||(c.auth_method==="slack_workspace"?(c.channel_count||0)+" channels":titleCase(c.kind)),titleCase(c.status)].filter(Boolean).join(" · "),
+    const row=entry(c.kind,c.label||titleCase(c.kind),[c.auth_method==="gh_account"?"":c.identity,c.google_services?.join(", ")||(c.auth_method==="slack_workspace"?(c.channel_count||0)+" channels":titleCase(c.kind)),titleCase(c.status),c.owner?"Polled by "+c.owner:"",c.reconnect_to_revoke?"Reconnect to revoke the login "+c.reconnect_to_revoke+" kept":""].filter(Boolean).join(" · "),
       logLink(c.id)+browse+button("Configure","connect",null,"secondary",id)+button("Disconnect","disconnect",null,"quiet",id));
     if (!c.repositories) return row;
     return row+'<details class="github-inventory"><summary>'+c.repositories.length+' repositories</summary>'+c.repositories.map(r=>'<p>'+sourceReference("https://github.com/"+r.name,r.name)+' · '+esc(r.status)+'</p>').join("")+'</details>';
@@ -354,10 +354,35 @@ function agentsSection() {
   }).join("");
   return section("Agents",button("Check again","agents","sync","quiet"),rows||empty("Agent status unavailable.",button("Retry","agents","sync")));
 }
+const shortPrint = fp => (fp||"").slice(0,16).match(/.{1,4}/g)?.join(" ")||"";
+function instancesSection() {
+  const inst=state.instances;
+  if (!inst) return "";
+  const self=entry("stack",inst.name+" (this instance)",[titleCase(inst.platform),"Fingerprint "+shortPrint(inst.fingerprint),inst.listening?"Accepts paired instances on port "+inst.listening:"Dials out to paired instances",inst.owns+" items owned",inst.paired?"Orchestrator on "+inst.orchestrator:""].filter(Boolean).join(" · "),
+    button("Rename","instance-rename",null,"quiet")+(inst.listening?button("Add instance","instance-code","add"):"")+button("Join","instance-join",null));
+  const peers=inst.peers.map(p=>{
+    const id='data-peer="'+esc(p.id)+'"', cap=p.capacity||{};
+    const ready=Object.entries(cap.agents||{}).filter(([,v])=>v==="ready").map(([k])=>titleCase(k)).join(", ");
+    const detail=[titleCase(p.platform),p.trusted?(p.state||"Not contacted yet"):"Waiting for your confirmation",p.last_seen?"Last seen "+relativeDate(p.last_seen):"",cap.slots?(cap.free??0)+" of "+cap.slots+" agent slots free":"",ready?"Ready: "+ready:"","Fingerprint "+shortPrint(p.fingerprint),p.owns+" items owned"].filter(Boolean).join(" · ");
+    const controls=!p.trusted
+      ? button("Confirm","instance-confirm",null,"primary",id)+button("Reject","instance-reject",null,"quiet",id)
+      : button("Hand over connections","instance-move",null,"secondary",id+' data-items="connections"')+button("Take connections back","instance-move-back",null,"quiet",id)+button("Hand over orchestrator","instance-move",null,"quiet",id+' data-items="orchestrator"')+button("Remove","instance-remove",null,"quiet",id);
+    return entry("sync",p.name,detail,controls);
+  }).join("");
+  return section("Instances","",self+(peers||'<p class="section-note">Run MeMyselfAI on a VPS too and pair it here. Paired instances share tasks, logins and work, and talk to each other directly.</p>'));
+}
+async function pairingCode() {
+  try {
+    const r=await request("/api/action",{op:"instance_code"});
+    showDialog("pairing","Add instance",'<p>On the other instance, choose <strong>Join</strong> and enter this instance\'s address with this code. It works once, for '+Math.round(r.expires_in/60)+' minutes.</p><p class="pairing-code"><code>'+esc(r.code)+'</code></p><p class="section-note">Then confirm the new instance here after checking that its fingerprint matches.</p>');
+    await refresh();
+  } catch(e) { notify(e.message); }
+}
 function settingsPage() {
   return section("Agent configuration","", entry("shield","Delivery mode",state.settings.dry?"Dry mode · External writes require your approval.":"Live mode · Project decision rules govern delivery.",button("Configure","settings",null))+
       entry("working","Agent provider",Object.hasOwn(providerNames,state.settings.provider)?providerLabel(state.settings.provider):"Choose a provider to prepare tasks.",button("Choose provider","settings",null)+button("Check again","providers","sync","quiet")))+
     agentsSection()+
+    instancesSection()+
     section("Sample workspace","",entry("stack","Load sample work","Add fixture tasks and activity to explore the workspace.",button("Load sample","demo",null)));
 }
 const pages = {overview,tasks:tasksPage,activity:activityPage,connections:connectionsPage,projects:projectsPage,policies:policiesPage,skills:skillsPage,settings:settingsPage};
@@ -747,6 +772,14 @@ function handleAction(el) {
     case "orchestrator-run": void mutate({op:"orchestrator_settings",run_now:true},"Sweep requested."); return;
     case "orchestrator-toggle": void mutate({op:"orchestrator_settings",enabled:!state.orchestrator.enabled},state.orchestrator.enabled?"Orchestrator paused.":"Orchestrator resumed."); return;
     case "agent-sign-in": void signInAgent(el.dataset.agent); return;
+    case "instance-code": void pairingCode(); return;
+    case "instance-join": openForm("instance_join","Join another instance",input("address","Address of the other instance",{required:true,placeholder:"vps.example.com:8802"})+input("code","Pairing code",{required:true,placeholder:"XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"}),"Pair",{},"Pair only machines you control. Paired instances share your logins."); return;
+    case "instance-rename": openForm("instance_rename","Rename this instance",input("name","Name",{required:true,value:state.instances.name}),"Save"); return;
+    case "instance-confirm": void mutate({op:"instance_confirm",peer:el.dataset.peer},"Instance confirmed."); return;
+    case "instance-reject": void mutate({op:"instance_reject",peer:el.dataset.peer},"Pairing rejected."); return;
+    case "instance-move": void mutate({op:"move",items:el.dataset.items,to:el.dataset.peer},"Handoff requested. It completes after the next sync."); return;
+    case "instance-move-back": void mutate({op:"move",items:"connections",to:state.instances.id},"Handoff requested. It completes after the next sync."); return;
+    case "instance-remove": openForm("instance_remove","Remove instance",'<p>'+esc(state.instances.peers.find(p=>p.id===el.dataset.peer)?.name||"This instance")+' stops syncing and the workspace key is rotated. It keeps the logins it already has. Reconnect each account afterwards to revoke them.</p>',"Remove",{peer:el.dataset.peer}); return;
     case "settings": void loadProviders(); openForm("settings","Agent settings",selectField("dry","Delivery mode",[["true","Dry mode — review every external write"],["false","Live mode — follow project rules"]],String(!!state.settings.dry))+providerField()+selectField("orchestrator_subscription","Orchestrator subscription",Object.entries(subscriptionNames),state.settings.orchestrator_subscription||(state.settings.provider==="codex"?"codex":"claude")),"Save settings",{},"In live mode the agent may deliver work without asking when all applicable rules allow it."); return;
     case "connect": {
       const c=state.connections.find(k=>String(k.id)===id), provider=c?.kind||kind, schema=schemas[provider];
@@ -807,7 +840,7 @@ function handleAction(el) {
     case "sync": void mutate({op:action},"Source sync requested."); return;
   }
 }
-const messages={orchestrator_prompt:"Message sent to the orchestrator.",app_finding:"Finding tracked.",chat_source_config:"Chat source saved.",suggestion_config:"Activity sources saved.",task:"Task created.",project:"Project saved.",report:"Investigation requested.",style:"Style preference submitted for review.",rule:"Decision rule saved.",settings:"Agent settings saved.",connect:"Connection saved.",feedback:"Feedback recorded.",answer:"Answer submitted.",reconcile:"Delivery outcome recorded.",dismiss:"Task dismissed.",disconnect:"Account disconnected.",demo:"Sample workspace loaded.",revert_skill:"Revision reverted."};
+const messages={instance_join:"Paired. Confirm on the other instance.",instance_rename:"Instance renamed.",instance_remove:"Instance removed and workspace key rotated.",orchestrator_prompt:"Message sent to the orchestrator.",app_finding:"Finding tracked.",chat_source_config:"Chat source saved.",suggestion_config:"Activity sources saved.",task:"Task created.",project:"Project saved.",report:"Investigation requested.",style:"Style preference submitted for review.",rule:"Decision rule saved.",settings:"Agent settings saved.",connect:"Connection saved.",feedback:"Feedback recorded.",answer:"Answer submitted.",reconcile:"Delivery outcome recorded.",dismiss:"Task dismissed.",disconnect:"Account disconnected.",demo:"Sample workspace loaded.",revert_skill:"Revision reverted."};
 async function signInAgent(agent) {
   try {
     const result=await request("/api/action",{op:"agent_sign_in",agent});
@@ -878,6 +911,7 @@ document.addEventListener("submit",event=>{
   if (op==="chat_source_config") payload={op,provider:dialogState.kind,enabled:true,folder:fields.folder||""};
   if (op==="suggestion_config") payload={op,foreground:fields.foreground==="true",folders:new FormData(form).getAll("repo").map(p=>p.trim()).filter(Boolean)};
   if (op==="settings") payload.dry=fields.dry==="true";
+  if (ctx.peer) payload.peer=ctx.peer;
   if (op==="connect") {
     payload={op,kind:ctx.kind,label:fields.label,secret:fields.secret,config:{}};
     if (ctx.id) payload.id=ctx.id;

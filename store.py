@@ -18,6 +18,8 @@ class Store:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.lock = threading.RLock()
+        # Set by sync.Sync: journals writes to synced data once the instance has a peer.
+        self.observer = None
         self.conn = sqlite3.connect(
             self.root / "workspace.sqlite3", check_same_thread=False, isolation_level=None
         )
@@ -66,22 +68,31 @@ class Store:
             ]
 
     def put(self, bucket, row):
-        with self.lock:
+        with self.atomic():
+            old = self.get(bucket, row["id"]) if self.observer else None
             self.conn.execute(
                 "INSERT INTO records VALUES (?,?,?) ON CONFLICT(bucket,id) DO UPDATE SET data=excluded.data",
                 (bucket, row["id"], json.dumps(row)),
             )
+            if self.observer:
+                self.observer.record(bucket, row["id"], old, json.loads(json.dumps(row)))
 
     def delete(self, bucket, key):
-        with self.lock:
+        with self.atomic():
+            old = self.get(bucket, key) if self.observer else None
             self.conn.execute("DELETE FROM records WHERE bucket=? AND id=?", (bucket, key))
+            if self.observer and old is not None:
+                self.observer.record(bucket, key, old, None)
 
     def log(self, kind, detail, project="", task="", connection=""):
-        with self.lock:
+        row = dict(at=time.time(), kind=kind, project=project, task=task, detail=str(detail), connection=connection)
+        with self.atomic():
             self.conn.execute(
                 "INSERT INTO activity(at,kind,project,task,detail,connection) VALUES (?,?,?,?,?,?)",
-                (time.time(), kind, project, task, str(detail), connection),
+                tuple(row[k] for k in ("at", "kind", "project", "task", "detail", "connection")),
             )
+            if self.observer:
+                self.observer.record_activity(row)
 
     def dashboard_tasks(self):
         """Attach the original source independently of the current delivery target."""

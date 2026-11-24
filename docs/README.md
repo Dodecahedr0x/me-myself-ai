@@ -50,11 +50,11 @@ The executor applies dry mode and the user's rules for each project and decision
 
 ## Planned direction: an inbox for a proactive agent you host
 
-These are drafts. Nothing in this section is implemented yet.
+These are drafts, partly implemented. The shared agent setup, the app MCP server, the scheduled Hermes orchestrator, the headless VPS service, and pairing, sync and ownership between instances work today. The inbox, the connector catalog and splitting work by capacity are still planned. Each spec has a status section.
 
 The dashboard becomes an inbox. Each task is one row with one agent. A row appears only when its agent needs the user, and the user answers with a numbered option from the keyboard. A board shows every task by stage. Unlike inboxes for coding agents, most rows come from discovery across mail, chat, social, calendar and code accounts, including proposed projects. A managed Hermes agent runs that discovery as a standing orchestrator. The user can prompt it and get updates from it. Hermes reads connected accounts, and for each item that needs action it dispatches a fresh Claude Code or Codex task agent that writes and sends the reply. Every kind of task follows that same flow. All agents share one setup: the user signs into a Claude or ChatGPT subscription once, and connects each account once. Agents act only through the app's own MCP server, which gives each one the capabilities of its role and task. Dry mode is unchanged. Every external write still needs approval of its exact version, and an approved write is sent immediately.
 
-The app can run on the laptop, on a VPS the user controls, or on both as one workspace. Paired instances sync directly with each other, including logins, with no middleman. Every task, connection and the orchestrator has exactly one owner instance, and only the owner acts on it. Ownership moves only by a signed handoff from the current owner, so each instance keeps working on what it owns without the others. They split work by capacity through handoffs.
+The app can run on the laptop, on a VPS the user controls, or on both as one workspace. Paired instances sync directly with each other, including logins, with no middleman. Every task, connection and the orchestrator has exactly one owner instance, and only the owner acts on it. Ownership moves only by a handoff from the current owner, so each instance keeps working on what it owns without the others. They split work by capacity through handoffs.
 
 ```mermaid
 flowchart LR

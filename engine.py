@@ -14,6 +14,7 @@ import app_mcp
 import bugflow
 import orchestrator
 import selfcheck
+import sync as instances
 import github_signin
 import connectors
 import workspace_bridge
@@ -22,6 +23,34 @@ from signin import SignIns
 from suggestions import Suggestions
 import worker
 from store import Store, uid
+
+
+class SyncedSecrets:
+    """The app's own credential store, as seen by sync. Logins held by other tools are not listed."""
+
+    @staticmethod
+    def identities(db):
+        found = []
+        for c in db.rows("connections"):
+            if c.get("workspace_profile") or c.get("auth_method") in {"gh_account", "gh_repository"}:
+                continue
+            if c.get("github_parent"):
+                continue
+            found.append(c.get("credential_key", c["id"]))
+        found += [entry["credential"] for entry in db.rows("auth_clients") if entry.get("credential")]
+        return list(dict.fromkeys(found))
+
+    @staticmethod
+    def read(identity):
+        return connectors._secret(identity)
+
+    @staticmethod
+    def store(identity, secret):
+        connectors._store().access("store", identity, secret)
+
+    @staticmethod
+    def delete(identity):
+        connectors._store().access("delete", identity)
 
 
 def digest(*values):
@@ -43,6 +72,9 @@ BUSY = {"sending", "uncertain"}
 class Engine:
     def __init__(self, root, clock=time.time):
         self.db = Store(root)
+        # Pairing, the synced log and item ownership. See docs/specs/instances-and-sync.md.
+        self.instances = instances.Sync(self.db, clock, secrets_api=SyncedSecrets())
+        connectors.secret_listener = self.instances.record_secret
         self.signins = SignIns(self)
         self.suggestions = Suggestions(self)
         self.now = clock
@@ -215,8 +247,16 @@ class Engine:
             activity = self.db.history()
             for row in activity:
                 row["connection"] = parents.get(row["connection"], row["connection"])
+            tasks = self.db.dashboard_tasks()
+            if self.instances.peers():
+                for t in tasks:
+                    if not self.owns("task:" + t["id"]):
+                        t["owner"] = self.instances.owner_name("task:" + t["id"])
+                for c in connections:
+                    if not self.owns("connection:" + c["id"]):
+                        c["owner"] = self.instances.owner_name("connection:" + c["id"])
             return dict(
-                tasks=sorted(self.db.dashboard_tasks(), key=lambda t: t["created"], reverse=True),
+                tasks=sorted(tasks, key=lambda t: t["created"], reverse=True),
                 app_repository=selfcheck.REPOSITORY,
                 activity=activity,
                 connections=[
@@ -227,6 +267,7 @@ class Engine:
                 skills=self.db.rows("skills")[::-1],
                 suggestions=self.suggestions.state(),
                 orchestrator=self.orchestrator.state(),
+                instances=self.instances.state(),
                 projects=sorted(self.db.rows("projects"), key=lambda p: not p.get("global")),
             )
 
@@ -308,8 +349,37 @@ class Engine:
     def start(self):
         self.thread = threading.Thread(target=self.loop, daemon=True, name="scheduler")
         self.thread.start()
+        self.instances.on_change = self.instances.wake.set
+        self.instances.start(capacity=self.capacity, idle=self.idle, changed=self.wake.set)
+
+    def owns(self, item):
+        return self.instances.owns(item)
+
+    def idle(self, item):
+        """An item can be handed over only while nothing runs or sends for it."""
+        kind, _, key = item.partition(":")
+        if kind == "task":
+            t = self.db.get("tasks", key)
+            return not ({"task:" + key, "send:" + key} & set(self.jobs)) and (
+                not t or t["status"] not in {"working", "sending"})
+        if kind == "connection":
+            return "sync:" + key not in self.jobs
+        return "orchestrator" not in self.jobs
+
+    def capacity(self):
+        settings = self.settings()
+        slots = settings.get("slots") or (2 if os.uname().sysname == "Darwin" else max(1, (os.cpu_count() or 2) - 1))
+        busy = sum(1 for key in self.jobs if key.startswith("task:"))
+        try:
+            ready = {row["name"]: row["status"] for row in self.agents.inventory()}
+        except Exception:
+            ready = {}
+        return dict(slots=slots, free=max(0, slots - busy), agents=ready)
 
     def close(self):
+        if connectors.secret_listener == self.instances.record_secret:
+            connectors.secret_listener = None
+        self.instances.close()
         self.orchestrator.close()
         self.signins.close()
         self.stop.set()
@@ -343,20 +413,34 @@ class Engine:
             if key not in self.jobs:
                 self.jobs[key] = pool.submit(fn, arg)
 
-        purpose = self.orchestrator.due(now)
+        # Only the owner of an item works on it: see the ownership protocol in instances-and-sync.md.
+        purpose = self.orchestrator.due(now) if self.owns(instances.ORCHESTRATOR) else None
         if purpose:
             submit("orchestrator", self.orchestrator.run, purpose, self.sync_pool)
         if self.suggestions.next_scan <= now:
             submit("activity-suggestions", self.suggestions.run, None, self.pool)
+        owned = set()
         for c in self.db.rows("connections"):
+            if not self.owns("connection:" + c["id"]):
+                continue
+            owned.add(c["id"])
             if not c.get("unavailable") and c.get("next", 0) <= now:
                 submit("sync:" + c["id"], self.sync, c, self.sync_pool)
+        for request in self.db.rows("dispatch_requests"):
+            if not request.get("done") and request.get("connection") in owned:
+                submit("dispatch:" + request["id"], self.mcp_tools.fulfil, request["id"], self.pool)
         for t in self.db.rows("tasks"):
+            if not self.owns("task:" + t["id"]):
+                continue
             if t["status"] in {"queued", "scheduled"} and t.get("due", 0) <= now:
                 submit("task:" + t["id"], self.process, t["id"], self.pool)
-            if t["status"] == "review" and self.auto(t):
+            if t["status"] == "review" and t.get("approved_version") == t["version"]:
+                submit("send:" + t["id"], self.approved_send, (t["id"], t["version"]), self.sync_pool)
+            elif t["status"] == "review" and self.auto(t):
                 submit("send:" + t["id"], self.autosend, (t["id"], t["version"]), self.sync_pool)
         for e in self.db.rows("events"):
+            if e.get("connection") and e["connection"] not in owned:
+                continue
             if e["state"] == "new" or (e["state"] == "ignored" and e.get("next", 0) <= now):
                 submit("discover:" + e["id"], self.discover, e["id"], self.pool)
 
@@ -735,6 +819,8 @@ class Engine:
             t = self.db.get("tasks", key)
             if not t or t["status"] not in {"queued", "scheduled"} or t.get("due", 0) > self.now():
                 return
+            if not self.owns("task:" + key):
+                return
             t["status"] = "working"
             self.save(t, "Agent picked up task")
             version = t["version"]
@@ -766,6 +852,9 @@ class Engine:
                 latest = self.db.get("tasks", key)
                 if latest["version"] != version:
                     return
+                if not self.owns("task:" + key):
+                    self.db.log("Result discarded", "Another instance owns this task now.", t["project"], key)
+                    return
                 if t.get("special") == "self_check":
                     update = selfcheck.record_results(self, t, checks)
                 latest.update(update)
@@ -773,7 +862,7 @@ class Engine:
         except Exception as exc:
             with self.db.atomic():
                 latest = self.db.get("tasks", key)
-                if latest["version"] == version:
+                if latest["version"] == version and self.owns("task:" + key):
                     latest.update(status="failed", result=str(exc))
                     self.save(latest, str(exc))
         self.wake.set()
@@ -1261,12 +1350,37 @@ class Engine:
         except ValueError:
             pass
 
-    def deliver(self, key, version, automatic=False):
+    def approved_send(self, pair):
+        """Send a version the user approved on an instance that does not own the task."""
+        try:
+            self.deliver(*pair, approved_elsewhere=True)
+        except ValueError:
+            pass
+
+    def approve(self, key, version):
+        if self.owns("task:" + key):
+            self.deliver(key, version)
+            return None
+        with self.dispatch_lock, self.db.atomic():
+            t = self.db.get("tasks", key)
+            if not t or t["version"] != version or t["status"] != "review":
+                raise ValueError("This preview changed. Review its current version.")
+            self.db.put("tasks", {**t, "approved_version": version})
+            owner = self.instances.owner_name("task:" + key)
+            self.db.log("Approved", f"Version {version}. {owner} owns this task and sends it.", t["project"], key)
+        self.instances.wake.set()
+        return {"relayed_to": owner}
+
+    def deliver(self, key, version, automatic=False, approved_elsewhere=False):
         with self.dispatch_lock:
             with self.db.atomic():
                 t = self.db.get("tasks", key)
                 if not t or t["version"] != version or t["status"] != "review":
                     raise ValueError("This preview changed. Review its current version.")
+                if not self.owns("task:" + key):
+                    raise ValueError("Another instance owns this task and sends for it.")
+                if approved_elsewhere and t.get("approved_version") != version:
+                    raise ValueError("This version was not approved.")
                 if automatic and not self.auto(t):
                     raise ValueError("This action needs review.")
                 if not t["draft"] or not t["account"] or not t["destination"]:
@@ -1282,6 +1396,10 @@ class Engine:
                 if (not conn or conn.get("unavailable")) and not t.get("sample"):
                     raise ValueError("Reconnect the source before delivery.")
                 t["status"] = "sending"
+                # The send intent: survives a crash as status "uncertain" and travels with the task.
+                record = self.instances.owner("task:" + key)
+                t["send_intent"] = dict(version=version, epoch=record["epoch"] if record else 0,
+                                        instance=self.instances.id, at=self.now())
                 self.save(
                     t,
                     ("Rule authorized" if automatic else "User confirmed")
@@ -1462,8 +1580,9 @@ class Engine:
                 self.wake.set()
             return {"event": event_id}
         if op == "approve":
-            self.deliver(key, d.get("version"))
-            return
+            return self.approve(key, d.get("version"))
+        if op.startswith("instance_") or op == "move":
+            return self.instance_action(op, d)
         if op == "connect":
             self.connect(d)
             self.wake.set()
@@ -1713,6 +1832,49 @@ class Engine:
             else:
                 raise ValueError("Unknown action")
         self.wake.set()
+
+    def instance_action(self, op, d):
+        sync = self.instances
+        if op == "instance_code":
+            return {"code": sync.create_code(), "expires_in": instances.CODE_TTL}
+        if op == "instance_join":
+            info = sync.join(required(d, "address", 300), required(d, "code", 80))
+            self.db.log("Instance paired", f"{info['name']} ({info['platform']}). Confirm on {info['name']}.")
+            return {"peer": info["name"]}
+        if op in {"instance_confirm", "instance_reject"}:
+            sync.confirm(required(d, "peer", 64), op == "instance_confirm")
+            self.db.log("Instance " + ("confirmed" if op == "instance_confirm" else "rejected"), d["peer"])
+            sync.wake.set()
+            return
+        if op == "instance_remove":
+            sync.remove(required(d, "peer", 64))
+            self.db.log("Instance removed", "Workspace key rotated. Reconnect each account to revoke old logins.")
+            return
+        if op == "instance_rename":
+            sync.rename(required(d, "name", 60))
+            return
+        if op == "instance_dismiss_reconnect":
+            with self.db.atomic():
+                c = self.db.get("connections", required(d, "connection", 200))
+                if c:
+                    c.pop("reconnect_to_revoke", None)
+                    self.db.put("connections", c)
+            return
+        if op == "move":
+            to = required(d, "to", 64)
+            items = d.get("items")
+            if items == "connections":
+                items = ["connection:" + c["id"] for c in self.db.rows("connections")
+                         if not c.get("workspace_profile") and not c.get("github_parent") and not c.get("slack_parent")
+                         and not c.get("auth_method", "").startswith("gh_")]
+            elif items == "orchestrator":
+                items = [instances.ORCHESTRATOR]
+            elif not isinstance(items, list) or not all(isinstance(i, str) for i in items):
+                raise ValueError("Choose what to move.")
+            results = {item: sync.request_move(item, to) for item in items}
+            sync.wake.set()
+            return {"requested": sum(1 for r in results.values() if r == "requested")}
+        raise ValueError("Unknown action")
 
     def connect_github_account(self, login, previous):
         with self.dispatch_lock, self.db.atomic():

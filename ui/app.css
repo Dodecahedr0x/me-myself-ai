@@ -227,3 +227,5 @@ details .facts {margin-top:8px}
 
 .message-text { white-space: pre-wrap; }
 .section-note { margin: 0 0 8px; color: var(--muted, #6b6b66); font-size: 13px; }
+
+.pairing-code code { font-size: 1.25rem; letter-spacing: 0.06em; user-select: all; }
