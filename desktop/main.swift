@@ -154,18 +154,57 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
     }
 
     private func setState(_ state: ServiceState) {
-        let (symbol, text): (String, String)
+        let text: String
         switch state {
-        case .starting: (symbol, text) = ("circle.dashed", "Services starting…")
-        case .running: (symbol, text) = ("bolt.circle.fill", "Services running")
-        case .stopping: (symbol, text) = ("stop.circle", "Stopping services…")
-        case .stopped: (symbol, text) = ("exclamationmark.circle", "Services stopped")
+        case .starting: text = "Services starting…"
+        case .running: text = "Services running"
+        case .stopping: text = "Stopping services…"
+        case .stopped: text = "Services stopped"
         }
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "MeMyselfAI: " + text)
-        image?.isTemplate = true
+        let image = Desktop.logo(badge: state == .stopped)
+        image.accessibilityDescription = "MeMyselfAI: " + text
         statusItem.button?.image = image
+        // The logo is full strength only while the services run.
+        statusItem.button?.appearsDisabled = state != .running
         statusItem.button?.toolTip = "MeMyselfAI: " + text
         stateItem.title = text
+    }
+
+    /// The app logo as a menu bar template: a tilted rounded square with three slanted bars cut out.
+    private static func logo(badge: Bool) -> NSImage {
+        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+            guard let context = NSGraphicsContext.current else { return false }
+            context.saveGraphicsState()
+            let tilt = NSAffineTransform()
+            tilt.translateX(by: 9, yBy: 9)
+            tilt.rotate(byDegrees: 4)
+            tilt.concat()
+            NSColor.black.setFill()
+            NSColor.black.setStroke()
+            NSBezierPath(roundedRect: NSRect(x: -7.5, y: -7.5, width: 15, height: 15), xRadius: 4, yRadius: 4).fill()
+            context.compositingOperation = .destinationOut
+            for (top, bottom) in [(NSPoint(x: -2.0, y: 2.4), NSPoint(x: -2.9, y: -2.3)),
+                                  (NSPoint(x: 0.9, y: 3.8), NSPoint(x: -1.0, y: -3.8)),
+                                  (NSPoint(x: 2.8, y: 2.7), NSPoint(x: 1.6, y: -2.7))] {
+                let bar = NSBezierPath()
+                bar.move(to: top)
+                bar.line(to: bottom)
+                bar.lineWidth = 1.8
+                bar.lineCapStyle = .round
+                bar.stroke()
+            }
+            context.restoreGraphicsState()
+            if badge {
+                context.compositingOperation = .destinationOut
+                NSBezierPath(ovalIn: NSRect(x: 11, y: 0, width: 7, height: 7)).fill()
+                context.compositingOperation = .sourceOver
+                NSColor.black.setFill()
+                NSBezierPath(ovalIn: NSRect(x: 12.5, y: 1.5, width: 4, height: 4)).fill()
+            }
+            return true
+        }
+        image.isTemplate = true
+        return image
     }
 
     private func status(_ text: String, retryable: Bool) {
