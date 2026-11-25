@@ -1109,7 +1109,9 @@ class Engine:
         deadline = self.now() + timeout
         self.absence = (reason, deadline + 60)
         exchange = exchange or self.instances.exchange_all
-        exchange(self.capacity)
+        # Background sync keeps peer freshness current; a peer silent for a minute is not worth a wait.
+        if self.fresh_peers():
+            exchange(self.capacity)
         peers = sorted(self.fresh_peers(), key=self.rank)
         if not peers:
             self.db.log("Absence", f"{reason.title()} with no reachable instance; work stays here.")
@@ -1274,8 +1276,19 @@ class Engine:
         finished = {d: r for d, r in latest.items() if (r.get("context") or {}).get("state") == "closed"}
         if not finished:
             return
-        for t in self.db.rows("tasks"):
-            raw = finished.get(t.get("destination"))
+        tasks = self.db.rows("tasks")
+        by_id = {t["id"]: t for t in tasks}
+
+        def destination(t):
+            # A step without its own destination works on its parent's item.
+            seen = set()
+            while not t.get("destination") and t.get("depth") and t.get("parent") not in seen:
+                seen.add(t.get("parent"))
+                t = by_id.get(t.get("parent")) or {}
+            return t.get("destination")
+
+        for t in tasks:
+            raw = finished.get(destination(t))
             if not raw or t["status"] in TERMINAL | BUSY | {"working"} or not self.owns("task:" + t["id"]):
                 continue
             context = raw["context"]
@@ -1597,6 +1610,8 @@ class Engine:
                 self.db.put("events", e)
                 self.db.log("Discovery", out.get("reason", "Reviewed source"), e["project"], key)
         except Exception as exc:
+            if isinstance(exc, worker.WorkerStopped):
+                return  # the event is read again on restart
             with self.db.atomic():
                 latest = self.db.get("events", key)
                 if latest and latest["generation"] == e["generation"]:
@@ -1744,6 +1759,8 @@ class Engine:
                     # A registration may have changed while the decision agent was running.
                     self.repository_recheck.set()
         except Exception as exc:
+            if isinstance(exc, worker.WorkerStopped):
+                return  # the app is quitting; the task stays working and is queued again on restart
             with self.db.atomic():
                 latest = self.db.get("tasks", key)
                 if latest["version"] == version and self.owns("task:" + key):

@@ -289,7 +289,12 @@ def main():
                 except OSError:
                     pass
 
-        signal.signal(signal.SIGTERM, lambda *_: prepare("stopping", server.shutdown))
+        def stop():
+            # Running agents are stopped rather than awaited; their tasks resume on the next start.
+            worker.stop_all()
+            server.shutdown()
+
+        signal.signal(signal.SIGTERM, lambda *_: prepare("stopping", stop))
         if hasattr(signal, "SIGUSR2"):
             signal.signal(signal.SIGUSR2, lambda *_: prepare("sleeping", host_ack))
         try:

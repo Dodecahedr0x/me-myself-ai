@@ -442,6 +442,16 @@ class FinishedSourceTests(unittest.TestCase):
         self.engine.close_finished_sources()
         self.assertEqual(self.db.get("tasks", reopened["id"])["status"], "question")
 
+    def test_steps_close_with_their_parents_item(self):
+        parent = self.task(status="closed")
+        step = self.engine.new_task("Rerun CodeRabbit on #7", "A", status="question", question="Post it?",
+                                    parent=parent["id"], depth=1)
+        unrelated = self.engine.new_task("Something else", "A", status="question", question="?")
+        self.github("e1", "closed", self.now + 10, closed_at=self.now + 10)
+        self.engine.close_finished_sources()
+        self.assertEqual(self.db.get("tasks", step["id"])["status"], "closed")
+        self.assertEqual(self.db.get("tasks", unrelated["id"])["status"], "question")
+
     def test_runs_that_lost_the_app_files_are_retried_on_restart(self):
         lost = self.task(status="failed", result="[Errno 2] No such file or directory: "
                          "'/tmp/w/build/MeMyselfAI.app/Contents/Resources/skills/task-interaction/SKILL.md'")

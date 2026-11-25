@@ -14,6 +14,9 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
     private var origin: URL?
     private var quitting = false
     private var restartRequested = false
+    // The menu bar icon shows whether the local services are running. See desktop-runtime.md.
+    private var statusItem: NSStatusItem!
+    private var stateItem: NSMenuItem!
     // Sleep is held for up to 25 seconds while the service hands work to a paired instance.
     private var powerPort: io_connect_t = 0
     private var powerNotify: IONotificationPortRef?
@@ -23,6 +26,7 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMenus()
+        installStatusItem()
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "chooseRepository")
@@ -132,6 +136,38 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
         NSApp.mainMenu = bar
     }
 
+    private enum ServiceState { case starting, running, stopping, stopped }
+
+    private func installStatusItem() {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        let menu = NSMenu()
+        stateItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        stateItem.isEnabled = false
+        menu.addItem(stateItem)
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Open Dashboard", action: #selector(showDashboard), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Restart Services", action: #selector(retryService), keyEquivalent: "").target = self
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Quit MeMyselfAI", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+        statusItem.menu = menu
+        setState(.starting)
+    }
+
+    private func setState(_ state: ServiceState) {
+        let (symbol, text): (String, String)
+        switch state {
+        case .starting: (symbol, text) = ("circle.dashed", "Services starting…")
+        case .running: (symbol, text) = ("bolt.circle.fill", "Services running")
+        case .stopping: (symbol, text) = ("stop.circle", "Stopping services…")
+        case .stopped: (symbol, text) = ("exclamationmark.circle", "Services stopped")
+        }
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "MeMyselfAI: " + text)
+        image?.isTemplate = true
+        statusItem.button?.image = image
+        statusItem.button?.toolTip = "MeMyselfAI: " + text
+        stateItem.title = text
+    }
+
     private func status(_ text: String, retryable: Bool) {
         view.isHidden = true
         statusView.isHidden = false
@@ -159,13 +195,16 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
     @objc private func startService() {
         guard service == nil else { return }
         origin = nil
+        setState(.starting)
         status("Opening your workspace…", retryable: false)
         guard let pythonURL = python() else {
+            setState(.stopped)
             status("Install Python 3.9 or newer to open the workspace.", retryable: true)
             return
         }
         guard let resources = Bundle.main.resourceURL,
               let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            setState(.stopped)
             status("The application bundle or Application Support folder is unavailable.", retryable: true)
             return
         }
@@ -193,10 +232,13 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
                 self.service = nil
                 self.lifetime = nil
                 self.origin = nil
-                if self.restartRequested && !self.quitting {
+                if self.quitting {
+                    NSApp.reply(toApplicationShouldTerminate: true)
+                } else if self.restartRequested {
                     self.restartRequested = false
                     self.startService()
-                } else if !self.quitting {
+                } else {
+                    self.setState(.stopped)
                     self.status("The local service stopped (status \(finished.terminationStatus)). If another copy has this workspace open, quit it before retrying.", retryable: true)
                 }
             }
@@ -206,6 +248,7 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
             service = process
             lifetime = life
         } catch {
+            setState(.stopped)
             status("The bundled local service could not start.", retryable: true)
             return
         }
@@ -307,6 +350,7 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
         guard let url = webView.url, sameOrigin(url) else { return }
         statusView.isHidden = true
         webView.isHidden = false
+        setState(.running)
         window.makeFirstResponder(webView)
     }
 
@@ -331,6 +375,19 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         showDashboard()
         return true
+    }
+
+    // Quitting waits for the service to stop its agents and exit, so no work keeps running unseen.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let process = service, process.isRunning else { return .terminateNow }
+        quitting = true
+        setState(.stopping)
+        try? lifetime?.fileHandleForWriting.close()
+        process.terminate()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {

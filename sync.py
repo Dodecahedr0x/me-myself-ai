@@ -35,6 +35,7 @@ FRESH_SECONDS = 60
 BATCH = 500
 MAX_BODY = 16 * 1024 * 1024
 DELETED = {"$deleted": True}
+CONNECT_TIMEOUT = 5
 
 
 class SyncError(RuntimeError):
@@ -880,9 +881,11 @@ class Sync:
 
     def _post(self, address, path, body, peer=None):
         host, port = self._split(address)
-        conn = http.client.HTTPSConnection(host, port, timeout=30, context=self._client_context(peer))
+        # A short connect timeout keeps an offline peer from stalling sync and quitting for 30 seconds.
+        conn = http.client.HTTPSConnection(host, port, timeout=CONNECT_TIMEOUT, context=self._client_context(peer))
         try:
             conn.connect()
+            conn.sock.settimeout(30)
             der = conn.sock.getpeercert(binary_form=True)
             server_fp = hashlib.sha256(der).hexdigest()
             if peer and server_fp != peer["fingerprint"]:

@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
 import uuid
@@ -44,6 +45,45 @@ MAX_EDITS = 12
 
 class WorkerError(RuntimeError):
     """A preparation failure suitable for display and retry."""
+
+
+class WorkerStopped(WorkerError):
+    """The app is quitting, so the run was cut short. The task resumes on the next start."""
+
+
+# Process groups of running agents and task commands, stopped together when the app quits.
+_running = set()
+_running_lock = threading.Lock()
+stopping = threading.Event()
+
+
+@contextlib.contextmanager
+def _tracked(process):
+    with _running_lock:
+        if stopping.is_set():
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+        _running.add(process.pid)
+    try:
+        yield
+    except Exception as exc:
+        if stopping.is_set():
+            raise WorkerStopped("The app quit while this was running.") from exc
+        raise
+    finally:
+        with _running_lock:
+            _running.discard(process.pid)
+    if stopping.is_set():
+        raise WorkerStopped("The app quit while this was running.")
+
+
+def stop_all():
+    """Stop every running agent and task command now. See desktop-runtime.md."""
+    with _running_lock:
+        stopping.set()
+        for pid in list(_running):
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(pid, signal.SIGKILL)
 
 
 class CheckoutTimeout(WorkerError):
@@ -630,7 +670,7 @@ def run_agent(role: str, payload: dict, provider: str, workdir=None, *, timeout=
                     cwd=workdir,
                     env=env,
                     start_new_session=True,
-                ) as process:
+                ) as process, _tracked(process):
                     try:
                         process.communicate(prompt, timeout=AGENT_TIMEOUT if timeout is None else timeout)
                     except subprocess.TimeoutExpired:
@@ -783,7 +823,7 @@ def run_command(workdir, command, *, tools=None, cache=None, network=False, cwd=
             raise WorkerError("Could not launch the sandbox for this task command.") from exc
         deadline = time.monotonic() + (timeout or AGENT_TIMEOUT)
         timed_out = False
-        with process, selectors.DefaultSelector() as selector:
+        with process, _tracked(process), selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)
             try:
                 while time.monotonic() < deadline:

@@ -697,8 +697,10 @@ class CapacityTests(CapacityBase):
 
     def test_absence_without_a_reachable_peer_keeps_work(self):
         t = self.queued(self.laptop)
-        self.assertEqual(self.laptop.prepare_absence("stopping", timeout=1, exchange=lambda capacity: None), (0, 0))
+        calls = []
+        self.assertEqual(self.laptop.prepare_absence("stopping", timeout=1, exchange=calls.append), (0, 0))
         self.assertTrue(self.laptop.owns("task:" + t["id"]))
+        self.assertEqual(calls, [], "no peer was seen recently, so stopping does not wait on the network")
 
     def test_run_on_moves_a_task(self):
         t = self.queued(self.laptop)
