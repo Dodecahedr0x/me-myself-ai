@@ -390,3 +390,64 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(file.read_text(), "")
         self.engine.action(dict(op="accept_skill", id=rev["id"]))
         self.assertEqual(file.read_text(), "Lead with the answer")
+
+
+class FinishedSourceTests(unittest.TestCase):
+    """Open tasks close when their GitHub item closes after they began. See docs/specs/task-workflow.md."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.now = 1_800_000_000
+        self.engine = Engine(self.directory.name, lambda: self.now)
+        self.addCleanup(self.engine.close)
+        self.db = self.engine.db
+        self.engine.add_project("A", "")
+
+    def github(self, key, state, when, **context):
+        self.db.put("events", dict(id=key, connection="gh", project="A", state="handled", raw=dict(
+            key=key, timestamp=when, title="PR", body="", destination="org/repo#7", account="me",
+            authored=True, owned=False, context=dict(repository="org/repo", number=7, state=state,
+                                                     is_pull_request=True, **context))))
+
+    def task(self, status="question", **fields):
+        return self.engine.new_task("Get #7 reviewed", "A", destination="org/repo#7", source="github",
+                                    status=status, question="Who should review it?", **fields)
+
+    def test_merged_pr_closes_open_tasks_with_a_reason(self):
+        waiting, failed = self.task(), self.task(status="failed")
+        self.github("e1", "open", self.now - 5)
+        self.github("e2", "closed", self.now + 60, closed_at=self.now + 50, merged=True)
+        self.engine.close_finished_sources()
+        for t in (waiting, failed):
+            row = self.db.get("tasks", t["id"])
+            self.assertEqual(row["status"], "closed")
+            self.assertEqual(row["question"], "")
+            self.assertIn("merged on GitHub", row["reason"])
+
+    def test_reopened_running_and_older_closures_are_left_alone(self):
+        self.github("e1", "closed", self.now - 100, closed_at=self.now - 100)
+        made_for_closed = self.task()
+        self.engine.close_finished_sources()
+        self.assertEqual(self.db.get("tasks", made_for_closed["id"])["status"], "question")
+
+        running = self.task(status="working")
+        self.github("e2", "closed", self.now + 10, closed_at=self.now + 10)
+        self.engine.close_finished_sources()
+        self.assertEqual(self.db.get("tasks", running["id"])["status"], "working")
+        self.assertEqual(self.db.get("tasks", made_for_closed["id"])["status"], "closed")
+
+        reopened = self.task()
+        self.github("e3", "open", self.now + 20)
+        self.engine.close_finished_sources()
+        self.assertEqual(self.db.get("tasks", reopened["id"])["status"], "question")
+
+    def test_runs_that_lost_the_app_files_are_retried_on_restart(self):
+        lost = self.task(status="failed", result="[Errno 2] No such file or directory: "
+                         "'/tmp/w/build/MeMyselfAI.app/Contents/Resources/skills/task-interaction/SKILL.md'")
+        other = self.task(status="failed", result="The CLI exited with status 1.")
+        self.engine.close()
+        restarted = Engine(self.directory.name, lambda: self.now)
+        self.addCleanup(restarted.close)
+        self.assertEqual(restarted.db.get("tasks", lost["id"])["status"], "queued")
+        self.assertEqual(restarted.db.get("tasks", other["id"])["status"], "failed")

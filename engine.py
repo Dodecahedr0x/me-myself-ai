@@ -83,6 +83,8 @@ TERMINAL = {"closed", "dismissed", "skipped", "done"}
 # An owner silent this long is taken over automatically. See "Automatic takeover" in instances-and-sync.md.
 TAKEOVER_SECONDS = 900
 BUSY = {"sending", "uncertain"}
+# A run that failed because a deleted app build took its files with it. See desktop-runtime.md.
+MISSING_APP_FILE = re.compile(r"No such file or directory: '[^']*\.app/Contents/")
 
 
 class Engine:
@@ -155,6 +157,9 @@ class Engine:
                 if t["status"] in {"working", "sending"}:
                     t["status"] = "uncertain" if t["status"] == "sending" else "queued"
                     self.save(t, "Restored after restart")
+                elif t["status"] == "failed" and MISSING_APP_FILE.search(t.get("result") or ""):
+                    t.update(status="queued", due=0, result="")
+                    self.save(t, "Retried after the app's files moved")
             for e in self.db.rows("events"):
                 if e["state"] == "working":
                     e["state"] = "new"
@@ -1192,6 +1197,8 @@ class Engine:
         purpose = self.orchestrator.due(now) if self.owns(instances.ORCHESTRATOR) else None
         if purpose:
             submit("orchestrator", self.orchestrator.run, purpose, self.sync_pool)
+        events = self.db.rows("events")
+        self.close_finished_sources(events)
         tasks = self.db.rows("tasks")
         probe_due = now >= self.next_repository_probe and any(
             t["status"] == "question" and (t.get("checkout_inaccessible") or t.get("repository_question")) for t in tasks)
@@ -1246,13 +1253,43 @@ class Engine:
                 submit("send:" + t["id"], self.approved_send, (t["id"], t["version"]), self.sync_pool)
             elif t["status"] == "review" and self.auto(t):
                 submit("send:" + t["id"], self.autosend, (t["id"], t["version"]), self.sync_pool)
-        for e in self.db.rows("events"):
+        for e in events:
             if (e.get("connection") and e["connection"] not in owned) or self.scope.matches(e):
                 continue
             if e["state"] == "new" or (e["state"] == "ignored" and e.get("next", 0) <= now):
                 submit("discover:" + e["id"], self.discover, e["id"], self.pool)
         if self.legacy_questions and "format-question" not in self.jobs:
             submit("format-question", self.format_existing_question, self.legacy_questions.pop(), self.pool)
+
+    def close_finished_sources(self, events=None):
+        """Close open tasks whose GitHub issue or PR was closed after they began. See task-workflow.md."""
+        latest = {}
+        for e in self.db.rows("events") if events is None else events:
+            raw = e.get("raw") or {}
+            context = raw.get("context") or {}
+            if "is_pull_request" not in context or not raw.get("destination"):
+                continue
+            if raw["destination"] not in latest or raw["timestamp"] >= latest[raw["destination"]]["timestamp"]:
+                latest[raw["destination"]] = raw
+        finished = {d: r for d, r in latest.items() if (r.get("context") or {}).get("state") == "closed"}
+        if not finished:
+            return
+        for t in self.db.rows("tasks"):
+            raw = finished.get(t.get("destination"))
+            if not raw or t["status"] in TERMINAL | BUSY | {"working"} or not self.owns("task:" + t["id"]):
+                continue
+            context = raw["context"]
+            if (context.get("closed_at") or raw["timestamp"]) < t.get("created", 0):
+                continue  # the task was made for an item that was already closed
+            with self.db.atomic():
+                current = self.db.get("tasks", t["id"])
+                if not current or current["version"] != t["version"]:
+                    continue
+                how = "merged" if context.get("merged") else "closed"
+                kind = "PR" if context.get("is_pull_request") else "issue"
+                current.update(status="closed", draft="", question="", decision_id="",
+                               reason=f"The {kind} was {how} on GitHub, so nothing is left to do here.")
+                self.save(current, f"Closed because {raw['destination']} was {how} on GitHub")
 
     def ingest(self, conn, raw):
         with self.db.atomic():

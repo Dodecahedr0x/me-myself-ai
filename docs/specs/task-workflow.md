@@ -53,6 +53,7 @@ The diagram follows a task with a single proposed action. For multiple actions, 
 | Two actions are pending and the user confirms one twice | Only the confirmed version of that action is dispatched once. The other action stays pending. |
 | A provider times out after dispatch | The dashboard shows the uncertain outcome and prevents an automatic resend that could duplicate the write. |
 | A teammate says “I'm fixing this” on the linked issue | Discovery records the skipped task and links the ownership evidence. No agent starts working on the fix. If the claim arrives during preparation, stop further work and withhold pending actions for that fix. |
+| The user merges or closes a PR by hand while its task waits for their answer | The task closes on the next check. Its reason says the PR was merged or closed on GitHub, and it no longer asks the user anything. If the PR is reopened before the check, the task stays open. |
 | A teammate is fixing the bug but asks the user to review their PR | The fix stays with the teammate. The distinct review request can become a task for the user. |
 
 ## Excluding work and closing tasks
@@ -60,6 +61,8 @@ The diagram follows a task with a single proposed action. For multiple actions, 
 The workspace ignore list persists across restarts. Ignoring a named project includes its descendants and their registered repositories. A GitHub repository matches across accounts and checkouts by owner and name, case-insensitively. An ignored checkout is also excluded from local activity. Skip matching repository polling, discovery, suggestions, task preparation and external delivery. Check the scope again when applying a worker result or dispatching a write. A request already handed to a provider can finish.
 
 Pause existing open tasks in an excluded scope and invalidate pending approvals. Removing an exclusion makes paused work eligible for preparation again and preserves due dates and receipts. Uncertain deliveries remain available for reconciliation. Closing a task is terminal and local. Later worker results, source refreshes and retries cannot reopen it or publish its draft.
+
+When a GitHub issue or PR is closed or merged, open tasks with that destination close on their own. This includes tasks that are waiting for an answer, failed, queued, paused or awaiting approval. The newest GitHub activity for the item decides its state, so a reopened item stays open. A closure only counts if it happened after the task was created, so a task made on purpose for an already closed item stays open. A running task or an uncertain delivery is left until it settles, and the next check closes it. The task's reason says the PR was merged, or the issue or PR was closed, on GitHub. Its draft and question are cleared, and the user is not asked anything.
 
 ## Related contracts
 

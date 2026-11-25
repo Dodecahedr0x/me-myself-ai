@@ -488,6 +488,9 @@ def _github_event(repo, user, item, issue, key, title, body):
             "number": number,
             "author": (item.get("user") or {}).get("login", ""),
             "state": issue["state"],
+            # When it closed and whether a PR merged; open tasks on it close too. See task-workflow.md.
+            "closed_at": _when(issue["closed_at"]) if issue.get("closed_at") else None,
+            "merged": bool((issue.get("pull_request") or {}).get("merged_at")),
             "assignees": sorted(others),
             "is_pull_request": "pull_request" in issue,
         },
