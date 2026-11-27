@@ -1,0 +1,57 @@
+# Builds the macOS app for a version tag and publishes it as a GitHub release.
+# Installed copies update themselves from the latest release. See docs/specs/app-updates.md.
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bundle sign-in clients
+        env:
+          OAUTH_CLIENTS_JSON: ${{ secrets.OAUTH_CLIENTS_JSON }}
+        run: |
+          if [ -n "$OAUTH_CLIENTS_JSON" ]; then printf '%s' "$OAUTH_CLIENTS_JSON" > oauth-clients.json; fi
+      - name: Build
+        run: MEMYSELFAI_VERSION="${GITHUB_REF_NAME#v}" ./scripts/build-app.sh
+      - name: Check version and architecture
+        run: |
+          test "$(plutil -extract CFBundleShortVersionString raw build/MeMyselfAI.app/Contents/Info.plist)" = "${GITHUB_REF_NAME#v}"
+          lipo -archs build/MeMyselfAI.app/Contents/MacOS/MeMyselfAI | grep -qx "${{ matrix.arch }}"
+      - name: Package
+        run: |
+          name="MeMyselfAI-macos-${{ matrix.arch }}.zip"
+          ditto -c -k --keepParent build/MeMyselfAI.app "$name"
+          shasum -a 256 "$name" > "$name.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: MeMyselfAI-macos-*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "MeMyselfAI ${GITHUB_REF_NAME#v}" --generate-notes MeMyselfAI-macos-*

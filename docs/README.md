@@ -105,6 +105,7 @@ The first project for this workflow is MeMyselfAI itself. Tasks can test the app
 - [Task agents and completion](specs/task-execution.md) defines isolation, follow-ups, and the evidence needed to close bugs and emails.
 - [Decision rules, writing style, and trust](specs/delegation-and-style.md) defines when agents may act, how they learn the user's voice, and how the user decides to leave dry mode.
 - [Reviewing activity and learning from missed work](specs/activity-and-improvement.md) shows how an in-app report triggers recovery and improves future discovery using Markdown skills.
+- [Updating the app from GitHub releases](specs/app-updates.md) keeps a copy installed in Applications current without reinstalling it.
 - [Guided setup and VPS setup over SSH](specs/guided-setup.md) walks a new user through setup and installs and pairs a VPS from one of their SSH hosts.
 - [Shared context and schedules](specs/context-and-schedules.md) shows how the Hermes agent maintains context agents share, cleans stale context and creates or cancels schedules. It also lists planned transcript and collaborator support.
 - [Repository rules](../AGENTS.md) describe how to take a change from spec to verification.

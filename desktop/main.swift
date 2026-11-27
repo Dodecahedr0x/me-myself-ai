@@ -17,6 +17,9 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
     // The menu bar icon shows whether the local services are running. See desktop-runtime.md.
     private var statusItem: NSStatusItem!
     private var stateItem: NSMenuItem!
+    // Installed copies update themselves from GitHub releases. See app-updates.md.
+    private var updater: Updater!
+    private var updateItem: NSMenuItem!
     // Sleep is held for up to 25 seconds while the service hands work to a paired instance.
     private var powerPort: io_connect_t = 0
     private var powerNotify: IONotificationPortRef?
@@ -25,8 +28,12 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
     private var sleepAck: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        updater = Updater()
         installMenus()
         installStatusItem()
+        updater.onChange = { [weak self] text in self?.updateItem.title = text }
+        updater.onInstalled = { NSApp.terminate(nil) }
+        updater.start()
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "chooseRepository")
@@ -119,6 +126,8 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
             return submenu
         }
         let app = menu("MeMyselfAI")
+        app.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "").target = self
+        app.addItem(.separator())
         app.addItem(withTitle: "Hide MeMyselfAI", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         app.addItem(.separator())
         app.addItem(withTitle: "Quit MeMyselfAI", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -144,9 +153,13 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
         stateItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         stateItem.isEnabled = false
         menu.addItem(stateItem)
+        updateItem = NSMenuItem(title: updater.line, action: nil, keyEquivalent: "")
+        updateItem.isEnabled = false
+        menu.addItem(updateItem)
         menu.addItem(.separator())
         menu.addItem(withTitle: "Open Dashboard", action: #selector(showDashboard), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Restart Services", action: #selector(retryService), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit MeMyselfAI", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
         statusItem.menu = menu
@@ -401,6 +414,10 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         if service?.isRunning == true { webView.reload() }
+    }
+
+    @objc private func checkForUpdates() {
+        updater.check()
     }
 
     @objc private func showDashboard() {
