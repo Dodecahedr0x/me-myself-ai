@@ -7,6 +7,11 @@ contents="$bundle/Contents"
 resources="$contents/Resources"
 mkdir -p "$contents/MacOS" "$resources/ui" "$root/build/ModuleCache"
 cp desktop/Info.plist "$contents/Info.plist"
+# Releases stamp their tag's version, which the in-app updater compares. See docs/specs/app-updates.md.
+if [ -n "${MEMYSELFAI_VERSION:-}" ]; then
+    plutil -replace CFBundleShortVersionString -string "$MEMYSELFAI_VERSION" "$contents/Info.plist"
+    plutil -replace CFBundleVersion -string "$MEMYSELFAI_VERSION" "$contents/Info.plist"
+fi
 cp desktop/MeMyselfAI.icns "$resources/"
 cp desktop/launch_service.py ./*.py "$resources/"
 # The server setup over SSH streams these to the VPS and runs its installer. See docs/specs/guided-setup.md.
@@ -37,7 +42,7 @@ else:
     target.unlink(missing_ok=True)
 PY
 xcrun swiftc -target "$(uname -m)-apple-macosx12.0" -swift-version 5 -O -module-cache-path "$root/build/ModuleCache" \
-    -framework AppKit -framework IOKit -framework WebKit desktop/main.swift -o "$contents/MacOS/MeMyselfAI"
+    -framework AppKit -framework IOKit -framework WebKit desktop/main.swift desktop/Updater.swift -o "$contents/MacOS/MeMyselfAI"
 test -x "$contents/MacOS/MeMyselfAI"
 plutil -lint "$contents/Info.plist" >/dev/null
 codesign --force --sign - "$bundle"

@@ -39,6 +39,7 @@
 | US-35 | Have agents share what earlier work taught them, without seeing what isn't theirs. | A reply agent in a project knows the client's preferred contact and an open promise. It never sees another project's context. Stale context is held back until Hermes reviews it. [Context and schedules](specs/context-and-schedules.md) |
 | US-36 | Get recurring work done on a schedule that follows what I ask for and what I've committed to. | I write "every Friday, summarize open PRs" in a task. Hermes creates the schedule, and each Friday a task appears. Cancelling it stops it for good. [Context and schedules](specs/context-and-schedules.md) |
 | US-37 | Know which work is ready to hand off. | Decision rules shows that status replies in one project had 5 uncorrected deliveries. I allow autonomous handling in one click. [Context and schedules](specs/context-and-schedules.md) |
+| US-38 | Install the app once and have it keep itself up to date. | I put MeMyselfAI in Applications. When a new version is published on GitHub, it downloads it, checks it, replaces itself and reopens on its own. [App updates](specs/app-updates.md) |
 
 Workspace-wide Slack and Google account connections extend US-01 and US-03. [Workspace accounts](specs/account-wide-connections.md)
 

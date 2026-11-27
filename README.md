@@ -11,6 +11,8 @@ Build with the macOS Command Line Tools, then open the app bundle. The desktop h
 open build/MeMyselfAI.app
 ```
 
+To install it, download the latest `MeMyselfAI-macos-arm64.zip` (or `x86_64` for Intel) from [Releases](https://github.com/Dodecahedr0x/me-myself-ai/releases), or move your own build into `/Applications` or `~/Applications`. An installed copy checks GitHub every six hours, installs newer releases and reopens itself. Builds run from `build/` never update. Maintainers publish a release by pushing a tag such as `v0.2.0`. [App updates spec](docs/specs/app-updates.md)
+
 For the browser interface, run `./scripts/run-local.sh` and open the one-time local URL it prints. Closing the desktop window leaves the agent running. Quit MeMyselfAI to stop it.
 
 To run it on a Linux server instead, with Docker or systemd, see [Running MeMyselfAI on a VPS](docs/vps.md).
