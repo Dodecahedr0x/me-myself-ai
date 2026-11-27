@@ -427,6 +427,10 @@ body[data-view=inbox] #main {padding:0}
 .group-rows {display:grid;gap:6px;padding:0 10px 10px}
 .inbox-row.grouped {grid-template-columns:minmax(0,1fr) auto;border-left-width:1px;border-color:#f0dcd9;box-shadow:none}
 .inbox-row.grouped.selected {border-color:#b8cdbd}
+.inbox-group.repo {border-color:var(--line);border-left-color:var(--grey-line);background:var(--surface)}
+.inbox-group.repo .group-head .row-icon {background:var(--grey-bg);color:var(--muted)}
+.inbox-group.repo .inbox-row.grouped {border-color:var(--line)}
+.inbox-group.repo .inbox-row.grouped.failed {border-left:3px solid var(--red)}
 .inbox-empty {display:grid;justify-items:center;gap:6px;padding:48px 20px;text-align:center;color:var(--muted)}
 .inbox-empty strong {color:var(--ink);font-size:15px}
 .inbox-empty svg {color:var(--green)}

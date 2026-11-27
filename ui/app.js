@@ -906,25 +906,40 @@ function inboxRow(t,grouped=false) {
     inboxScope(t)+(t.status==="question" && t.answer_choices?'<p class="row-question">'+esc(plain(t.question).slice(0,200))+'</p>':"")+answerChoices(t)+'</div>'+
     '<div class="row-side">'+inboxPill(t)+'<div class="row-meta"><div class="row-shortcuts">'+rowShortcuts(t)+'</div><time title="'+esc(fullDate(t.created))+'">'+esc(relativeDate(t.created))+'</time></div></div></div>';
 }
+// Auto-group: same-error failures first (they share a cause and a Retry all), then the
+// remaining rows that share a repository, or a project when the task names no repository.
+const repoKey=t=>{const place=taskRepository(t)||t.project; return place?"repo:"+String(place).toLowerCase():"";};
+function inboxGroups(shown) {
+  const byError=new Map(), byRepo=new Map(), owner=new Map();
+  if (!autoGroup) return owner;
+  for (const t of shown) if (inboxKind(t)==="failed") { const k="error:"+errorKey(t); byError.set(k,[...(byError.get(k)||[]),t]); }
+  for (const [k,members] of byError) if (members.length>1) members.forEach(m=>owner.set(m.id,k));
+  for (const t of shown) if (!owner.has(t.id) && repoKey(t)) { const k=repoKey(t); byRepo.set(k,[...(byRepo.get(k)||[]),t]); }
+  for (const [k,members] of byRepo) if (members.length>1) members.forEach(m=>owner.set(m.id,k));
+  return owner;
+}
 function inboxList(shown) {
   if (!shown.length) return '<div class="inbox-empty">'+icon("done",28)+'<strong>'+(inboxFilter==="all"?"Nothing needs you":"Nothing in "+inboxKinds[inboxFilter])+'</strong><p>Agents keep working. Tasks appear here when one needs a decision, fails or is blocked.</p></div>';
-  const buckets=new Map();
-  if (autoGroup) for (const t of shown) if (inboxKind(t)==="failed") {
-    const key=errorKey(t); buckets.set(key,[...(buckets.get(key)||[]),t]);
-  }
-  const done=new Set();
+  const owner=inboxGroups(shown), done=new Set();
+  const toggle=(key,open)=>'<button type="button" class="iconbtn plain" data-action="inbox-group" data-key="'+esc(key)+'" aria-expanded="'+open+'" aria-label="'+(open?"Collapse":"Expand")+' group">'+icon(open?"up":"down",16)+'</button>';
   return shown.map(t=>{
     if (done.has(t.id)) return "";
-    const members=autoGroup && inboxKind(t)==="failed" ? buckets.get(errorKey(t)) : null;
-    if (!members || members.length<2) return inboxRow(t);
+    const key=owner.get(t.id);
+    if (!key) return inboxRow(t);
+    const members=shown.filter(m=>owner.get(m.id)===key);
     members.forEach(m=>done.add(m.id));
-    const key=errorKey(t), open=!collapsedGroups.has(key);
-    const places=[...new Set(members.map(m=>taskRepository(m)||m.project).filter(Boolean))];
-    return '<section class="inbox-group failed"><div class="group-head"><span class="row-icon">'+icon("stack",18)+'</span><div class="row-main"><strong>'+members.length+' tasks failed: '+esc(errorHead(t))+'</strong>'+
-      '<p>Affecting '+members.length+' tasks'+(places.length?" in "+esc(places.slice(0,3).join(", "))+(places.length>3?" and "+(places.length-3)+" more":""):"")+'.</p></div>'+
-      '<div class="row-side">'+button("Retry all","inbox-retry-all","sync","secondary",'data-key="'+esc(key)+'"')+'<span class="pill failed">Failed</span>'+
-      '<button type="button" class="iconbtn plain" data-action="inbox-group" data-key="'+esc(key)+'" aria-expanded="'+open+'" aria-label="'+(open?"Collapse":"Expand")+' group">'+icon(open?"up":"down",16)+'</button></div></div>'+
-      (open?'<div class="group-rows">'+members.map(m=>inboxRow(m,true)).join("")+'</div>':"")+'</section>';
+    const open=!collapsedGroups.has(key), rows=open?'<div class="group-rows">'+members.map(m=>inboxRow(m,true)).join("")+'</div>':"";
+    if (key.startsWith("error:")) {
+      const places=[...new Set(members.map(m=>taskRepository(m)||m.project).filter(Boolean))];
+      return '<section class="inbox-group failed"><div class="group-head"><span class="row-icon">'+icon("stack",18)+'</span><div class="row-main"><strong>'+members.length+' tasks failed: '+esc(errorHead(t))+'</strong>'+
+        '<p>Affecting '+members.length+' tasks'+(places.length?" in "+esc(places.slice(0,3).join(", "))+(places.length>3?" and "+(places.length-3)+" more":""):"")+'.</p></div>'+
+        '<div class="row-side">'+button("Retry all","inbox-retry-all","sync","secondary",'data-key="'+esc(key.slice(6))+'"')+'<span class="pill failed">Failed</span>'+toggle(key,open)+'</div></div>'+rows+'</section>';
+    }
+    const place=taskRepository(t)||t.project, counts={failed:0,decision:0,blocked:0};
+    members.forEach(m=>counts[inboxKind(m)]++);
+    const summary=[["failed","failed"],["decision","decision"],["blocked","blocked"]].filter(([k])=>counts[k]).map(([k,w])=>counts[k]+" "+w+(counts[k]>1&&k==="decision"?"s":"")).join(", ");
+    return '<section class="inbox-group repo"><div class="group-head"><span class="row-icon">'+icon("stack",18)+'</span><div class="row-main"><strong>'+members.length+' tasks in '+esc(place)+'</strong>'+
+      '<p>'+esc(summary)+'.</p></div><div class="row-side">'+toggle(key,open)+'</div></div>'+rows+'</section>';
   }).join("");
 }
 function inboxHead(all) {
