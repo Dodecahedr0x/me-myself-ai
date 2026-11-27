@@ -251,7 +251,7 @@ An offer is pending until it is answered `cancel_ack` or the receiver's owner re
 
 This section fixes how phase 3 splits work and hands it over before an absence. Where it narrows the sections above, it wins.
 
-**Capacity on every exchange.** Each exchange carries the sender's capacity: slots, free slots, preference, state (`active`, `sleeping` or `stopping`), whether it runs on battery, whether its task CLI is ready, and whether Hermes is ready. A peer's capacity counts as fresh for 60 seconds after its last exchange. Slots and preference are per-instance settings in Settings → Agent settings, and they do not sync. The default is 2 slots on a Mac and the CPU count minus one elsewhere. An instance now runs at most its slot count of tasks at once. Before phase 3, up to 6 ran at once.
+**Capacity on every exchange.** Each exchange carries the sender's capacity: slots, free slots, preference, state (`active`, `sleeping` or `stopping`), whether it runs on battery, whether its task CLI is ready, and whether Hermes is ready. A peer's capacity counts as fresh for 60 seconds after its last exchange. Slots and preference are per-instance settings in Settings → Instances, and they do not sync. The default is 2 slots on a Mac and the CPU count minus one elsewhere. An instance now runs at most its slot count of tasks at once. Before phase 3, up to 6 ran at once.
 
 **Pinned tasks.** Some tasks stay with their owner, for scheduling and for absences alike:
 
@@ -335,7 +335,7 @@ Not verified yet: pairing across the internet to a real VPS, sync behaviour on l
 
 ## Phase 3 status
 
-Implemented: capacity in every exchange, per-instance slots and preference, the slot limit, pinned tasks, scheduling and pulling in `Engine.balance`, planned absence in `Engine.prepare_absence`, the sleep hook in the desktop host, and `SIGTERM` handling with longer stop timeouts for systemd and Docker. The UI adds **Run on…** in the task detail, peer state and preference in Instances, and slots and preference in Agent settings.
+Implemented: capacity in every exchange, per-instance slots and preference, the slot limit, pinned tasks, scheduling and pulling in `Engine.balance`, planned absence in `Engine.prepare_absence`, the sleep hook in the desktop host, and `SIGTERM` handling with longer stop timeouts for systemd and Docker. The UI adds **Run on…** in the task detail, peer state and preference in Instances, and slots and preference in Settings → Instances.
 
 Verified:
 

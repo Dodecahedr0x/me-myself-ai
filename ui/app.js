@@ -4,7 +4,7 @@ const $ = selector => document.querySelector(selector);
 const esc = (value = "") => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const plain = value => typeof value === "string" ? value : value == null ? "" : JSON.stringify(value, null, 2);
 const titleCase = text => String(text ?? "").replace(/[_-]/g, " ").replace(/^./, c => c.toUpperCase());
-const viewNames = {inbox:"Inbox", overview:"Overview", tasks:"Tasks", activity:"Activity", connections:"Connections", projects:"Projects", context:"Context", policies:"Decision rules", skills:"Skills & style", setup:"Setup", settings:"Configuration"};
+const viewNames = {inbox:"Inbox", overview:"Overview", tasks:"Tasks", activity:"Activity", connections:"Connections", projects:"Projects", context:"Context", policies:"Decision rules", skills:"Skills & style", setup:"Setup", settings:"Settings"};
 const paths = {
   ignore:'<circle cx="12" cy="12" r="9"/><path d="m6 6 12 12"/>',
   overview:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
@@ -100,7 +100,7 @@ function shell(view) {
   const nav = key => '<a href="#'+key+'" '+(view===key?'aria-current="page"':'')+'>'+icon(glyphs[key]||key,18)+'<span>'+esc(viewNames[key])+'</span>'+
     (key==="inbox" && waiting?'<b class="badge" aria-label="'+waiting+' need you">'+waiting+'</b>':"")+'</a>';
   const who=providerNames[state.settings.provider]||"Choose an agent";
-  const account='<a class="account" href="#settings" aria-label="Configuration: '+esc(who)+'"><span class="avatar" aria-hidden="true">'+esc(who[0])+'</span><span><strong>'+esc(who)+'</strong><small>'+(loaded?(state.settings.dry?"Dry mode":"Live mode"):"Connecting…")+'</small></span>'+icon("chevron",14)+'</a>';
+  const account='<a class="account" href="#settings?tab=agents" aria-label="Settings: '+esc(who)+'"><span class="avatar" aria-hidden="true">'+esc(who[0])+'</span><span><strong>'+esc(who)+'</strong><small>'+(loaded?(state.settings.dry?"Dry mode":"Live mode"):"Connecting…")+'</small></span>'+icon("chevron",14)+'</a>';
   setIfChanged($("#sidebar"), '<div class="brand">'+mark+'<span><strong>MeMyselfAI</strong><small>AI agent workspace</small></span></div><nav><div class="navgroup">'+["overview","inbox","tasks","activity","projects","connections"].map(nav).join("")+'</div><div class="navgroup">'+["context","policies","skills","setup","settings"].map(nav).join("")+'</div></nav><div class="sidebar-foot">'+account+'</div>');
   document.body.dataset.view=view;
   const buttons = {
@@ -110,9 +110,9 @@ function shell(view) {
   };
   const primary = buttons[view] ? button(...buttons[view],"primary") :
     view==="connections" && state.connections.length ? button("Sync now","sync","sync") : "";
-  const delivery = loaded ? '<a class="mode '+(state.settings.dry?'':'live')+'" href="#settings">'+icon("shield",13)+(state.settings.dry?"Dry mode":"Live mode")+'</a>' : "";
+  const delivery = loaded ? '<a class="mode '+(state.settings.dry?'':'live')+'" href="#settings?tab=delivery">'+icon("shield",13)+(state.settings.dry?"Dry mode":"Live mode")+'</a>' : "";
   const provider = providerNames[state.settings.provider] || "Choose provider";
-  const actions = '<div class="toolbar-actions"><a class="provider-link" href="#settings" aria-label="Choose an agent provider">'+esc(provider)+'</a>'+delivery+(loaded?primary:"")+'</div>';
+  const actions = '<div class="toolbar-actions"><a class="provider-link" href="#settings?tab=agents" aria-label="Choose the task agent">'+esc(provider)+'</a>'+delivery+(loaded?primary:"")+'</div>';
   setIfChanged($("#bar"), '<div class="toolbar-title"><button type="button" class="iconbtn menu-toggle" data-action="menu" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">'+icon("menu")+'</button><h1>'+esc(viewNames[view])+'</h1></div>'+actions);
 }
 function empty(message, action = "") {
@@ -577,37 +577,6 @@ function skillState(s) {
   if (s.reverted || s.status==="reverted") return "Reverted";
   return s.status ? titleCase(s.status) : s.kind==="style" ? "Awaiting review" : "Inactive";
 }
-function installationStatus(id) {
-  if (providers === null) return "Checking installation…";
-  const provider = providers.find(item=>item.id===id);
-  if (!provider || typeof provider.installed!=="boolean") return "Installation status unavailable";
-  return provider.installed ? "Installed" : "Missing";
-}
-function providerLabel(id) {
-  return providerNames[id]+" · "+installationStatus(id);
-}
-async function loadProviders(force=false) {
-  if (providersPending || (!force && Date.now()-providersChecked<30000)) return;
-  providersPending=true; providersChecked=Date.now();
-  try {
-    const result=await request("/api/providers");
-    providers=Array.isArray(result.providers)?result.providers:[];
-  } catch { providers=[]; }
-  finally { providersPending=false; }
-  const select=$("#editor select[name=provider]");
-  if (select) for (const option of select.options) {
-    if (Object.hasOwn(providerNames,option.value)) option.textContent=providerLabel(option.value);
-  }
-  if (activeView==="settings") render();
-}
-function providerField() {
-  const selected=state.settings.provider;
-  const choices=Object.keys(providerNames).map(id=>[id,providerLabel(id)]);
-  return '<label class="field"><span>Agent provider</span><select name="provider" required aria-describedby="provider-help">'+
-    (Object.hasOwn(providerNames,selected)?"":'<option value="" selected disabled>Choose a provider</option>')+
-    selectOptions(choices,selected)+'</select></label><div class="provider-help"><p id="provider-help">Install your chosen CLI and sign in from your terminal. The CLI may send task context to its configured AI service, including connected activity and code supplied for the task.</p>'+
-    button("Check again","providers","sync","quiet")+'</div>';
-}
 async function loadAgents(force=false) {
   if (agentsPending || (!force && Date.now()-agentsChecked<30000)) return;
   agentsPending=true; agentsChecked=Date.now();
@@ -635,17 +604,6 @@ async function hermesAction(op) {
     if (op==="hermes_install") { notify("Installing Hermes. This takes a few minutes."); agentsChecked=0; setTimeout(()=>loadAgents(true),3000); }
     else notify(result.opened?"The Hermes dashboard is starting in Terminal. Close that window to stop it.":"Run this on this machine, then open http://127.0.0.1:9119: "+result.command);
   } catch(e) { showError(e.message); }
-}
-function agentsSection() {
-  if (agentSetup===null) return section("Agents","",empty("Checking agents…"));
-  const rows=(agentSetup.harnesses||[]).map(a=>{
-    const uses=a.id==="hermes"?" · Uses your "+(subscriptionNames[a.uses]||a.uses):"";
-    const detail=a.role+" · "+(agentStates[a.state]||"Status unavailable")+(a.version?" · "+a.version:"")+uses+(a.state==="sign_in"?" · Run: "+a.sign_in:"")+(a.detail?" · "+a.detail:"");
-    let controls=a.state==="sign_in"?button("Sign in","agent-sign-in",null,"secondary",'data-agent="'+esc(a.id)+'"'):"";
-    if (a.id==="hermes") return entry("stack",a.label,hermesDetail(a,detail),controls+hermesControls(a));
-    return entry("working",a.label,detail,controls);
-  }).join("");
-  return section("Agents",button("Check again","agents","sync","quiet"),rows||empty("Agent status unavailable.",button("Retry","agents","sync")));
 }
 const shortPrint = fp => (fp||"").slice(0,16).match(/.{1,4}/g)?.join(" ")||"";
 function instancesSection() {
@@ -678,14 +636,68 @@ async function pairingCode() {
     await refresh();
   } catch(e) { notify(e.message); }
 }
+// Settings: four tabs, every control saves where it sits. See docs/specs/dashboard.md#settings.
+const settingsTabs={delivery:"Delivery",agents:"Agents",instances:"Instances",workspace:"Workspace"};
+const settingsIntro={
+  delivery:"Decide what may leave without you.",
+  agents:"The command-line agents that prepare tasks and the orchestrator that dispatches them, on this instance.",
+  instances:"Machines that share this workspace and its work.",
+  workspace:"Folder permissions, ignored work and sample data."
+};
+function settingsTab() {
+  const tab=new URLSearchParams(location.hash.split("?")[1]).get("tab");
+  return Object.hasOwn(settingsTabs,tab)?tab:"delivery";
+}
+function choice(name,value,checked,title,detail,extra="") {
+  return '<label class="choice"><input type="radio" name="'+name+'" value="'+esc(value)+'"'+(checked?" checked":"")+'><span class="choice-text"><strong>'+esc(title)+'</strong>'+(detail?'<small>'+esc(detail)+'</small>':"")+'</span>'+extra+'</label>';
+}
+function deliveryTab() {
+  const dry=!!state.settings.dry;
+  return '<fieldset class="choices"><legend>Delivery mode</legend>'+
+    choice("set-dry","true",dry,"Dry mode","Every reply, post and repository write waits for your approval. Agents still discover and prepare work on their own.")+
+    choice("set-dry","false",!dry,"Live mode","Work goes out without asking when every applicable decision rule allows the full action. Anything else still waits for you.")+
+    '</fieldset><p class="section-note">'+link("Edit decision rules","policies")+'</p>';
+}
+function agentDetail(a) {
+  return [agentStates[a.state]||"Status unavailable",a.version,a.state==="sign_in"?"Run: "+a.sign_in:"",a.detail].filter(Boolean).join(" · ");
+}
+function agentsTab() {
+  const rows=agentSetup?.harnesses||[], selected=state.settings.provider;
+  const recheck=button("Check again","agents","sync","quiet");
+  const signIn=a=>a.state==="sign_in"?button("Sign in","agent-sign-in",null,"secondary",'data-agent="'+esc(a.id)+'"'):"";
+  const tasks=Object.entries(providerNames).map(([id,name])=>{
+    const a=rows.find(r=>r.id===id);
+    const detail=a?agentDetail(a):agentSetup===null?"Checking…":"Status unavailable";
+    return '<div class="choice-row">'+choice("set-provider",id,id===selected,name,detail,id===selected?pill("complete","Prepares tasks"):"")+'<div class="entry-actions">'+(a?signIn(a):"")+'</div></div>';
+  }).join("");
+  const h=rows.find(r=>r.id==="hermes");
+  const sub=state.settings.orchestrator_subscription||(selected==="codex"?"codex":"claude");
+  const subSelect='<label class="inline-field"><span>Uses</span><select name="set-subscription">'+selectOptions(Object.entries(subscriptionNames),sub)+'</select></label>';
+  const hermes=h?entry("stack",h.label,hermesDetail(h,agentDetail(h)),subSelect+signIn(h)+hermesControls(h))
+    :entry("stack","Hermes",agentSetup===null?"Checking…":"Status unavailable",subSelect);
+  return section("Task agent",recheck,'<p class="section-note">Prepares every task. Install the CLI and sign in from your terminal. It may send task context, including connected activity and code, to its AI service.</p><fieldset class="choices plain"><legend>Task agent</legend>'+tasks+'</fieldset>')+
+    section("Orchestrator","",'<p class="section-note">Hermes sweeps your accounts, starts tasks and posts a daily summary.</p>'+hermes);
+}
+function instancesTab() {
+  const inst=state.instances;
+  if (!inst) return empty("Instance details unavailable.",button("Retry","reload","sync"));
+  const capacity=inst.peers.length?section("This instance's share","",
+    '<div class="inline-fields"><label class="field"><span>Tasks on this instance</span><select name="set-preference">'+selectOptions(Object.entries(preferenceNames),state.settings.preference||"first")+'</select></label>'+
+    '<label class="field"><span>Agent slots</span><input type="number" name="set-slots" min="0" max="64" value="'+esc(String(state.settings.slots||""))+'" placeholder="Default"><small>How many tasks run here at once. Leave empty for the default.</small></label></div>'):"";
+  return instancesSection()+capacity;
+}
+function workspaceTab() {
+  const ignored=[(state.ignorelist?.projects||[]).length+" projects",(state.ignorelist?.repositories||[]).length+" repositories"].join(" · ");
+  return entry("projects","Folder access","Check a repository folder or update its macOS permission.",button("Manage folder access","folder-access",null))+
+    entry("projects","Ignore list",ignored+" ignored",button("Edit ignore list","ignorelist",null))+
+    entry("stack","Sample workspace","Add fixture tasks and activity to explore the app.",button("Load sample","demo",null));
+}
 function settingsPage() {
-  return section("Agent configuration","", entry("shield","Delivery mode",state.settings.dry?"Dry mode · External writes require your approval.":"Live mode · Project decision rules govern delivery.",button("Configure","settings",null))+
-      entry("working","Agent provider",Object.hasOwn(providerNames,state.settings.provider)?providerLabel(state.settings.provider):"Choose a provider to prepare tasks.",button("Choose provider","settings",null)+button("Check again","providers","sync","quiet")))+
-    agentsSection()+
-    instancesSection()+
-    section("Permissions","",entry("projects","Folder access","Choose which repository folder to check or update its macOS permission.",button("Manage folder access","folder-access",null)))+
-    section("Work exclusions","",entry("projects","Ignore list",[(state.ignorelist?.projects||[]).length+" projects",(state.ignorelist?.repositories||[]).length+" repositories"].join(" · "),button("Edit ignore list","ignorelist",null)))+
-    section("Sample workspace","",entry("stack","Load sample work","Add fixture tasks and activity to explore the workspace.",button("Load sample","demo",null)));
+  const tab=settingsTab();
+  const body={delivery:deliveryTab,agents:agentsTab,instances:instancesTab,workspace:workspaceTab}[tab]();
+  return '<nav class="tabs settings-tabs" aria-label="Settings sections">'+Object.entries(settingsTabs).map(([key,label])=>
+      '<a href="#settings?tab='+key+'"'+(key===tab?' aria-current="page"':"")+'>'+label+'</a>').join("")+'</nav>'+
+    '<div class="settings-panel"><p class="settings-intro">'+esc(settingsIntro[tab])+'</p>'+body+'</div>';
 }
 // Guided setup. See docs/specs/guided-setup.md.
 const stepInfo={
@@ -757,12 +769,12 @@ function stepSummary(s) {
 }
 function stepActions(s) {
   switch (s.id) {
-    case "agent": return (s.state==="sign_in"?button("Sign in","agent-sign-in",null,"primary",'data-agent="'+esc(s.agent)+'"'):"")+(s.ready?"":'<a class="btn quiet" href="#settings">Change agent</a>');
+    case "agent": return (s.state==="sign_in"?button("Sign in","agent-sign-in",null,"primary",'data-agent="'+esc(s.agent)+'"'):"")+(s.ready?"":'<a class="btn quiet" href="#settings?tab=agents">Change agent</a>');
     case "accounts": return s.ready?'<a class="btn quiet" href="#connections">Manage</a>':(s.github_login?button("Connect GitHub as @"+s.github_login,"setup-github","github","primary"):"")+'<a class="btn secondary" href="#connections">Other accounts</a>';
     case "projects": return s.ready?'<a class="btn quiet" href="#projects">Manage</a>':button("Add project","project","add","secondary")+(s.skipped?"":button("Skip","setup-skip",null,"quiet",'data-step="projects"'));
     case "orchestrator": return s.state==="sign_in"?button("Sign in","agent-sign-in",null,"secondary",'data-agent="hermes"'):"";
     case "server": return s.ready&&s.peers.some(p=>!p.agent_ready)?button("Sign in on server","vps-sign-in",null,"primary"):"";
-    case "delivery": return '<a class="btn quiet" href="#settings">Change</a>';
+    case "delivery": return '<a class="btn quiet" href="#settings?tab=delivery">Change</a>';
   }
   return "";
 }
@@ -1112,6 +1124,7 @@ function render() {
     if (view==="activity") { setIfChanged($("#activity-list"),activityList()); return; }
     if (view==="inbox") { renderInbox(); return; }
     if (view==="overview") { renderOverview(); return; }
+    if (view==="settings" && document.activeElement.name==="set-slots") return;
     if (view==="setup") { const p=$("#vps-progress"); if (p && !p.contains(document.activeElement)) setIfChanged(p,vpsProgress()); return; }
   }
   if (activeView===view && view==="inbox") { renderInbox(); return; }
@@ -1119,7 +1132,7 @@ function render() {
   activeView=view; setIfChanged($("#main"),pages[view]());
   if (view==="inbox") renderInbox();
   if (view==="overview") renderOverview();
-  if (view==="settings") { void loadProviders(); void loadAgents(); }
+  if (view==="settings") void loadAgents();
   if (view==="setup" || view==="overview") void loadSetup();
   document.title=viewNames[view]+" · MeMyselfAI";
   if (switched) { closeMenu(); $("#main").scrollTop=0; window.scrollTo(0,0); }
@@ -1609,7 +1622,6 @@ function handleAction(el) {
       openForm("rule",rule?"Edit decision rule":"Add decision rule",projectField(project||selectedProject,!!rule)+input("kind","Decision type",{value:kind,required:true,readonly:!!rule,placeholder:"e.g. reply, status or commitment"})+selectField("mode","Authority",Object.entries(modes),rule?.mode||"review"),"Save rule",{kind,project});
       return;
     }
-    case "providers": void loadProviders(true); return;
     case "agents": void loadAgents(true); return;
     case "orchestrator-ask": openForm("orchestrator_prompt","Ask the orchestrator",input("text","Message",{type:"textarea",required:true,placeholder:"What's on my plate this week?"}),"Send",{},"The orchestrator reads your connected accounts through MeMyselfAI and can start tasks. Anything it prepares to send still needs your approval in dry mode."); return;
     case "report-period": reportPeriod=el.dataset.period; localStorage.setItem("report-period",reportPeriod); renderOverview(); return;
@@ -1635,7 +1647,7 @@ function handleAction(el) {
     case "instance-join": openForm("instance_join","Join another instance",input("address","Address of the other instance",{required:true,placeholder:"vps.example.com:8802"})+input("code","Pairing code",{required:true,placeholder:"XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"}),"Pair",{},"Pair only machines you control. Paired instances share your logins."); return;
     case "instance-rename": openForm("instance_rename","Rename this instance",input("name","Name",{required:true,value:state.instances.name}),"Save"); return;
     case "instance-remove": openForm("instance_remove","Remove instance",'<p>'+esc(state.instances.peers.find(p=>p.id===el.dataset.peer)?.name||"This instance")+' stops syncing and the workspace key is rotated. It keeps the logins it already has. Reconnect each account afterwards to revoke them.</p>',"Remove",{peer:el.dataset.peer}); return;
-    case "settings": void loadProviders(); openForm("settings","Agent settings",selectField("dry","Delivery mode",[["true","Dry mode — review every external write"],["false","Live mode — follow project rules"]],String(!!state.settings.dry))+providerField()+selectField("orchestrator_subscription","Orchestrator subscription",Object.entries(subscriptionNames),state.settings.orchestrator_subscription||(state.settings.provider==="codex"?"codex":"claude"))+(state.instances?.peers.length?selectField("preference","Tasks on this instance",Object.entries(preferenceNames),state.settings.preference||"first")+input("slots","Agent slots on this instance",{type:"number",value:String(state.settings.slots||""),placeholder:"Default",help:"How many tasks run here at once. Leave empty for the default."}):""),"Save settings",{},"In live mode the agent may deliver work without asking when all applicable rules allow it."); return;
+    case "live-mode": openForm("settings","Turn on live mode",'<input type="hidden" name="dry" value="false"><p>Agents will send replies, posts and repository writes without asking whenever every applicable decision rule allows the full action. Anything a rule does not cover still waits for your approval.</p><p class="form-intro">You can switch back to dry mode at any time.</p>',"Turn on live mode"); return;
     case "connect": {
       const c=state.connections.find(k=>String(k.id)===id), provider=c?.kind||kind, schema=schemas[provider];
       if (!schema) { showError("Connector setup is unavailable. Reload connection details and try again."); return; }
@@ -1711,7 +1723,7 @@ function handleAction(el) {
     case "sync": void mutate({op:action},"Source sync requested."); return;
   }
 }
-const messages={instance_checkout:"Checkout added.",instance_join:"Paired. The instances now share work.",instance_rename:"Instance renamed.",instance_remove:"Instance removed and workspace key rotated.",orchestrator_prompt:"Message sent to the orchestrator.",close_task:"Task closed.",ignorelist:"Ignore list saved.",app_finding:"Finding tracked.",chat_source_config:"Chat source saved.",suggestion_config:"Activity sources saved.",task:"Task created.",project:"Project saved.",report:"Investigation requested.",style:"Style preference submitted for review.",rule:"Decision rule saved.",settings:"Agent settings saved.",connect:"Connection saved.",feedback:"Feedback recorded.",answer:"Answer submitted.",reconcile:"Delivery outcome recorded.",dismiss:"Task dismissed.",disconnect:"Account disconnected.",demo:"Sample workspace loaded.",revert_skill:"Revision reverted."};
+const messages={instance_checkout:"Checkout added.",instance_join:"Paired. The instances now share work.",instance_rename:"Instance renamed.",instance_remove:"Instance removed and workspace key rotated.",orchestrator_prompt:"Message sent to the orchestrator.",close_task:"Task closed.",ignorelist:"Ignore list saved.",app_finding:"Finding tracked.",chat_source_config:"Chat source saved.",suggestion_config:"Activity sources saved.",task:"Task created.",project:"Project saved.",report:"Investigation requested.",style:"Style preference submitted for review.",rule:"Decision rule saved.",settings:"Settings saved.",connect:"Connection saved.",feedback:"Feedback recorded.",answer:"Answer submitted.",reconcile:"Delivery outcome recorded.",dismiss:"Task dismissed.",disconnect:"Account disconnected.",demo:"Sample workspace loaded.",revert_skill:"Revision reverted."};
 async function signInAgent(agent) {
   try {
     const result=await request("/api/action",{op:"agent_sign_in",agent});
@@ -1779,7 +1791,25 @@ document.addEventListener("change",event=>{
   if (event.target.id==="activity-connection") location.hash = event.target.value?"activity?connection="+encodeURIComponent(event.target.value):"activity";
   if (event.target.id==="activity-project") {activityProject=event.target.value;setIfChanged($("#activity-list"),activityList());}
   if (event.target.closest("#editor")) rememberForm();
+  if (event.target.name?.startsWith("set-")) settingChanged(event.target);
 });
+// Settings save as soon as they change. Live mode alone asks first, because it lets work leave without approval.
+function settingChanged(el) {
+  const key=el.name.slice(4), value=el.value;
+  if (key==="dry" && value==="false") { $('input[name="set-dry"][value="true"]').checked=true; handleAction({dataset:{action:"live-mode"}}); return; }
+  if (key==="slots" && !(value==="" || /^\d+$/.test(value))) { showError("Enter a whole number of agent slots, or leave it empty for the default."); return; }
+  const payload={op:"settings"};
+  if (key==="dry") payload.dry=true;
+  if (key==="provider") payload.provider=value;
+  if (key==="subscription") payload.orchestrator_subscription=value;
+  if (key==="preference") payload.preference=value;
+  if (key==="slots") payload.slots=Number(value||0);
+  const said={dry:"Dry mode on. Every external write waits for your approval.",provider:providerNames[value]+" now prepares tasks.",subscription:"Hermes now uses your "+subscriptionNames[value]+".",preference:"Saved: "+preferenceNames[value]+".",slots:"Agent slots saved."}[key];
+  void mutate(payload,said).then(()=>{
+    $("#main").rendered=null; render(); // Puts a control back to the saved value if the save failed.
+    if (key==="provider"||key==="subscription") { agentsChecked=0; void loadAgents(true); }
+  });
+}
 document.addEventListener("submit",event=>{
   if (event.target.id==="instruct-form") {event.preventDefault();void sendInstruction(event.target);return;}
   if (event.target.id==="chat-form") {event.preventDefault();void sendChat(event.target.elements.text.value);return;}

@@ -12,7 +12,7 @@ Task details show the trigger, available results, completion evidence, linked ac
 
 Connections, projects, decision rules, delivery settings and Markdown revisions are editable from the workspace. Connections are workspace-wide. Setup and reconnection ask for the provider and source. Project selection appears on tasks and decision rules. New connections offer provider sign-in first. GitHub can reuse the local GitHub CLI account or start a browser login. Slack accepts a user token. Google uses browser consent for Workspace services. Before saving, the user sees the verified account and connects their GitHub account, connects the Slack workspace, or confirms their Google account. Users can cancel, retry or enter credentials manually. Existing connections can be edited or reauthenticated. GitHub’s account row expands to show repository sync status. Browse work pages through open issues, pull requests and review requests. Review for work submits a monitored item to discovery. Passwords and authorization credentials stay out of browser storage. A missed-work report is accessible from activity. Activity and source text render as text. Dialogs are keyboard accessible and polling preserves open forms and the proposal the user is reviewing.
 
-The sidebar links to agent provider settings. Settings shows the configured CLI and lets the user select Claude Code or Codex CLI independently of delivery mode. Both choices are available even if their executable is missing. The editor shows installation status, explains how to sign in using the CLI, and explains that the CLI may send supplied task context to its configured AI service. The user can recheck installation after installing a CLI. A pending style suggestion can be approved or declined. An investigation report links to each recovered task available in the queue.
+The sidebar links to [Settings](#settings), which lets the user select Claude Code or Codex CLI independently of delivery mode. Both choices are available even if their executable is missing. Settings shows each CLI's status, explains how to sign in using the CLI, and explains that the CLI may send supplied task context to its configured AI service. The user can recheck installation after installing a CLI. A pending style suggestion can be approved or declined. An investigation report links to each recovered task available in the queue.
 
 **Context** shows when Hermes last used its context tools, every schedule with its timing, origin, reason and next run (with **Cancel**), and every context entry with its kind, project and review state (with **Retire** or **Restore**). Stale entries are labeled as withheld from agents. **Decision rules** lists handoff candidates above the rules. [Context and schedules](context-and-schedules.md)
 
@@ -39,11 +39,37 @@ The sidebar links to agent provider settings. Settings shows the configured CLI 
 - **Ask Hermes for a report** sends the prompt for the selected period.
 - At 900 pixels wide every section is readable and the chat follows the dashboard.
 
+## Settings
+
+Settings is one page with four tabs. Each control sits on its tab and saves when it changes, so no dialog stands between the user and a setting. The tab is part of the address (`#settings?tab=agents`), so links from Setup, the toolbar and the sidebar footer open the right one. An unknown tab opens Delivery. Implemented in `ui/app.js` (`settingsPage`, `settingChanged`).
+
+| Tab | Contents |
+|---|---|
+| **Delivery** (default) | Dry mode and Live mode as two radio cards, each saying what it lets leave without you, and a link to Decision rules. |
+| **Agents** | *Task agent*: Claude Code and Codex CLI as a radio list with their state, version and **Sign in** when needed. The chosen one is marked *Prepares tasks*. A note says the CLI may send task context to its AI service. One **Check again** rechecks every agent. *Orchestrator*: the Hermes row with its state, a **Uses** subscription picker, **Sign in**, **Open dashboard** and **Retry install**. |
+| **Instances** | This instance and every paired one, with Rename, Add checkout, Add instance, Join and Remove. With a paired instance, *This instance's share* adds **Tasks on this instance** (Run here first, Overflow only, Never run agents) and **Agent slots**. |
+| **Workspace** | Folder access, the ignore list with its counts, and loading the sample workspace. |
+
+- Choosing **Live mode** saves nothing yet. The radio stays on Dry mode and a dialog explains that agents will send without asking whenever every applicable rule allows the full action. **Turn on live mode** saves it. Closing the dialog keeps dry mode. Choosing **Dry mode** saves at once, because it only adds approvals.
+- Every other change saves immediately and confirms in a notice, such as "Codex CLI now prepares tasks.". Changing the task agent or the Hermes subscription rechecks agent status.
+- A failed save shows the server's error and puts the control back to the saved value.
+- Agent slots save when the field loses focus or on Enter. It accepts a whole number from 0 to 64, or empty for the default. Typing in it survives the five-second refresh.
+- Under 560 pixels the tabs tighten and each row's actions wrap under its text.
+
+### Acceptance criteria
+
+- Open Settings from the sidebar. Delivery is selected. Each tab opens its contents, and reloading keeps the tab.
+- Choose Live mode, then close the dialog: dry mode is still saved and selected. Choose it again and confirm: the toolbar and sidebar footer say Live mode. Choose Dry mode: it saves without a dialog.
+- On Agents, choose the other CLI. The *Prepares tasks* mark moves, the toolbar names it, and a reload keeps it. Change the Hermes subscription and reload: it is kept.
+- With a paired instance, change Tasks on this instance and Agent slots, then reload: both are kept. An invalid slot count is refused with a message.
+- Setup's **Change agent** opens Agents and its delivery **Change** opens Delivery.
+- At 390 pixels wide every tab is readable and every control is reachable.
+
 ## Inbox view
 
 The Inbox is the landing view. It has three columns: the sidebar, the task list and the open task. It follows the reference layout the user supplied on 2026-11-24. The [Overview dashboard](#overview-dashboard) remains available as **Overview**.
 
-- **Sidebar.** Brand, then Overview, Inbox, Tasks, Activity, Projects and Connections. Inbox carries a badge with the number of tasks that need attention. Context, Decision rules, Skills & style, Setup and Configuration (settings) follow. The footer names the agent provider and the delivery mode and links to Configuration.
+- **Sidebar.** Brand, then Overview, Inbox, Tasks, Activity, Projects and Connections. Inbox carries a badge with the number of tasks that need attention. Context, Decision rules, Skills & style, Setup and Settings follow. The footer names the agent provider and the delivery mode and links to Settings → Agents.
 - **Header.** "Inbox", one line saying these tasks need the user to keep agents moving, and an **Auto-group** switch. The switch is remembered in the browser.
 - **Summary cards.** Needs attention, In progress, Completed (24h) and Blocked. Each card filters the list or opens Tasks for that group. Completed counts done tasks whose last recorded event is under 24 hours old.
 - **Filter chips.** All, Decision, Failed and Blocked, each with a count. Decision is a proposal awaiting approval or a question. Failed is a failed task. Blocked is a delivery whose outcome is uncertain or a question caused by an inaccessible checkout. **Sort by** offers Priority (failed, decision, blocked, then newest) and Newest.
@@ -77,11 +103,11 @@ The Inbox is the landing view. It has three columns: the sidebar, the task list 
 - Opening a task selects **Actions** and puts the available controls above the question, proposed change or result. **Why it surfaced & context** shows the reason, task Markdown, source and supporting evidence. **Task activity** shows its history, feedback and delivery receipts. The tabs support keyboard navigation. Switching tabs preserves the reviewed version and any stale-proposal warning.
 - Home and Tasks offer shortcuts beside each task. Focus the row and press **A** to answer, **R** to retry preparation, **F** to give feedback, **C** to open the close confirmation, **V** to review a proposal or **O** to record a delivery outcome. Only applicable actions appear. The icon buttons show their keys on hover and work with touch. Review opens the exact version for a separate confirmation. Row shortcuts apply only while focus is on that task.
 - A task waiting for an answer offers **Retry preparation** so the user can recheck its current project settings without entering the checkout path as an answer.
-- **Settings → Folder access** is available even when the queue is empty. A question caused by an inaccessible checkout opens the same controls from **Allow folder access** on the task. The user can choose the registered folder again in a native picker, open macOS Files & Folders settings after a denial, or check access after changing a permission. Show the selected checkout path and verify Git can read it from the service before reporting success. A successful check wakes the existing scheduler for eligible tasks. Cancellation, choosing another folder and a failed check preserve project registrations and pending decisions.
+- **Settings → Workspace → Folder access** is available even when the queue is empty. A question caused by an inaccessible checkout opens the same controls from **Allow folder access** on the task. The user can choose the registered folder again in a native picker, open macOS Files & Folders settings after a denial, or check access after changing a permission. Show the selected checkout path and verify Git can read it from the service before reporting success. A successful check wakes the existing scheduler for eligible tasks. Cancellation, choosing another folder and a failed check preserve project registrations and pending decisions.
 - For a review, compare the displayed version, account, target and exact content with the submitted approval version. A stale or failed approval displays the server error. Delivery with an uncertain outcome offers no resend.
 - Open a form while another task changes. Typed text and keyboard focus survive the refresh. A form submission reports failure inline and preserves the user's entry.
 - A connection can be configured through the provider schema. A project rule can be saved, a skill reviewed, and a missed-work report submitted. A fresh state request reflects each successful action.
 - With fixture accounts, connect GitHub without selecting a repository, connect Slack without a channel picker, and confirm a Google account with its granted services. Verify browser links, device codes, one-time app registration, cancellation, retry and reauthentication. Manual setup remains reachable for all three providers.
 - A narrow window keeps all main views and actions accessible. A keyboard user can open and dismiss a form, navigate views and return to the invoking control.
-- With one CLI installed, check that Settings distinguishes the installed and missing providers. Choose either provider, save, and reopen the editor. The selected provider persists and the delivery mode retains its saved value. Recheck after installation and verify that the status updates without discarding edits. A failed availability check offers a retry.
+- With one CLI installed, check that Settings → Agents distinguishes the installed and missing providers. Choose either provider and reload. The selected provider persists and the delivery mode retains its saved value. Recheck after installation and verify that the status updates. A failed availability check offers a retry.
 - Decline pending style guidance and observe its updated state. Open a completed report and follow a recovered task link to the matching task detail.
