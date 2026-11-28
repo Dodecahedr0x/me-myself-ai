@@ -641,6 +641,7 @@ class Engine:
         can_run = role == "task" and initial and initial["status"] == "working" and "available_paths" in payload
         results = []
         setups = 0
+        wrap_up = False  # set once the command or setup budget is spent
         tools = self.db.root / "toolchains"
         cache = self.db.root / "toolcache" / ("task-" + task) if task else None
         # Task agents get an app MCP session scoped to their task, revoked when the agent returns.
@@ -654,6 +655,9 @@ class Engine:
                 if can_run:
                     request = dict(request, local_commands_remaining=4 - commands, setup_steps_remaining=4 - setups,
                                    command_results=list(results))
+                if wrap_up:
+                    request = dict(request, local_commands_remaining=0, setup_steps_remaining=0,
+                                   command_budget_exhausted=True)
                 answer = worker.run_agent(role, request, provider, directory, **deadline, **({"mcp": mcp} if mcp else {}))
                 if initial:
                     self.require_current_task(initial)
@@ -669,17 +673,24 @@ class Engine:
                             for r in ran
                         ])
                     return answer
+                spent = setups >= 4 if answer["outcome"] == "setup" else commands >= 4
+                if wrap_up or not can_run or spent:
+                    # Out of budget: one more turn to finish with the evidence it has, rather than
+                    # failing the task and leaving the user to say "retry".
+                    if wrap_up:
+                        kind = "setup steps" if answer["outcome"] == "setup" else "local commands"
+                        raise worker.WorkerError(f"No further {kind} are available for this request.")
+                    wrap_up = True
+                    self.db.log("Command budget spent", "Asked the agent to finish with the results it has.",
+                                project, task)
+                    continue
                 if answer.get("outcome") == "setup":
-                    if not can_run or setups >= 4:
-                        raise worker.WorkerError("No further setup steps are available for this request.")
                     setups += 1
                     result = self.setup_step(directory, answer["text"], tools, cache)
                     self.db.log("Setup step", json.dumps(result, ensure_ascii=False), project, task)
                     self.require_current_task(initial)
                     results.append(result)
                     continue
-                if not can_run or commands >= 4:
-                    raise worker.WorkerError("No further local commands are available for this request.")
                 command = answer["text"]
                 result = dict(command=command, **worker.run_command(directory, command, tools=tools, cache=cache))
                 self.db.log("Local command", json.dumps(result, ensure_ascii=False), project, task)

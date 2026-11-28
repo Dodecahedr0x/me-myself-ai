@@ -147,6 +147,9 @@ The command already receives a clean environment without account credentials. Ke
 TMPDIR and Git settings when running fixtures. Network connections are disabled. Report observed
 test failures and exit codes as results when the request is to run tests. Use files for deliverable edits.
 A prior request for the user to run a command can be resolved by running it yourself.
+When command_budget_exhausted is set, no more run or setup outcomes are accepted: finish now with
+done, draft or question from command_results, listing any check you could not complete in unverified.
+Do not rerun a command whose result is already in command_results; change it or move on.
 When setup_steps_remaining is positive and a command needs a missing toolchain or dependencies, use
 outcome setup with text "install go", "install rust", "install c" (a C/C++ compiler and linker, also
 needed when Rust reports linker `cc` not found), "fetch go <folder>", "fetch rust <folder>" or
