@@ -129,6 +129,24 @@ class BugFlow(unittest.TestCase):
         with patch.dict(self.api.issue, assignees=[{"login": "other"}]), self.assertRaises(c.Rejected):
             b.verify_fix(self.t, self.conn, self.api)
 
+    def test_pull_request_lists_the_commands_the_app_ran(self):
+        self.t["milestones"] = dict(branch="memyselfai/fix-task1", base="master", revision=self.api.rev)
+        self.t["verification"] = [
+            dict(command="python3 -m unittest\n  tests.test_x", exit_code=0, timed_out=False, platform="Linux x86_64"),
+            dict(command="./scripts/build-app.sh", exit_code=None, timed_out=True, platform="Linux x86_64"),
+        ]
+        body = b.prepare(self.t, self.event, self.conn, self.api, self.who)["payload"]["body"]
+        self.assertTrue(body.startswith("Fixes #4\n\nFixed.\n\n## Verification\n"))
+        self.assertIn("- `python3 -m unittest tests.test_x` on Linux x86_64: exit 0", body)
+        self.assertIn("- `./scripts/build-app.sh` on Linux x86_64: timed out", body)
+        self.assertNotIn("Not verified yet", body)
+        self.t["unverified"] = ["./scripts/build-app.sh on a Mac"]
+        body = b.prepare(self.t, self.event, self.conn, self.api, self.who)["payload"]["body"]
+        self.assertIn("Not verified yet:\n\n- ./scripts/build-app.sh on a Mac", body)
+        del self.t["verification"]
+        body = b.prepare(self.t, self.event, self.conn, self.api, self.who)["payload"]["body"]
+        self.assertIn("The agent ran no commands while preparing this fix.", body)
+
     def test_mismatched_git_identity_ownership_or_base_rejects_writes(self):
         for origin, sha in [
             (b"https://github.com/other/project.git", self.api.base.encode()),

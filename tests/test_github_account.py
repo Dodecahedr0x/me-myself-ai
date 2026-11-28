@@ -18,7 +18,10 @@ class GitHubAccountTests(unittest.TestCase):
         (self.account,) = self.engine.state()["connections"]
 
     def refresh(self, *repos):
-        with patch("connectors.github_repositories", return_value=repos):
+        with (
+            patch("connectors.github_repositories", return_value=repos),
+            patch("connectors.github_own_open_issues", return_value=[]),
+        ):
             self.engine.sync(self.account)
 
     def children(self):
@@ -96,6 +99,8 @@ class GitHubAccountTests(unittest.TestCase):
                 return {"requested_reviewers": [{"login": "demo"}]}, {}
             if path.endswith("/issues/comments"):
                 return [], {}
+            if path == "/search/issues":
+                return dict(total_count=0, items=[]), {}
             if path.endswith("/issues/1/comments"):
                 return {"html_url": "fixture receipt"}, {}
             self.fail("Unexpected GitHub endpoint " + path)
@@ -178,6 +183,36 @@ class GitHubAccountTests(unittest.TestCase):
         self.engine.discover(key)
         self.assertEqual(self.engine.db.get("tasks", key)["status"], "skipped")
         self.assertEqual(len(self.engine.db.rows("events")), 1)
+
+
+    def test_account_refresh_records_old_open_issues_once(self):
+        self.refresh("demo/app")
+        def issue(number, **extra):
+            return dict(number=number, title=f"Issue {number}", state="open", body="Old work",
+                        user={"login": "demo"}, updated_at=connectors._iso(1), assignees=[],
+                        repository_url="https://api.github.com/repos/demo/app",
+                        html_url=f"https://github.com/demo/app/issues/{number}", **extra)
+        mine = [issue(1), issue(2), issue(3, pull_request={})]
+        elsewhere = dict(issue(4), repository_url="https://api.github.com/repos/stranger/lib")
+        queries = []
+        def api(path, token, params=None, body=None):
+            if path == "/user/repos":
+                return [{"full_name": "demo/app"}], {}
+            if path == "/user":
+                return {"login": "demo"}, {}
+            self.assertEqual(path, "/search/issues")
+            queries.append(params["q"])
+            items = mine + [elsewhere] if "author:" in params["q"] else [mine[0]]
+            return dict(total_count=len(items), items=items), {}
+        with patch("github_signin.token_for", return_value="fixture"), patch("connectors._gh", side_effect=api):
+            self.engine.sync(self.account)
+            first = {e["raw"]["destination"]: e["id"] for e in self.engine.db.rows("events")}
+            self.engine.sync(self.account)
+        self.assertEqual(queries, ["is:open is:issue assignee:demo", "is:open is:issue author:demo"] * 2)
+        # Pull requests and repositories outside the inventory are left to their own flows.
+        self.assertEqual(set(first), {"demo/app#1", "demo/app#2"})
+        self.assertEqual(len(self.engine.db.rows("events")), 2)
+        self.assertEqual({e["state"] for e in self.engine.db.rows("events")}, {"new"})
 
 
 class SyncedCliLoginTests(unittest.TestCase):

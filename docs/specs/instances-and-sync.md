@@ -156,7 +156,7 @@ A user can move a task with **Run on…** in the command palette. This performs 
 
 ## Instances view
 
-**Instances** lists every paired instance with name, platform, state, last seen, slots in use, agent readiness, items owned and preference. It offers Add instance, Join, Add checkout, Rename, Remove and the preference. Takeover is automatic. Each row in the inbox and board shows its owner.
+**Instances** lists every paired instance with name, platform, state, last seen, slots in use, agent readiness, items owned and preference. It offers Add instance, Join, Add checkout, Rename, Remove and the preference. Takeover is automatic. Each row in the inbox, the task list and the board shows its owner, including tasks this instance owns, and the task list filters by instance. See the [dashboard spec](dashboard.md#acceptance-criteria).
 
 ## Failures
 

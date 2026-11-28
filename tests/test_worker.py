@@ -404,6 +404,41 @@ class WorktreeTests(unittest.TestCase):
         worker.apply_worktree_files(self.first, [dict(path="source.py", content=source + "y")], files)
         self.assertEqual((self.first / "source.py").read_text(), source + "y")
 
+    def test_large_file_takes_exact_text_replacements(self):
+        big = "".join(f"line_{i} = {i}\n" for i in range(12000))
+        self.assertGreater(len(big), worker.MAX_NAMED_FILE)
+        (self.first / "engine.py").write_text(big)
+        edits = [
+            dict(path="engine.py", content="", old="line_5 = 5\n", new="line_5 = 50\n"),
+            dict(path="engine.py", content="", old="line_50 = 50\n", new=""),
+            dict(path="notes.md", content="new file", old="", new=""),
+        ]
+        applied = worker.apply_worktree_edits(self.first, edits, {})
+        expected = big.replace("line_5 = 5\n", "line_5 = 50\n", 1).replace("line_50 = 50\n", "", 1)
+        self.assertEqual((self.first / "engine.py").read_text(), expected)
+        self.assertEqual(applied, [dict(path="engine.py", content=expected), dict(path="notes.md", content="new file")])
+        worker._validate_files(applied, saved=True)
+        with self.assertRaises(worker.WorkerError):
+            worker._validate_files(applied)
+
+    def test_ambiguous_missing_or_mixed_replacements_are_refused_and_named(self):
+        (self.first / "big.py").write_text("x = 0\n" * 30000)
+        before = (self.first / "big.py").read_text()
+        cases = [
+            ([dict(path="big.py", content="", old="x = 0\n", new="y")], "occurs 30000 times in big.py"),
+            ([dict(path="big.py", content="", old="absent", new="y")], "occurs 0 times in big.py"),
+            ([dict(path="gone.py", content="", old="a", new="b")], "gone.py is missing"),
+            ([dict(path="big.py", content="whole", old="", new=""),
+              dict(path="big.py", content="", old="x", new="y")], "big.py has both"),
+            ([dict(path="big.py", content="z" * (worker.MAX_NAMED_FILE + 1), old="", new="")], "big.py exceeds"),
+        ]
+        for edits, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaises(worker.WorkerError) as caught:
+                    worker.apply_worktree_edits(self.first, edits, {})
+                self.assertIn(message, str(caught.exception))
+        self.assertEqual((self.first / "big.py").read_text(), before)
+
     def test_source_with_header_only_fixture_and_detector_is_available(self):
         header = "-----BEGIN OPENSSH PRIVATE KEY-----"
         source = f'path.write_text("{header}")\n' + r'pattern = rb"-----BEGIN [^\n]*PRIVATE KEY-----"'

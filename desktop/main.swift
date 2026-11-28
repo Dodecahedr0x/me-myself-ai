@@ -32,7 +32,9 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
         installMenus()
         installStatusItem()
         updater.onChange = { [weak self] text in self?.updateItem.title = text }
-        updater.onInstalled = { NSApp.terminate(nil) }
+        // Quit from the run loop, not from inside the updater's main-actor task. A quit that waits for the
+        // service runs a nested event loop, and main-queue work (the service's exit) can't run inside a main-queue job.
+        updater.onInstalled = { RunLoop.main.perform { NSApp.terminate(nil) } }
         updater.start()
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
@@ -126,6 +128,8 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
             return submenu
         }
         let app = menu("MeMyselfAI")
+        app.addItem(withTitle: "About MeMyselfAI", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        app.addItem(.separator())
         app.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "").target = self
         app.addItem(.separator())
         app.addItem(withTitle: "Hide MeMyselfAI", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")

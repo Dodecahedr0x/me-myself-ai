@@ -541,6 +541,32 @@ def github_open_work(account, view, page):
     )
 
 
+def github_own_open_issues(account):
+    """Open issues the account wrote or is assigned to, in any repository. See connectors.md."""
+    token = github_credential(account)
+    user = account["identity"]
+    found = {}
+    for role in ("assignee", "author"):
+        page = 1
+        while True:
+            response, _ = _gh(
+                "/search/issues",
+                token,
+                dict(q=f"is:open is:issue {role}:{user}", sort="updated", order="desc", per_page=100, page=page),
+            )
+            for row in response["items"]:
+                if "pull_request" in row or type(row.get("number")) is not int:
+                    continue
+                repo = validate(
+                    "github", {"repository": row["repository_url"].removeprefix("https://api.github.com/repos/")}
+                )["repository"]
+                found[(repo.casefold(), row["number"])] = _github_issue(repo, user, row, token)
+            if page * 100 >= min(response["total_count"], 1000):
+                break
+            page += 1
+    return list(found.values())
+
+
 def github_selected_issue(source, number):
     if type(number) is not int or number < 1:
         raise ValueError("Choose an open GitHub item.")

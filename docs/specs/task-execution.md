@@ -65,7 +65,28 @@ If macOS blocks reading the registered repository's identity, the scheduler chec
 
 Completing one external action advances the task. The agent checks the remaining criteria before marking the whole task complete. In dry mode, a prepared issue, PR, notification, or email can await confirmation while the dashboard shows which criteria are still outstanding.
 
+Coding work on an open GitHub issue follows the same workflow. When the agent reports it finished and has saved edits, the task becomes a bug fix: it proposes the fix branch and then the PR for approval, instead of closing as done. The edits never stay unpublished in a private clone. When the user wrote the issue, the verified PR completes the task without a notification to themselves. Earlier builds closed such tasks as done. On start the app reopens each one whose issue is still open and has no branch, PR or receipt. It sets the old clone aside under app storage, keeping its files, and redoes the work from the current default branch, because publishing needs that base.
+
 The desktop bug workflow verifies the worktree's origin and HEAD against the configured GitHub repository and its default branch before publishing a fix. When the default branch has moved on since the task started, GitHub must report it strictly ahead of the worktree's HEAD and none of its newer commits may change, rename or replace a path the fix edits; the fix is then published on the current default branch revision. Newer commits touching an edited path, a diverged or unpublished HEAD, or a comparison of 300 or more files stop preparation with a message naming the reason, and the conflicting paths when there are any. The branch preview names the base revision, commit message, paths, file modes and full contents. A moved base or a newly assigned issue pauses delivery. The PR must target the recorded base from the published fix branch and revision and link the original open issue. The reporter receives the PR URL by email, in the original Slack thread, or in the GitHub conversation with the reporter mentioned. An uncertain notification remains open until reconciled.
+
+## Checks this machine cannot run
+
+A task never waits for the user to run a build or a test, or to say whether one passed. Its agent runs the check itself, moves the task to an instance that can, or notes what stays unverified and carries on.
+
+- **Run it here.** The agent knows which machine it is on from `platform` (`macos` or `linux`). It runs what it can with local commands. The app records each command's exit code, timeout and platform on the task as `verification`.
+- **Move to a fitting instance.** For a check that needs another kind of machine, such as the Mac app build on the Linux server, the agent returns `needs_platform`. If a reachable, eligible paired instance of that kind can take the task, the app saves any prepared files, queues the task with that requirement and hands it over through the normal [capacity handoff](instances-and-sync.md#dividing-work), worktree included. Each instance advertises its `platform` in its capacity. Only a fitting instance can take or keep such a task. The receiver runs the agent with the check available and clears the requirement after that run.
+- **Note it and continue.** If no fitting instance is reachable, or none takes the task within 30 minutes, the task runs where it is with `verification_unavailable`. The agent lists each check it could not run in `unverified` and finishes with done or draft. It never turns the check into a question. The app keeps that list on the task, appends it to a done result as **Still to verify**, and the bug workflow's pull request lists it under **Not verified yet**. A task falls back like this only once, so a missing Mac cannot loop it between instances.
+- The bug workflow's pull request ends with a **Verification** section the app writes, not the agent: every command run and its exit code and platform, or a line saying none ran, then anything not verified yet.
+- [AGENTS.md](../../AGENTS.md) step 6 tells agents on a machine that cannot build the Mac app to move the task or note the build, never to ask.
+
+Acceptance, verified in `tests/test_engine.py` and `tests/test_bugflow.py`:
+
+- On Linux with a reachable Mac peer, `needs_platform: macos` queues the task for the Mac, asks no question, and only a Mac capacity can take it. The scheduler here does not start it while that Mac can take it.
+- With no Mac peer, the same answer queues the task to run again here with `verification_unavailable`. The agent then receives that fact, and its `unverified` list lands in the result. A second `needs_platform` is not acted on.
+- A task held for a Mac that no Mac takes within 30 minutes runs here and is told no Mac is reachable.
+- The pull request body lists each command with its exit code and platform, says when none ran, and lists the unverified checks.
+
+Not verified here: a real handoff between a paired Linux server and a Mac. The ownership handoff itself is covered by the existing sync tests.
 
 ## Promises become work
 
@@ -77,4 +98,5 @@ When drafting a commitment such as “I'll send the figures on Friday,” show t
 - Given an existing issue and linked PR after a restart, the agent resumes from the missing evidence. A conflicting PR or an undelivered reporter notification keeps the bug task open.
 - Given an email requesting a price and delivery date, sending only the price leaves the task incomplete. A delivered answer covering both satisfies the task.
 - A sent email promising a Friday update can complete the email task and leave a separate Friday follow-up open. Replaying the delivery event or rediscovering the same sent message produces one follow-up for that promise.
+- A coding task on an open GitHub issue that finishes with edits proposes a fix branch, then a PR. On the user's own issue, the verified PR completes it with no notification write. After an upgrade, a task closed as done with unpublished edits for a still-open issue is queued again once, with its clone set aside.
 - A mismatched repository, branch revision, file type, PR head, or issue link prevents completion. A default branch that moved on without touching the edited files yields a preview based on its current revision, verified in `tests/test_bugflow.py`; one that changed an edited or renamed file, or diverged, stops before any write. An executable script keeps its tracked mode in the published branch. If the final reporter message fails, receipt of a branch or PR alone cannot close the task.

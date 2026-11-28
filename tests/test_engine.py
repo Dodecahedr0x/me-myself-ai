@@ -254,6 +254,68 @@ class EngineTests(unittest.TestCase):
             send.assert_not_called()
         self.assertEqual(self.db.get("tasks", key)["status"], "review")
 
+    def on_linux(self, peers):
+        me = self.engine.instances.me
+        mac = dict(platform="darwin", task_ready=True, free=2, preference="first", can_clone=True, origins=[])
+        found = [dict(id="mac", name="Mac", platform="darwin", capacity=mac)] if peers else []
+        return (patch.object(self.engine.instances, "me", side_effect=lambda: {**me(), "platform": "linux"}),
+                patch.object(self.engine, "fresh_peers", return_value=found))
+
+    def test_check_needing_a_mac_moves_the_task_instead_of_asking(self):
+        task = self.engine.new_task("Fix the menu bar icon", "A", "Build the app to check it.")
+        seen = []
+
+        def agent(role, payload, model, workdir):
+            seen.append(payload)
+            return dict(outcome="question", text="Did the app build pass on your Mac?", kind="task",
+                        commitments=[], needs_platform="macos")
+
+        linux, peers = self.on_linux(True)
+        with linux, peers, patch("engine.worker.run_agent", side_effect=agent):
+            self.engine.process(task["id"])
+            row = self.db.get("tasks", task["id"])
+            self.assertEqual(seen[0]["platform"], "linux")
+            self.assertEqual((row["status"], row["needs_platform"], row["question"]), ("queued", "darwin", ""))
+            self.assertIn("Moving to a Mac instance", row["reason"])
+            # Only a Mac can take it, and this Linux instance holds it for the Mac.
+            self.assertTrue(self.engine.can_take(row, dict(platform="darwin", can_clone=True)))
+            self.assertFalse(self.engine.can_take(row, dict(platform="linux", can_clone=True)))
+            self.assertTrue(self.engine.waiting_for_platform(row))
+            self.now += Engine.PLATFORM_WAIT
+            self.assertFalse(self.engine.waiting_for_platform(row))
+
+            def proceed(role, payload, model, workdir):
+                seen.append(payload)
+                return dict(outcome="done", text="Fixed the icon.", kind="task", commitments=[],
+                            unverified=["./scripts/build-app.sh produces build/MeMyselfAI.app"])
+
+            with patch("engine.worker.run_agent", side_effect=proceed):
+                self.engine.process(task["id"])
+        self.assertIn("No Mac instance is reachable", seen[1]["verification_unavailable"])
+        row = self.db.get("tasks", task["id"])
+        self.assertEqual((row["status"], row["needs_platform"]), ("done", ""))
+        self.assertTrue(row["result"].endswith(
+            "Still to verify:\n- ./scripts/build-app.sh produces build/MeMyselfAI.app"))
+
+    def test_check_needing_a_mac_with_none_reachable_continues_with_a_note(self):
+        task = self.engine.new_task("Fix the menu bar icon", "A", "Build the app to check it.")
+        answers = [
+            dict(outcome="question", text="Did the build pass?", kind="task", commitments=[], needs_platform="macos"),
+            dict(outcome="question", text="Still needs a Mac.", kind="task", commitments=[], needs_platform="macos"),
+        ]
+        linux, peers = self.on_linux(False)
+        with linux, peers, patch("engine.worker.run_agent", side_effect=answers + [
+                dict(question="Anything else?", context="", choices=[])]) as run:
+            self.engine.process(task["id"])
+            row = self.db.get("tasks", task["id"])
+            self.assertEqual((row["status"], row["verification_unavailable"], row["question"]),
+                             ("queued", "darwin", ""))
+            self.assertFalse(self.engine.waiting_for_platform(row))
+            self.engine.process(task["id"])
+            self.assertIn("verification_unavailable", run.call_args_list[1].args[1])
+        # The fallback happens once: a second request for a Mac is not acted on again.
+        self.assertEqual(self.db.get("tasks", task["id"])["status"], "question")
+
     def test_feedback_retires_preview(self):
         t = self.draft()
         self.engine.action(dict(op="feedback", id=t["id"], text="Use the short version"))

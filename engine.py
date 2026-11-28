@@ -160,6 +160,16 @@ class Engine:
                 elif t["status"] == "failed" and MISSING_APP_FILE.search(t.get("result") or ""):
                     t.update(status="queued", due=0, result="")
                     self.save(t, "Retried after the app's files moved")
+                elif self.unpublished_issue_work(t):
+                    # Earlier builds closed these as done without proposing a branch. The old
+                    # clone's base is stale, so redo the work from the current default branch.
+                    try:
+                        worker.set_aside_worktree(self.db.root / "worktrees", t["id"])
+                    except (OSError, worker.WorkerError) as exc:
+                        self.db.log("Worktree kept", str(exc), t["project"], t["id"])
+                        continue
+                    t.update(status="queued", due=0, result="", worktree="", changes=[], partial_changes=False)
+                    self.save(t, "Reopened: edits for this open issue were never proposed")
             for e in self.db.rows("events"):
                 if e["state"] == "working":
                     e["state"] = "new"
@@ -171,6 +181,15 @@ class Engine:
             if t["status"] == "question" and t.get("decision_id") and "answer_choices" not in t
             and not t.get("checkout_inaccessible")
         ]
+
+    def unpublished_issue_work(self, t):
+        """A coding task closed as done while its edits for a still-open GitHub issue went nowhere."""
+        if (t["status"] != "done" or t.get("kind", "").lower() not in {"coding", "code"}
+                or not t.get("changes") or t.get("milestones") or t.get("receipts")):
+            return False
+        e = self.db.get("events", t.get("event", ""))
+        context = (e or {}).get("raw", {}).get("context", {})
+        return context.get("is_pull_request") is False and context.get("state") == "open"
 
     def initialize_projects(self):
         projects = self.db.rows("projects")
@@ -499,8 +518,9 @@ class Engine:
             tasks = self.db.dashboard_tasks()
             if self.instances.peers():
                 for t in tasks:
-                    if not self.owns("task:" + t["id"]):
-                        t["owner"] = self.instances.owner_name("task:" + t["id"])
+                    record = self.instances.owner("task:" + t["id"])
+                    t["owner_here"] = bool(record and record["owner"] == self.instances.id)
+                    t["owner"] = self.instances.owner_name("task:" + t["id"])
                 for c in connections:
                     if not self.owns("connection:" + c["id"]):
                         c["owner"] = self.instances.owner_name("connection:" + c["id"])
@@ -639,6 +659,15 @@ class Engine:
                     self.require_current_task(initial)
                 if answer.get("outcome") not in ("run", "setup"):
                     self.db.log("Agent result", json.dumps(answer, ensure_ascii=False), project, task)
+                    ran = [r for r in results if not r.get("setup")]
+                    if ran:
+                        # What the app observed, not what the agent says. Pull requests quote it.
+                        system = os.uname()
+                        answer = dict(answer, verification=[
+                            dict(command=r["command"][:500], exit_code=r.get("exit_code"),
+                                 timed_out=bool(r.get("timed_out")), platform=f"{system.sysname} {system.machine}")
+                            for r in ran
+                        ])
                     return answer
                 if answer.get("outcome") == "setup":
                     if not can_run or setups >= 4:
@@ -758,6 +787,7 @@ class Engine:
             hermes_ready=states.get("hermes") == "ready",
             origins=self.local_origins(),
             can_clone=bool(shutil.which("git")),
+            platform=self.instances.me()["platform"],
         )
 
     @staticmethod
@@ -821,7 +851,31 @@ class Engine:
             return t["repository_origin"]
         return self.origin_of(t["repository"]) if self.owns("task:" + t["id"]) else ""
 
+    # Agent names for the machine kinds a check can need, and how instances report them.
+    PLATFORMS = {"macos": "darwin", "linux": "linux"}
+    PLATFORM_NAMES = {"darwin": "Mac", "linux": "Linux"}
+    PLATFORM_WAIT = 1800
+
+    @staticmethod
+    def platform_fits(t, info):
+        need = t.get("needs_platform")
+        return not need or info.get("platform") == need
+
+    def platform_peer(self, t):
+        """A reachable paired instance of the machine kind this task's check needs."""
+        return next((p for p in sorted(self.fresh_peers(), key=self.rank)
+                     if self.eligible(p["capacity"]) and self.can_take(t, p["capacity"])), None)
+
+    def waiting_for_platform(self, t):
+        """Hold a task here only while a fitting instance can take it, for at most PLATFORM_WAIT.
+        See "Checks this machine cannot run" in task-execution.md."""
+        if self.platform_fits(t, {"platform": self.instances.me()["platform"]}):
+            return False
+        return self.now() - t.get("platform_since", 0) < self.PLATFORM_WAIT and bool(self.platform_peer(t))
+
     def can_take(self, t, info):
+        if not self.platform_fits(t, info):
+            return False
         origin = self.required_origin(t)
         if t.get("repository") and not origin:
             return False
@@ -1081,7 +1135,8 @@ class Engine:
                              and self.can_take(t, p["capacity"])
                              and not self.instances.declined_recently(item, p["id"])), key=self.rank)
             best = ranked[0] if ranked else None
-            stay = free > 0 and not (not first and best and best["capacity"].get("preference") == "first")
+            stay = free > 0 and self.platform_fits(t, me) and not (
+                not first and best and best["capacity"].get("preference") == "first")
             if stay:
                 free -= 1
             elif best and item not in offered:
@@ -1248,7 +1303,8 @@ class Engine:
                         self.save(t, "New evidence from a related task")
             if t["status"] in {"queued", "scheduled"} and t.get("due", 0) <= now:
                 # At most the slot count at once; nothing new while preparing for sleep or stop.
-                if "task:" + t["id"] not in self.jobs and not absent and running < slots:
+                if ("task:" + t["id"] not in self.jobs and not absent and running < slots
+                        and not self.waiting_for_platform(t)):
                     submit("task:" + t["id"], self.process, t["id"], self.pool)
                     running += 1
             if t["status"] == "review" and t.get("approved_version") == t["version"]:
@@ -1714,6 +1770,10 @@ class Engine:
             if self.scope.task(t):
                 self.save(t, "Paused by the workspace ignore list")
                 return
+            here = self.instances.me()["platform"]
+            if not self.platform_fits(t, {"platform": here}):
+                # No fitting instance took it in time: run here and note what stays unverified.
+                t.update(verification_unavailable=t["needs_platform"], needs_platform="")
             t.update(status="working", local_commands_available=True)
             t.pop("related_snapshot", None)
             self.save(t, "Agent picked up task")
@@ -1856,11 +1916,15 @@ class Engine:
             latest = self.require_current_task(task)
             if self.scope.checkout(task["worktree"]):
                 raise ValueError("This checkout belongs to an ignored repository.")
+            worker._validate_files(edits)
             changes = {edit["path"]: edit for edit in latest.get("changes", [])}
-            changes.update((edit["path"], edit) for edit in edits)
+            # Saved changes hold each file's full resulting text, which may be
+            # larger than one agent response may carry.
+            applied = worker.apply_worktree_edits(task["worktree"], edits, originals)
+            changes.update((edit["path"], edit) for edit in applied)
             saved = list(changes.values())
-            worker._validate_files(saved)
-            paths = worker.apply_worktree_files(task["worktree"], edits, originals)
+            worker._validate_files(saved, saved=True)
+            paths = [edit["path"] for edit in applied]
             latest.update(changes=saved, partial_changes=partial)
             self.db.put("tasks", latest)
             self.db.log("Files edited", "\n".join(paths), task["project"], task["id"])
@@ -1983,12 +2047,17 @@ class Engine:
             available_paths=available,
             google_calendars=list(self.calendars()),
             now=self.now(),
+            platform={"darwin": "macos"}.get(self.instances.me()["platform"], self.instances.me()["platform"]),
             thread=self.thread_context(e) if e else [],
             children=[
                 dict(title=x["title"], result=x["result"][:3000], status=x["status"])
                 for x in children
             ],
         )
+        if t.get("verification_unavailable"):
+            context["verification_unavailable"] = (
+                f"No {self.PLATFORM_NAMES.get(t['verification_unavailable'], t['verification_unavailable'])} "
+                "instance is reachable to run the checks that need one.")
         if parent:
             context["parent_task"] = dict(id=parent["id"], title=parent["title"], body=parent["body"][:12000],
                                           answers=related["parent_answers"], result=related["parent_result"])
@@ -2093,7 +2162,29 @@ class Engine:
             commitments=[],
             due=0,
         )
+        if out.get("verification"):
+            update["verification"] = out["verification"]
         outcome = out["outcome"]
+        here = self.instances.me()["platform"]
+        need = self.PLATFORMS.get(out.get("needs_platform", ""))
+        if need and need != here and not t.get("verification_unavailable"):
+            # A check needs another kind of machine. Move there rather than ask the user to run it.
+            # See "Checks this machine cannot run" in task-execution.md.
+            name = self.PLATFORM_NAMES[need]
+            moving = {**t, "needs_platform": need}
+            if self.platform_peer(moving):
+                if location and out.get("files"):
+                    self.save_prepared_files(t, out["files"], files, partial=True)
+                return dict(update, status="queued", needs_platform=need, platform_since=self.now(),
+                            reason=f"Moving to a {name} instance to run checks this machine cannot: " + result[:300])
+            return dict(update, status="queued", needs_platform="", verification_unavailable=need,
+                        reason=f"No {name} instance is reachable; continuing and noting what stays unverified")
+        update["needs_platform"] = ""
+        if out.get("unverified"):
+            update["unverified"] = out["unverified"]
+            if outcome == "done" and not bug:
+                result = update["result"] = result + "\n\nStill to verify:\n" + "\n".join(
+                    "- " + item for item in out["unverified"])
         newkind = out.get("kind") or t["kind"]
         needs_checkout = outcome == "question" and re.search(r"\b(worktree|(?:git|local|registered) checkout)\b", result, re.I)
         if not location and (out.get("files") or needs_checkout) and newkind.lower() not in {"bug", "bugfix"}:
@@ -2141,6 +2232,10 @@ class Engine:
                 }
             self.save_prepared_files(t, out["files"], files, partial=False)
         update["partial_changes"] = False
+        if not bug and outcome == "done" and github_issue and coding and t.get("changes"):
+            # Finished edits for an open issue ship as a fix branch and PR, never as a silent "done".
+            bug = True
+            update["kind"] = "bug"
         if bug:
             github = self.github_for({**t, **update}, conn)
             if not github or not (update.get("changes") or t.get("changes")):
@@ -2164,6 +2259,9 @@ class Engine:
                     ),
                 }
             url = t["milestones"]["url"]
+            if e["raw"].get("authored"):
+                # The user reported it, so the verified PR is the whole outcome; no notice to themselves.
+                return dict(update, status="done", kind="bug", result=result.rstrip() + "\n\nPull request: " + url)
             canonical = bugflow.reporter_message(e, url)
             notice = self.infer(
                 "task",
@@ -3283,7 +3381,32 @@ class Engine:
                 self.db.log("Repository sync", f"{len(repos)} repositories", connection=account["id"])
                 current.update(status="Connected", next=self.now() + 900)
                 self.db.put("connections", current)
+            self.backfill_open_issues(account)
             self.wake.set()
+
+    def backfill_open_issues(self, account):
+        """Record open issues the account wrote or is assigned to that polling never saw.
+
+        Polling reads only recent activity, so an issue untouched since before its repository
+        was connected would otherwise never surface. See docs/specs/connectors.md."""
+        try:
+            issues = connectors.github_own_open_issues(account)
+        except Exception as exc:
+            self.db.log("Open issues unavailable", str(exc), connection=account["id"])
+            return
+        sources = {
+            c["config"]["repository"].casefold(): c
+            for c in self.db.rows("connections")
+            if c.get("github_parent") == account["id"] and not c.get("unavailable")
+        }
+        added = 0
+        for raw in issues:
+            source = sources.get(raw["context"]["repository"].casefold())
+            if source and not self.db.get("events", digest(source["id"], raw["key"])):
+                self.ingest(source, raw)
+                added += 1
+        if added:
+            self.db.log("Open issues recorded", f"{added} open issues", connection=account["id"])
 
     def release_shared_credential(self, conn):
         key = conn["credential_key"]

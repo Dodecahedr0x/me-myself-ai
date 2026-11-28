@@ -383,6 +383,7 @@ body[data-view=inbox] #main {padding:0}
 .chip span {min-width:22px;padding:0 6px;border-radius:999px;background:var(--soft);font-size:12px;text-align:center;font-variant-numeric:tabular-nums}
 .chip[aria-pressed=true] {background:var(--green-dark);border-color:var(--green-dark);color:#fff}
 .chip[aria-pressed=true] span {background:#ffffff2e}
+.inbox-filters {display:flex;align-items:center;gap:14px;flex-wrap:wrap}
 .sort {display:flex;align-items:center;gap:4px;font-size:13px;color:var(--muted)}
 .sort select {border:0;background:transparent;font-weight:600;color:var(--ink);padding:4px}
 #inbox-rows {display:grid;gap:12px}
@@ -406,6 +407,8 @@ body[data-view=inbox] #main {padding:0}
 .inbox-scope {display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted);min-width:0}
 .inbox-scope .scope-link {color:var(--muted);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .inbox-scope .scope-link:hover {color:var(--green-dark);text-decoration:underline}
+.inbox-owner {display:inline-flex;align-items:center;gap:3px;white-space:nowrap}
+.instance-field {display:inline-flex;align-items:center;gap:3px}
 .muted {color:var(--muted)}
 .row-side {display:flex;flex-direction:column;align-items:flex-end;gap:6px}
 .row-meta {display:flex;align-items:center;gap:6px}

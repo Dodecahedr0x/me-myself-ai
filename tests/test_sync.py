@@ -487,6 +487,12 @@ class EngineTests(EngineBase):
         self.assertTrue(laptop_process.called)
         state = self.vps.state()
         self.assertEqual(next(x for x in state["tasks"] if x["id"] == t["id"])["owner"], "Laptop")
+        listed = next(x for x in state["tasks"] if x["id"] == t["id"])
+        self.assertFalse(listed["owner_here"])
+        here = self.vps.new_task("Check the server", self.vps.global_project, "Body")
+        listed = next(x for x in self.vps.state()["tasks"] if x["id"] == here["id"])
+        self.assertEqual(listed["owner"], self.vps.instances.me()["name"])
+        self.assertTrue(listed["owner_here"])
 
     def test_approval_on_a_non_owner_is_sent_by_the_owner(self):
         t = self.laptop.new_task("Reply", self.laptop.global_project, "Body", sample=True,

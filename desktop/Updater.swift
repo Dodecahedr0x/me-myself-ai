@@ -218,7 +218,7 @@ final class Updater {
     private func relaunch() {
         let helper = Process()
         helper.executableURL = URL(fileURLWithPath: "/bin/sh")
-        let script = "pid=$1; app=$2; shift 2; while kill -0 \"$pid\" 2>/dev/null; do sleep 0.5; done; exec /usr/bin/open \"$app\" --args \"$@\""
+        let script = "pid=$1; app=$2; shift 2; while kill -0 \"$pid\" 2>/dev/null; do sleep 0.5; done; exec /usr/bin/open -n \"$app\" --args \"$@\""
         helper.arguments = ["-c", script, "relaunch", String(ProcessInfo.processInfo.processIdentifier), bundle.path]
             + Array(CommandLine.arguments.dropFirst())
         helper.standardInput = FileHandle.nullDevice

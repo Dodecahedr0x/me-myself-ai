@@ -67,7 +67,7 @@ function relativeDate(stamp) {
 }
 const state = {tasks:[],activity:[],connections:[],rules:[],skills:[],projects:[],settings:{dry:true}};
 let schemas = {}, loaded = false, refreshing = false, running = false, dialogState = null, invoker = null, noticeTimer;
-let filter = "open", projectFilter = "", query = "", activeView = "";
+let filter = "open", projectFilter = "", instanceFilter = "", query = "", activeView = "";
 let activityProject = "", activityQuery = "", activityConnection = "";
 const providerNames = {claude:"Claude Code", codex:"Codex CLI"};
 let providers = null, providersPending = false, providersChecked = 0;
@@ -130,13 +130,15 @@ function taskContext(t) {
   const identity = [origin.workspace, origin.channel || origin.account].filter(Boolean).join(" · ");
   const source = [name, identity].filter(Boolean).join(" · ");
   const repository = taskRepository(t);
-  return [["Project", t.project], ["Repository", repository], ["Source", source, {name,identity}], ["On", t.owner]].filter(([, value])=>value);
+  return [["Project", t.project], ["Repository", repository], ["Source", source, {name,identity}], ["On", ownerLabel(t)]].filter(([, value])=>value);
 }
+function ownerLabel(t) { return t.owner?t.owner+(t.owner_here?" (here)":""):""; }
 function sourceIdentity({name,identity}) { return sourceMark(name)+(identity?" "+esc(identity):""); }
 function contextLine(t,inQueue=false) {
   const namedProject=state.projects.some(p=>p.name===t.project && !p.global);
   const fields = taskContext(t).map(([label,value,source])=>{
     if (source) return '<span class="context-field">'+sourceIdentity(source)+'</span>';
+    if (label==="On") return '<span class="context-field instance-field" title="Instance that owns this task">'+icon("stack",14)+' On '+esc(value)+'</span>';
     const project=label==="Project", scope=project?"project":"repository";
     const shortcut=inQueue && project===namedProject?' aria-keyshortcuts="I"':"";
     return '<button type="button" class="context-field scope-link" data-action="'+scope+'-details" data-value="'+esc(value)+'" data-id="'+esc(t.id)+'"'+shortcut+' aria-haspopup="dialog" title="Open '+scope+'">'+
@@ -325,6 +327,7 @@ function openTaskFromChat(id) {
   const t=findTask(id); if (!t) return;
   if (!inboxKind(t)) { showDialog("detail",t.title,detailTask(t),{task:t,signature:JSON.stringify(t)}); return; }
   inboxFilter="all";
+  if (!inboxScoped(t)) { inboxProject=""; localStorage.setItem("inbox-project",""); }
   // The Inbox renders on hashchange, after this returns; select first so it opens on this task.
   if (activeView!=="inbox") { selectedTask=t.id; detailTab="activity"; inboxNarrowOpen=true; location.hash="inbox"; return; }
   selectInboxTask(t.id);
@@ -396,6 +399,12 @@ function projectSelect(id, value) {
   const names = [...new Set([...state.projects.map(p=>p.name),...state.tasks.map(t=>t.project),...state.activity.map(a=>a.project),value].filter(Boolean))].sort();
   return '<select aria-label="Filter by project" id="'+id+'">'+selectOptions([["","All projects"],...names.map(n=>[n,n])],value)+'</select>';
 }
+function instanceSelect() {
+  const inst=state.instances;
+  if (!inst?.peers?.length) return "";
+  const names=[...new Set([inst.name,...inst.peers.map(p=>p.name),...state.tasks.map(t=>t.owner)].filter(Boolean))];
+  return '<select aria-label="Filter by instance" id="task-instance">'+selectOptions([["","All instances"],...names.map(n=>[n,n+(n===inst.name?" (here)":"")])],instanceFilter)+'</select>';
+}
 function searchInput(id,value,placeholder) {
   return '<label class="search">'+icon("search",16)+'<input type="search" id="'+id+'" placeholder="'+esc(placeholder)+'" aria-label="'+esc(placeholder)+'" value="'+esc(value)+'"></label>';
 }
@@ -404,6 +413,7 @@ function taskList() {
   const term = query.trim().toLowerCase();
   const items = recent(state.tasks.filter(t=>{
     if ((statuses && !statuses.includes(t.status)) || !inProject(projectFilter,t.project)) return false;
+    if (instanceFilter && t.owner!==instanceFilter) return false;
     if (!term) return true;
     const context = taskContext(t).map(([,value])=>value);
     return [t.title,t.source,t.body,t.status,t.kind,t.repository,...context].some(v=>plain(v).toLowerCase().includes(term));
@@ -417,7 +427,7 @@ function tasksPage() {
   const testing=section("Improve MeMyselfAI","",entry("tasks","App testing","Run the workflow checks or report a problem you observed.",
     button("Run checks","self_check","sync","secondary")+button("Report a finding","app_finding",null,"secondary")+
     (repo && !connected?button("Connect app repository","connect_app_repo",null,"quiet"):"")));
-  return testing+'<div class="filters">'+searchInput("task-search",query,"Search tasks")+projectSelect("task-project",projectFilter)+button("Manage ignore list","ignorelist",null,"quiet")+'</div><div class="tabs">'+Object.entries(filters).map(([key,label])=>'<button type="button" data-action="filter" data-filter="'+key+'" aria-pressed="'+(filter===key)+'">'+label+'</button>').join("")+'</div><div id="task-list">'+taskList()+'</div>'+taskSuggestions();
+  return testing+'<div class="filters">'+searchInput("task-search",query,"Search tasks")+projectSelect("task-project",projectFilter)+instanceSelect()+button("Manage ignore list","ignorelist",null,"quiet")+'</div><div class="tabs">'+Object.entries(filters).map(([key,label])=>'<button type="button" data-action="filter" data-filter="'+key+'" aria-pressed="'+(filter===key)+'">'+label+'</button>').join("")+'</div><div id="task-list">'+taskList()+'</div>'+taskSuggestions();
 }
 function activityList() {
   const term = activityQuery.trim().toLowerCase();
@@ -625,7 +635,7 @@ const silent=p=>p.trusted&&(!p.last_seen||Date.now()/1000-p.last_seen>120);
 function runOn(t) {
   const inst=state.instances;
   if (!inst?.peers.length || ["done","dismissed","skipped","sending","uncertain"].includes(t.status)) return "";
-  const targets=[...(t.owner?[{id:inst.id,name:inst.name+" (here)"}]:[]),...inst.peers.filter(p=>p.trusted&&p.name!==t.owner)];
+  const targets=[...(t.owner && !t.owner_here?[{id:inst.id,name:inst.name+" (here)"}]:[]),...inst.peers.filter(p=>p.trusted&&p.name!==t.owner)];
   return targets.map(p=>button("Run on "+p.name,"run-on",null,"quiet",'data-id="'+esc(t.id)+'" data-peer="'+esc(p.id)+'"')).join("");
 }
 const preferenceNames={first:"Run here first",overflow:"Overflow only",never:"Never run agents"};
@@ -857,7 +867,7 @@ async function setupMutate(payload,message) {
 }
 // Inbox view. See docs/specs/dashboard.md#inbox-view.
 let inboxFilter="all", selectedTask=null, detailTab="activity", inboxNarrowOpen=false;
-let inboxSort=localStorage.getItem("inbox-sort")||"priority", autoGroup=localStorage.getItem("inbox-autogroup")!=="off";
+let inboxProject=localStorage.getItem("inbox-project")||"", inboxSort=localStorage.getItem("inbox-sort")||"priority", autoGroup=localStorage.getItem("inbox-autogroup")!=="off";
 const collapsedGroups=new Set(), collapsedCallouts=new Set(), inboxDrafts=new Map();
 const inboxKinds={decision:"Decision",failed:"Failed",blocked:"Blocked"};
 function inboxKind(t) {
@@ -889,8 +899,10 @@ function errorHead(t) {
   return cut>0 && cut<160?line.slice(0,cut+1):line.slice(0,160);
 }
 const errorKey=t=>errorHead(t).toLowerCase().replace(/(['"`]).*?\1|\/\S+|\d+/g,"…").slice(0,140);
+// The project filter keeps a named group's child projects, like the Tasks filter.
+const inboxScoped=t=>inProject(state.projects.some(p=>p.name===inboxProject)?inboxProject:"",t.project);
 function inboxTasks() {
-  const all=state.tasks.filter(t=>inboxKind(t));
+  const all=state.tasks.filter(t=>inboxKind(t) && inboxScoped(t));
   const shown=all.filter(t=>inboxFilter==="all" || inboxKind(t)===inboxFilter);
   const rank={failed:0,decision:1,blocked:2};
   shown.sort((a,b)=>(inboxSort==="priority"?rank[inboxKind(a)]-rank[inboxKind(b)]:0) || Number(b.created||0)-Number(a.created||0));
@@ -898,11 +910,12 @@ function inboxTasks() {
 }
 function inboxScope(t) {
   const repo=taskRepository(t), value=repo||t.project;
-  if (!value) return "";
+  const on=ownerLabel(t)?'<span class="muted inbox-owner" title="Instance that owns this task">'+icon("stack",13)+' On '+esc(ownerLabel(t))+'</span>':"";
+  if (!value) return on?'<span class="inbox-scope">'+on+'</span>':"";
   const scope=repo?"repository":"project";
   const {name}=taskContext(t).find(([label])=>label==="Source")?.[2]||{name:"Local"};
   return '<span class="inbox-scope">'+sourceMark(name,14)+'<button type="button" class="scope-link" data-action="'+scope+'-details" data-value="'+esc(value)+'" data-id="'+esc(t.id)+'" aria-haspopup="dialog" title="Open '+scope+'">'+esc(value)+'</button>'+
-    (repo && t.project?'<span class="muted">· '+esc(t.project)+'</span>':"")+'</span>';
+    (repo && t.project?'<span class="muted">· '+esc(t.project)+'</span>':"")+on+'</span>';
 }
 function rowShortcuts(t) {
   return taskActionNames(t).map(action=>{
@@ -956,8 +969,8 @@ function inboxList(shown) {
 }
 function inboxHead(all) {
   const events=lastEvents(), day=Date.now()/1000-86400;
-  const progress=state.tasks.filter(t=>groups.progress.includes(t.status)).length;
-  const completed=state.tasks.filter(t=>t.status==="done" && (events.get(String(t.id))||Number(t.created||0))>day).length;
+  const progress=state.tasks.filter(t=>groups.progress.includes(t.status) && inboxScoped(t)).length;
+  const completed=state.tasks.filter(t=>t.status==="done" && inboxScoped(t) && (events.get(String(t.id))||Number(t.created||0))>day).length;
   const count=kind=>all.filter(t=>inboxKind(t)===kind).length;
   const card=(cls,glyph,n,label,action,f)=>'<button type="button" class="stat '+cls+'" data-action="'+action+'" data-filter="'+f+'"><span class="stat-top">'+icon(glyph,22)+'<strong>'+n+'</strong></span><span>'+label+'</span></button>';
   const chip=(key,label,n)=>'<button type="button" class="chip '+key+'" data-action="inbox-filter" data-filter="'+key+'" aria-pressed="'+(inboxFilter===key)+'">'+(key==="all"?"":'<i></i>')+esc(label)+'<span>'+n+'</span></button>';
@@ -968,7 +981,8 @@ function inboxHead(all) {
     '<div class="stats">'+card("attention","alert",all.length,"Needs attention","inbox-filter","all")+card("progress","sync",progress,"In progress","filter","progress")+
     card("complete","check",completed,"Completed (24h)","filter","completed")+card("blocked","bars",count("blocked"),"Blocked","inbox-filter","blocked")+'</div>'+
     '<div class="chips"><div class="chip-row">'+chip("all","All",all.length)+chip("decision","Decision",count("decision"))+chip("failed","Failed",count("failed"))+chip("blocked","Blocked",count("blocked"))+'</div>'+
-    '<label class="sort">Sort by: <select id="inbox-sort">'+selectOptions([["priority","Priority"],["newest","Newest"]],inboxSort)+'</select></label></div>';
+    '<div class="inbox-filters"><label class="sort">Project: '+projectSelect("inbox-project",state.projects.some(p=>p.name===inboxProject)?inboxProject:"")+'</label>'+
+    '<label class="sort">Sort by: <select id="inbox-sort">'+selectOptions([["priority","Priority"],["newest","Newest"]],inboxSort)+'</select></label></div></div>';
 }
 function prNumber(t) {
   const m=String(t.url||"").match(/\/(?:pull|issues)\/(\d+)/) || String(t.title||"").match(/#(\d+)\b/);
@@ -1027,7 +1041,7 @@ function inboxDetail(t) {
   if (!t) return '<div class="inbox-empty">'+icon("inbox",28)+'<strong>Select a task</strong><p>Its activity, details and controls open here.</p></div>';
   const repo=taskRepository(t), number=prNumber(t);
   const {name}=taskContext(t).find(([label])=>label==="Source")?.[2]||{name:"Local"};
-  const chips='<div class="detail-chips"><span class="tag">'+sourceMark(name,15)+esc(repo||t.project||name)+'</span>'+(number?'<span class="tag">#'+esc(number)+'</span>':"")+'</div>';
+  const chips='<div class="detail-chips"><span class="tag">'+sourceMark(name,15)+esc(repo||t.project||name)+'</span>'+(number?'<span class="tag">#'+esc(number)+'</span>':"")+(t.owner?'<span class="tag" title="Instance that owns this task">'+icon("stack",15)+'On '+esc(ownerLabel(t))+'</span>':"")+'</div>';
   const top='<div class="detail-top"><button type="button" class="btn quiet back" data-action="inbox-back">'+icon("back",16)+'Back to inbox</button>'+chips+
     '<div class="detail-icons">'+(t.url?sourceReference(t.url,"Open source"):"")+'<button type="button" class="iconbtn plain" data-action="detail" '+'data-id="'+esc(t.id)+'" aria-label="Open full details" title="Open full details">'+icon("expand",17)+'</button></div></div>';
   const activity=recent(state.activity.filter(a=>a.task!=null&&String(a.task)===String(t.id)),"at");
@@ -1786,8 +1800,10 @@ document.addEventListener("change",event=>{
     for (const [key,value] of Object.entries({imap_host:imap,imap_port:"993",smtp_host:smtp,smtp_port:port})) fields.namedItem("cfg."+key).value=value;
   }
   if (event.target.id==="auto-group") {autoGroup=event.target.checked;localStorage.setItem("inbox-autogroup",autoGroup?"on":"off");renderInbox();}
+  if (event.target.id==="inbox-project") {inboxProject=event.target.value;localStorage.setItem("inbox-project",inboxProject);selectedTask=null;inboxNarrowOpen=false;renderInbox();}
   if (event.target.id==="inbox-sort") {inboxSort=event.target.value;localStorage.setItem("inbox-sort",inboxSort);renderInbox();}
   if (event.target.id==="task-project") {projectFilter=event.target.value;setIfChanged($("#task-list"),taskList());}
+  if (event.target.id==="task-instance") {instanceFilter=event.target.value;setIfChanged($("#task-list"),taskList());}
   if (event.target.id==="activity-connection") location.hash = event.target.value?"activity?connection="+encodeURIComponent(event.target.value):"activity";
   if (event.target.id==="activity-project") {activityProject=event.target.value;setIfChanged($("#activity-list"),activityList());}
   if (event.target.closest("#editor")) rememberForm();

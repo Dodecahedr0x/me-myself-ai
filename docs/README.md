@@ -10,7 +10,7 @@ For example, a teammate asks for a status update in Slack. The agent finds the l
 flowchart LR
     Slack["Slack access token, refresh token or OAuth"] -->|All accessible channels| Connectors[Connectors]
     Mail["Google Workspace or other IMAP mailboxes"] -->|Account activity| Connectors
-    GitHub["GitHub CLI"] -->|Repository activity| Connectors
+    GitHub["GitHub CLI"] -->|Repository activity and my open issues| Connectors
     Tasks -->|Rows needing you, grouped failures, shortcut answers| Inbox[Inbox: list and open task]
     Inbox -->|Approve, answer, retry, instruct| Tasks
     Tasks -->|Stats, activity report and open tasks| Home[Overview dashboard]
@@ -62,6 +62,8 @@ flowchart LR
     Checks[MeMyselfAI fixture tests or maintainer report] --> Findings[Self-improvement findings]
     Findings --> Tasks
     Tasks -->|Issue, fix branch, linked PR and code review| Executor
+    CLI -->|Check needs another kind of machine| Handoff[Handoff to a Mac or Linux instance]
+    Handoff -->|Runs the check there| CLI
 ```
 
 The app's own Hermes keeps a shared context store current through the app MCP server and manages recurring tasks. It cannot send anything. The executor applies dry mode and the user's rules for each project and decision type. A promise in a delivered message creates a task of its own. Each task agent checks its completion criteria and records evidence in the dashboard.
