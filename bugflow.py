@@ -210,7 +210,10 @@ def _branch_data(t, conn, api, number):
     base, sha = _remote_base(conn, api)
     head = _git(t["worktree"], "rev-parse", "HEAD").decode().strip()
     files = t.get("changes", [])
-    if t.get("changes_base") and t["changes_base"] != head:
+    if files and not t.get("changes_base"):
+        raise Rejected("The saved edits do not record the revision they were written against. Retry so the task "
+                       "records it.")
+    if files and t["changes_base"] != head:
         raise Rejected("The saved edits were written against " + t["changes_base"][:12] + ", not the task clone's "
                        + head[:12] + ". Retry so the task moves them onto its current revision.")
     if head != sha:

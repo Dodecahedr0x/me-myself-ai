@@ -445,12 +445,14 @@ class BugIntegrationTests(unittest.TestCase):
                         files=[dict(path="report.py", content=self.fixed)])
         self.finish_replacement(stale, old, agent)
 
-    def test_an_interrupted_refresh_never_publishes_old_contents_on_the_new_base(self):
+    def test_an_interrupted_refresh_never_publishes_old_contents_on_the_new_base(self, legacy=False):
         stale, old = self.stale_fix_after_main_moves(
             {"report.py": '"""Report helpers."""\n\n\ndef total(values):\n    return values[0]\n'})
         row = self.row()
         # Stored milestones send a finished bug straight to bugflow without the agent.
         row["milestones"] = dict(issue=7, repository="fixture/report")
+        if legacy:
+            del row["changes_base"]  # saved by a build that did not record the base
         self.engine.db.put("tasks", row)
         with patch("worker._replace_file", side_effect=OSError("disk full")):
             self.engine.process(self.key)
@@ -468,6 +470,9 @@ class BugIntegrationTests(unittest.TestCase):
             return dict(outcome="done", kind="bug", text="Sum the values on the new base.")
         fresh = self.finish_replacement(stale, old, agent)
         self.assertEqual(fresh["payload"]["files"][0]["content"], self.fixed)
+
+    def test_an_interrupted_first_refresh_of_edits_saved_without_a_base(self):
+        self.test_an_interrupted_refresh_never_publishes_old_contents_on_the_new_base(legacy=True)
 
     def test_an_unresolved_overlap_blocks_any_proposal_until_resolved(self):
         stale, old = self.stale_fix_after_main_moves(

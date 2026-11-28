@@ -73,6 +73,7 @@ class BugFlow(unittest.TestCase):
             changes=[{"path": "script", "content": "fixed", "mode": "120000"}],
             result="Fixed.",
             milestones={},
+            changes_base=self.api.base,
         )
         self.who = Mock(return_value="coder")
 
@@ -173,6 +174,7 @@ class BugFlow(unittest.TestCase):
 
     def test_moved_default_branch_publishes_on_the_new_base_unless_it_touched_the_fix(self):
         start = "c" * 40
+        self.t["changes_base"] = start
         compare = ("GET", f"compare/{start}...{self.api.base}")
         fake = self.api
 
@@ -234,7 +236,7 @@ class BugFlow(unittest.TestCase):
         git("update-index", "--chmod=+x", "run.sh")
         git("commit", "-qm", "Initial fixture")
         git("remote", "add", "origin", "https://github.com/sample/project.git")
-        self.api.base = git("rev-parse", "HEAD")
+        self.api.base = self.t["changes_base"] = git("rev-parse", "HEAD")
         changed = list(lines)
         changed[9] = "line ten\n"
         self.t.update(worktree=str(repo), changes=[
@@ -297,6 +299,10 @@ class BugFlow(unittest.TestCase):
         with self.assertRaises(c.Rejected) as caught:
             self.prepared_branch()
         self.assertIn("written against cccccccccccc", str(caught.exception))
+        del self.t["changes_base"]
+        with self.assertRaises(c.Rejected) as caught:
+            self.prepared_branch()
+        self.assertIn("do not record the revision", str(caught.exception))
         self.t["changes_base"] = self.api.base
         self.assertEqual(self.prepared_branch()["operation"], "publish branch")
 

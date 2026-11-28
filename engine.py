@@ -2057,6 +2057,13 @@ class Engine:
                 latest = self.require_current_task(t)
                 latest.update(repository=repository, worktree=location, github_repository=t["github_repository"])
                 self.db.put("tasks", latest)
+            if t.get("changes") and not t.get("changes_base"):
+                # Edits saved by an earlier build: record the base they sit on before anything moves.
+                with self.db.atomic():
+                    latest = self.require_current_task(t)
+                    latest["changes_base"] = worker.worktree_head(location)
+                    self.db.put("tasks", latest)
+                t = dict(t, changes_base=latest["changes_base"])
             if (repository and t.get("changes") and not (t.get("milestones") or {}).get("branch")
                     and (github_issue or t["kind"].lower() in {"bug", "bugfix"})
                     and not self.pull_request_number(t)):
