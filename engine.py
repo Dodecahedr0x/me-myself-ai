@@ -602,6 +602,8 @@ class Engine:
             kinds.add("commitment")
         if t.get("takeover_version") == t["version"]:
             return False  # a version prepared by an instance that went silent is sent only after approval
+        if t.get("issue_action"):
+            return not self.settings()["dry"]  # an issue the agent files is authorized by leaving dry mode
         return not self.settings()["dry"] and all(self.rule(t["project"], k) == "auto" for k in kinds)
 
     def agent_directory(self, role, project, key, task):
@@ -726,15 +728,18 @@ class Engine:
     def task_actions(self, key):
         """Action tools a task agent may call: its declared type, or the kind of its source."""
         t = self.db.get("tasks", key) or {}
+        if t.get("special") or t.get("kind") in {"bug", "bugfix"} or t.get("task_type") == "github_bug":
+            return ()  # a bug files its issue through its own milestones
+        issue = (app_mcp.ISSUE_ACTION,)
         declared = app_mcp.TASK_TYPES.get(t.get("task_type", ""))
         if declared:
-            return declared["actions"]
+            return declared["actions"] + issue
         e = self.db.get("events", t.get("event", ""))
         c = self.db.get("connections", e["connection"]) if e else None
-        if not c or t.get("kind") in {"bug", "bugfix", "coding", "code"} or t.get("special"):
-            return ()
+        if not c or t.get("kind") in {"coding", "code"}:
+            return issue
         source = e["raw"].get("context", {}).get("google_service") or c["kind"]
-        return tuple(a for a, kinds in app_mcp.ACTION_SOURCES.items() if c["kind"] in kinds or source in kinds)
+        return tuple(a for a, kinds in app_mcp.ACTION_SOURCES.items() if c["kind"] in kinds or source in kinds) + issue
 
     def start(self):
         self.thread = threading.Thread(target=self.loop, daemon=True, name="scheduler")
@@ -2848,6 +2853,8 @@ class Engine:
             self.wake.set()
 
     def finish_delivery(self, t, receipt, milestones):
+        if t.get("issue_action"):
+            milestones = {}  # not a bug: the filed issue is the task's result, with no further milestones
         event = self.db.get("events", t.get("event", ""))
         connection_id = (
             (event["connection"] if event else "")

@@ -537,7 +537,9 @@ MCP_NAME = "memyselfai"
 MCP_GUIDE = """The memyselfai tools read this task's own thread and record progress. To send a reply,
 call the send tool for this source with the exact text; the app decides whether the user must review it
 first and returns pending_review, sent, rejected or uncertain. Never resend after uncertain. Still return
-the JSON object at the end, with outcome draft and the same text if you submitted a reply."""
+the JSON object at the end, with outcome draft and the same text if you submitted a reply. To file a new
+GitHub issue your work turned up, call create_issue with its exact title and body instead of asking the user
+where to put it; the app knows the allowed repositories and the account."""
 
 
 def _mcp_files(mcp, directory):

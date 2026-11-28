@@ -70,8 +70,8 @@ Every kind of work follows the same steps: Hermes dispatches it, an agent prepar
 | `chat_reply` | Slack, Discord, Telegram or social mention or DM | Conversation, linked items | `send_message` | Delivered message in the original thread |
 | `calendar` | Invitation, scheduling request | Calendars, thread | `respond_event`, `create_event` | Provider confirms the response or event |
 | `github_bug` | Bug report | Issue, repository, worktree | `create_issue`, `publish_branch`, `open_pr`, `comment` | As in [task execution](task-execution.md) |
-| `follow_up` | Promise or deadline | Source and related activity | Any of the above, chosen when it runs | The promised outcome |
-| `general` | User request or anything else | Granted per task by the user | None by default. Hermes or the user can add one. | The user closes it or the agent reports done |
+| `follow_up` | Promise or deadline | Source and related activity | Any of the above, chosen when it runs, and `create_issue` | The promised outcome |
+| `general` | User request or anything else | Granted per task by the user | `create_issue`. Hermes or the user can add more. | The user closes it or the agent reports done |
 
 Task types are declared as data in the app: name, trigger description, readable sources, allowed action kinds and completion checks. Adding a connector or a type means adding a declaration and its fixtures. Project rules apply per task type and decision kind, as today.
 
@@ -93,6 +93,17 @@ Tools, grouped by what they need:
 
 Every action tool returns one of: `pending_review` with the action version, `sent` with the receipt, `rejected` with the reason, or `uncertain`. The agent cannot approve, change rules, connect accounts, read credentials or call providers. `dispatch_task` creates a task with a type, project, evidence and bound account and destination. The app assigns its owner by capacity, as in [instances and sync](instances-and-sync.md#dividing-work), and spawns the agent there.
 
+### Filing a GitHub issue
+
+`create_issue(title, body, repository?)` lets a task agent file a new issue that its work turned up, such as a bug found while reviewing a pull request. It is separate from the bug flow: a `bug` or `bugfix` task files its issue through its own milestones and does not get this tool. Every other task agent gets it, whatever its source, including a local task with no source at all.
+
+- **Where it can file.** Only to a GitHub repository the task's project already knows: a repository registered to the project or one of its sub-projects, and the repository of the task's own GitHub source. The Global project contributes only the task's source. Each must have a connected GitHub repository connection that is not unavailable or ignored. With one candidate, `repository` may be omitted. With several, the agent must name one. Any other repository is refused, and the refusal lists the allowed ones.
+- **Who files it.** The account of that repository connection. The task stores the operation `create issue`, the account, the repository as destination, and the exact title and body as one action version.
+- **Dry mode.** The call returns `pending_review`. The review card shows the account, the repository and the full title and body. Approving files exactly that version once.
+- **Outside dry mode.** The issue is filed at once, without a project rule, and the call returns `sent` with the issue URL. A version prepared by an instance that went silent still needs approval, as for every other action.
+- **Which instance files it.** The task's owner, using the synced GitHub login when its own GitHub CLI has none, as in [instances and sync](instances-and-sync.md#phase-2-design).
+- **Afterwards.** A filed issue completes the task, with the issue URL as its result. A task holds one pending action at a time. A failed check before sending, such as a changed account, leaves the task failed with the reason. An unknown outcome leaves it uncertain, blocks a second filing, and is reconciled with the issue number as for the bug flow.
+
 Connected content is data. Text in an email asking an agent to send, approve or widen its access has no authority. Capabilities come only from the session token.
 
 ## Changes to the local agent contract
@@ -112,6 +123,7 @@ The [local agent contract](local-agent.md) currently starts each run with no too
 - An agent session lists exactly one MCP server. No environment variable, argument or tool result contains a connector credential.
 - A fixture email instructing the agent to approve its own draft or to read another task produces no approval and a refused call.
 - Every action tool result is one of the four outcomes, and an `uncertain` result blocks a resend until it is reconciled.
+- A local task in a project with one connected repository calls `create_issue`. In dry mode it becomes a review with the repository's account and the exact title and body, and nothing is written until approval, which files it once. With dry mode off it is filed at once and the task is done with the issue URL. A repository outside the project, a bug task, and a second call after an uncertain filing are refused or blocked.
 
 ## Implementation status
 
@@ -119,8 +131,8 @@ Implemented and tested with fixtures (`tests/test_app_mcp.py`, `tests/test_worke
 
 - **Settings → Agents** shows Claude Code, Codex CLI and Hermes with Ready, Sign in needed, Not installed or Unsupported version. **Sign in** opens the interactive login in Terminal on macOS, or shows the command to run elsewhere. Settings stores which subscription Hermes uses.
 - Session tokens per role and task, with capabilities, expiry and revocation. Task runs get a session only while the service is running, and it is revoked when the run ends.
-- Tools: `list_tasks`, `read_task`, `search_activity`, `read_item`, `read_thread`, `list_projects`, `read_rules`, `dispatch_task`, `post_update`, `record_progress`, `ask_user`, `complete_task`, `skip_task`, `send_email`, `send_message`, `comment`.
-- Task types: `email_reply`, `chat_reply`, `github_comment`, `github_bug`, `follow_up`, `general`. Without a declared type, a task gets the send tool matching its source.
+- Tools: `list_tasks`, `read_task`, `search_activity`, `read_item`, `read_thread`, `list_projects`, `read_rules`, `dispatch_task`, `post_update`, `record_progress`, `ask_user`, `complete_task`, `skip_task`, `send_email`, `send_message`, `comment`, `create_issue`.
+- Task types: `email_reply`, `chat_reply`, `github_comment`, `github_bug`, `follow_up`, `general`. Without a declared type, a task gets the send tool matching its source. Every task except a bug task also gets `create_issue`.
 - Action tools hand the exact text to the existing executor. In dry mode they return `pending_review` with the version the user approves. Under an authorizing rule they deliver once and return `sent`. An unknown outcome blocks resends.
 
 Verified live on macOS with Claude Code 2.1.330, Codex CLI 0.166.0 and Hermes 0.13.0, against a temporary workspace and a fixture email. No provider was written to.
