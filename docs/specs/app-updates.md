@@ -14,13 +14,13 @@ A build without `MEMYSELFAI_VERSION` keeps the version in `desktop/Info.plist`.
 
 ## Which copies update
 
-Only a copy installed in `/Applications` or `~/Applications` updates itself. A build left in `build/`, a task worktree or a translocated download never updates. A developer's or agent's build therefore always runs the code it was built from. A copy whose folder the user cannot write to does not update either. It shows the new version in its menu instead.
+Only a copy installed in `/Applications` or `~/Applications` updates itself. A build left in `build/`, a task worktree or a translocated download never updates. A developer's or agent's build therefore always runs the code it was built from. A copy whose folder the user cannot write to does not update either. It shows the new version in Settings instead.
 
 ## Checking
 
-An installed copy checks 30 seconds after launch, then every six hours, and when the user chooses **Check for Updates…** in the app menu or the menu bar menu. It reads `https://api.github.com/repos/Dodecahedr0x/me-myself-ai/releases/latest` over HTTPS without credentials. That endpoint skips drafts and prereleases. The tag's version is compared with the running version number by number, so `0.10` is newer than `0.9`. An update needs a newer version and an asset named for this Mac's architecture.
+An installed copy checks 30 seconds after launch, then every six hours, and when the user presses **Check for updates** in Settings → Workspace. It reads `https://api.github.com/repos/Dodecahedr0x/me-myself-ai/releases/latest` over HTTPS without credentials. That endpoint skips drafts and prereleases. The tag's version is compared with the running version number by number, so `0.10` is newer than `0.9`. An update needs a newer version and an asset named for this Mac's architecture.
 
-The menu bar menu shows a line under the service state: the running version and *up to date*, *checking*, *downloading*, *installing* or the reason the last attempt failed. A failed automatic check is retried at the next interval. A failure never stops the services.
+Settings → Workspace has a **MeMyselfAI version** row with the running version and *up to date*, *checking*, *downloading*, *installing* or the reason the last attempt failed, and the **Check for updates** button. The row changes as the updater does, without a reload. The macOS menu bar, both the app menu and the menu bar icon's menu, carries nothing about updates. The dashboard reaches the updater through the `appUpdate` WebKit message handler, which answers only the app's own main frame: `status` returns the line and `check` starts a check and returns it. The app pushes each later line to `window.appUpdateChanged`. In a plain browser there is no handler and the row is hidden. A failed automatic check is retried at the next interval. A failure never stops the services.
 
 ## Verifying
 
@@ -32,15 +32,16 @@ The builds are ad-hoc signed. Their signature proves the bundle is intact, not w
 
 With a verified bundle, the app replaces itself in place with `FileManager.replaceItemAt`, which keeps the old copy until the new one is in place. It then quits through the normal quit path. Services stop their agents, and those tasks are queued again on the next start, as the [desktop runtime](desktop-runtime.md) describes. A small helper waits for the old process to exit and opens the new app with the same arguments, so a `--data` workspace is kept. At launch the service copies the new build into `app-runtime/` because its signature seal changed.
 
-If replacing fails, the old app keeps running and the menu shows why. Nothing in the workspace data changes during an update.
+If replacing fails, the old app keeps running and Settings shows why. Nothing in the workspace data changes during an update.
 
 ## Acceptance criteria
 
 1. A `v0.2.0` tag produces a release with arm64 and x86_64 zips and their `.sha256` files, and the bundles inside report version `0.2.0`.
 2. A copy of version `0.1.0` in `~/Applications`, pointed at a feed whose latest release is `0.2.0`, downloads it, replaces itself and is running `0.2.0` from the same path, with the same `--data` folder, without user action.
-3. A download whose hash differs from the published digest is refused. The installed copy is unchanged and the menu shows the failure.
+3. A download whose hash differs from the published digest is refused. The installed copy is unchanged and Settings → Workspace shows the failure.
 4. A build run from `build/` never checks or installs.
-5. A latest release that is equal or older, or that has no asset for this architecture, leaves the app as it is and the menu shows *up to date*.
+5. A latest release that is equal or older, or that has no asset for this architecture, leaves the app as it is and Settings → Workspace shows *up to date*.
+6. Neither the app menu nor the menu bar icon's menu has an update item or version line. Settings → Workspace in the Mac app shows the version row, and **Check for updates** moves it to *checking* and then to the result. Opened in a browser, the dashboard shows no version row.
 
 For testing, the environment variable `MEMYSELFAI_UPDATE_FEED` replaces the releases URL. The app accepts only `https` feeds, or `http` on `127.0.0.1`.
 

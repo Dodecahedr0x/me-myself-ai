@@ -642,7 +642,7 @@ const settingsIntro={
   delivery:"Decide what may leave without you.",
   agents:"The command-line agents that prepare tasks and the orchestrator that dispatches them, on this instance.",
   instances:"Machines that share this workspace and its work.",
-  workspace:"Folder permissions, ignored work and sample data."
+  workspace:"Folder permissions, ignored work, sample data and app updates."
 };
 function settingsTab() {
   const tab=new URLSearchParams(location.hash.split("?")[1]).get("tab");
@@ -690,8 +690,26 @@ function workspaceTab() {
   const ignored=[(state.ignorelist?.projects||[]).length+" projects",(state.ignorelist?.repositories||[]).length+" repositories"].join(" · ");
   return entry("projects","Folder access","Check a repository folder or update its macOS permission.",button("Manage folder access","folder-access",null))+
     entry("projects","Ignore list",ignored+" ignored",button("Edit ignore list","ignorelist",null))+
-    entry("stack","Sample workspace","Add fixture tasks and activity to explore the app.",button("Load sample","demo",null));
+    entry("stack","Sample workspace","Add fixture tasks and activity to explore the app.",button("Load sample","demo",null))+
+    appUpdateRow();
 }
+// The Mac app reports its updater's status line here. See docs/specs/app-updates.md.
+let appUpdateLine=null;
+const appUpdater=()=>window.webkit?.messageHandlers?.appUpdate;
+function appUpdateRow() {
+  if (!appUpdater()) return "";
+  if (appUpdateLine===null) void askUpdater("status");
+  return '<div id="app-update">'+entry("sync","MeMyselfAI version",appUpdateLine??"Checking…",button("Check for updates","check-updates",null))+'</div>';
+}
+async function askUpdater(command) {
+  try { window.appUpdateChanged(await appUpdater().postMessage(command)); }
+  catch(e) { notify(e.message || "The updater is unavailable."); }
+}
+window.appUpdateChanged=line=>{
+  appUpdateLine=String(line||"");
+  const row=$("#app-update");
+  if (row) setIfChanged(row,entry("sync","MeMyselfAI version",appUpdateLine,button("Check for updates","check-updates",null)));
+};
 function settingsPage() {
   const tab=settingsTab();
   const body={delivery:deliveryTab,agents:agentsTab,instances:instancesTab,workspace:workspaceTab}[tab]();
@@ -1569,6 +1587,7 @@ function handleAction(el) {
     case "suggestion_dismiss": void mutate({op:action,id},"Suggestion dismissed.");return;
     case "choose-repository": void chooseRepository(el); return;
     case "folder-access": folderAccess(t); return;
+    case "check-updates": void askUpdater("check"); return;
     case "allow-folder":
     case "check-folder": void checkFolder(el); return;
     case "open-folder-settings":
