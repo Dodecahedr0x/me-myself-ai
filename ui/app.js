@@ -325,6 +325,7 @@ function openTaskFromChat(id) {
   const t=findTask(id); if (!t) return;
   if (!inboxKind(t)) { showDialog("detail",t.title,detailTask(t),{task:t,signature:JSON.stringify(t)}); return; }
   inboxFilter="all";
+  if (!inboxScoped(t)) { inboxProject=""; localStorage.setItem("inbox-project",""); }
   // The Inbox renders on hashchange, after this returns; select first so it opens on this task.
   if (activeView!=="inbox") { selectedTask=t.id; detailTab="activity"; inboxNarrowOpen=true; location.hash="inbox"; return; }
   selectInboxTask(t.id);
@@ -857,7 +858,7 @@ async function setupMutate(payload,message) {
 }
 // Inbox view. See docs/specs/dashboard.md#inbox-view.
 let inboxFilter="all", selectedTask=null, detailTab="activity", inboxNarrowOpen=false;
-let inboxSort=localStorage.getItem("inbox-sort")||"priority", autoGroup=localStorage.getItem("inbox-autogroup")!=="off";
+let inboxProject=localStorage.getItem("inbox-project")||"", inboxSort=localStorage.getItem("inbox-sort")||"priority", autoGroup=localStorage.getItem("inbox-autogroup")!=="off";
 const collapsedGroups=new Set(), collapsedCallouts=new Set(), inboxDrafts=new Map();
 const inboxKinds={decision:"Decision",failed:"Failed",blocked:"Blocked"};
 function inboxKind(t) {
@@ -889,8 +890,10 @@ function errorHead(t) {
   return cut>0 && cut<160?line.slice(0,cut+1):line.slice(0,160);
 }
 const errorKey=t=>errorHead(t).toLowerCase().replace(/(['"`]).*?\1|\/\S+|\d+/g,"…").slice(0,140);
+// The project filter keeps a named group's child projects, like the Tasks filter.
+const inboxScoped=t=>inProject(state.projects.some(p=>p.name===inboxProject)?inboxProject:"",t.project);
 function inboxTasks() {
-  const all=state.tasks.filter(t=>inboxKind(t));
+  const all=state.tasks.filter(t=>inboxKind(t) && inboxScoped(t));
   const shown=all.filter(t=>inboxFilter==="all" || inboxKind(t)===inboxFilter);
   const rank={failed:0,decision:1,blocked:2};
   shown.sort((a,b)=>(inboxSort==="priority"?rank[inboxKind(a)]-rank[inboxKind(b)]:0) || Number(b.created||0)-Number(a.created||0));
@@ -956,8 +959,8 @@ function inboxList(shown) {
 }
 function inboxHead(all) {
   const events=lastEvents(), day=Date.now()/1000-86400;
-  const progress=state.tasks.filter(t=>groups.progress.includes(t.status)).length;
-  const completed=state.tasks.filter(t=>t.status==="done" && (events.get(String(t.id))||Number(t.created||0))>day).length;
+  const progress=state.tasks.filter(t=>groups.progress.includes(t.status) && inboxScoped(t)).length;
+  const completed=state.tasks.filter(t=>t.status==="done" && inboxScoped(t) && (events.get(String(t.id))||Number(t.created||0))>day).length;
   const count=kind=>all.filter(t=>inboxKind(t)===kind).length;
   const card=(cls,glyph,n,label,action,f)=>'<button type="button" class="stat '+cls+'" data-action="'+action+'" data-filter="'+f+'"><span class="stat-top">'+icon(glyph,22)+'<strong>'+n+'</strong></span><span>'+label+'</span></button>';
   const chip=(key,label,n)=>'<button type="button" class="chip '+key+'" data-action="inbox-filter" data-filter="'+key+'" aria-pressed="'+(inboxFilter===key)+'">'+(key==="all"?"":'<i></i>')+esc(label)+'<span>'+n+'</span></button>';
@@ -968,7 +971,8 @@ function inboxHead(all) {
     '<div class="stats">'+card("attention","alert",all.length,"Needs attention","inbox-filter","all")+card("progress","sync",progress,"In progress","filter","progress")+
     card("complete","check",completed,"Completed (24h)","filter","completed")+card("blocked","bars",count("blocked"),"Blocked","inbox-filter","blocked")+'</div>'+
     '<div class="chips"><div class="chip-row">'+chip("all","All",all.length)+chip("decision","Decision",count("decision"))+chip("failed","Failed",count("failed"))+chip("blocked","Blocked",count("blocked"))+'</div>'+
-    '<label class="sort">Sort by: <select id="inbox-sort">'+selectOptions([["priority","Priority"],["newest","Newest"]],inboxSort)+'</select></label></div>';
+    '<div class="inbox-filters"><label class="sort">Project: '+projectSelect("inbox-project",state.projects.some(p=>p.name===inboxProject)?inboxProject:"")+'</label>'+
+    '<label class="sort">Sort by: <select id="inbox-sort">'+selectOptions([["priority","Priority"],["newest","Newest"]],inboxSort)+'</select></label></div></div>';
 }
 function prNumber(t) {
   const m=String(t.url||"").match(/\/(?:pull|issues)\/(\d+)/) || String(t.title||"").match(/#(\d+)\b/);
@@ -1786,6 +1790,7 @@ document.addEventListener("change",event=>{
     for (const [key,value] of Object.entries({imap_host:imap,imap_port:"993",smtp_host:smtp,smtp_port:port})) fields.namedItem("cfg."+key).value=value;
   }
   if (event.target.id==="auto-group") {autoGroup=event.target.checked;localStorage.setItem("inbox-autogroup",autoGroup?"on":"off");renderInbox();}
+  if (event.target.id==="inbox-project") {inboxProject=event.target.value;localStorage.setItem("inbox-project",inboxProject);selectedTask=null;inboxNarrowOpen=false;renderInbox();}
   if (event.target.id==="inbox-sort") {inboxSort=event.target.value;localStorage.setItem("inbox-sort",inboxSort);renderInbox();}
   if (event.target.id==="task-project") {projectFilter=event.target.value;setIfChanged($("#task-list"),taskList());}
   if (event.target.id==="activity-connection") location.hash = event.target.value?"activity?connection="+encodeURIComponent(event.target.value):"activity";
