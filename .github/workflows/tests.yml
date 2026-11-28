@@ -1,0 +1,49 @@
+# Runs the fixture suites on every pull request update and every push to main.
+# No secrets, no connector credentials and no AI sign-in. See docs/specs/ci-fixture-checks.md.
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: Fixture suites (macOS)
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Python fixtures
+        run: python3 -m unittest discover -s tests -v
+      - name: Node identity tests
+        run: node --test tests/test_google_identity.cjs
+
+  linux:
+    # The headless service runs on Linux with Debian's cryptography and bubblewrap (see Dockerfile).
+    name: Python fixtures (Linux service)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install service packages
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-cryptography bubblewrap
+      - name: Python fixtures
+        run: /usr/bin/python3 -m unittest discover -s tests -v

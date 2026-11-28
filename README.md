@@ -65,6 +65,6 @@ Optional Slack browser sign-in requires a registered MeMyselfAI desktop client. 
 
 To ship a preconfigured build, put an `oauth-clients.json` file at the repository root before running the build script. Use an `email` object with the Google Desktop app's `client_id` and `client_secret`, and a `slack` object with the Slack app's `client_id`. Either provider can be supplied independently. Use desktop app registration values intended for distribution. The build copies these into the app bundle. User account grants are stored separately in Keychain. See the [browser sign-in spec](docs/specs/browser-signin.md) for provider configuration and permissions.
 
-Run the fixture suite with `python3 -m unittest discover -s tests -v`. The tests use temporary workspaces and simulated provider deliveries. Use `./scripts/run-local.sh --data /path/to/test-workspace` for a separate workspace.
+Run the fixture suites with `python3 -m unittest discover -s tests -v` and `node --test tests/test_google_identity.cjs`. Pull requests and pushes to `main` run the same commands on macOS and Linux runners. [CI spec](docs/specs/ci-fixture-checks.md) The tests use temporary workspaces and simulated provider deliveries. Use `./scripts/run-local.sh --data /path/to/test-workspace` for a separate workspace.
 
 See the [product overview](docs/README.md), [runtime spec](docs/specs/desktop-runtime.md), and [repository rules](AGENTS.md).
