@@ -166,6 +166,46 @@ class BugFlow(unittest.TestCase):
             b.send(self.t, self.conn, self.api, lambda _: "other")
         self.assertTrue(all(row[0] == "GET" for row in self.api.calls))
 
+    def test_moved_default_branch_publishes_on_the_new_base_unless_it_touched_the_fix(self):
+        start = "c" * 40
+        compare = ("GET", f"compare/{start}...{self.api.base}")
+        fake = self.api
+
+        def call(conn, method, path, data=None):
+            if (method, path) == compare:
+                fake.calls.append((method, path, data))
+                return self.diff
+            return Github.__call__(fake, conn, method, path, data)
+
+        def prepare():
+            git = Mock(side_effect=[
+                b"git@github.com:sample/project.git\n",
+                start.encode(),
+                b"100755 blob old\tscript\0",
+            ])
+            with patch.object(b, "_git", git):
+                result = b.prepare(self.t, self.event, self.conn, call, self.who)
+            return result, git
+
+        self.diff = dict(status="ahead", files=[dict(filename="README.md")])
+        prepared, git = prepare()
+        self.assertEqual(prepared["payload"]["sha"], self.api.base)
+        self.assertEqual(git.call_args_list[2].args[3], start)
+        self.assertEqual(prepared["payload"]["files"][0]["mode"], "100755")
+        self.assertTrue(all(row[0] == "GET" for row in self.api.calls))
+        for diff in [
+            dict(status="ahead", files=[dict(filename="script")]),
+            dict(status="ahead", files=[dict(filename="moved", previous_filename="script")]),
+            dict(status="diverged", files=[]),
+            dict(status="behind", files=[]),
+            dict(status="ahead", files=[dict(filename=f"f{i}") for i in range(300)]),
+        ]:
+            self.diff = diff
+            with self.subTest(diff=diff), self.assertRaises(c.Rejected) as caught:
+                prepare()
+            if diff["status"] == "ahead" and len(diff["files"]) == 1:
+                self.assertIn("script", str(caught.exception))
+
     def test_reconcile_confirms_only_the_approved_tree(self):
         self.t.update(self.prepared_branch())
         sha = hashlib.sha1(b"blob 5\x00fixed").hexdigest()
