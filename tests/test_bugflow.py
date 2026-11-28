@@ -285,6 +285,20 @@ class BugFlow(unittest.TestCase):
         self.assertLessEqual(len(big["diff"]), b.DIFF_LINES + 2)
         self.assertTrue(all(row[0] == "GET" for row in self.api.calls))
 
+    def test_a_moved_base_at_approval_is_reported_as_such_without_a_write(self):
+        self.t.update(self.prepared_branch())
+        self.api.base = "advanced"
+        with self.assertRaises(b.BaseMoved):
+            b.send(self.t, self.conn, self.api, self.who)
+        self.assertTrue(all(row[0] == "GET" for row in self.api.calls))
+
+    def test_unresolved_conflict_markers_are_never_proposed(self):
+        self.t["changes"] = [dict(path="script", content="<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> edits\n")]
+        with self.assertRaises(c.Rejected) as caught:
+            self.prepared_branch()
+        self.assertIn("script", str(caught.exception))
+        self.assertIn("conflict", str(caught.exception))
+
     def test_reconcile_confirms_only_the_approved_tree(self):
         self.t.update(self.prepared_branch())
         sha = hashlib.sha1(b"blob 5\x00fixed").hexdigest()

@@ -45,6 +45,8 @@
 
 No task waits on me to run a build or test, extending US-07 and US-26. A fix prepared on the VPS moves to my Mac to build the app there. With the Mac asleep, the pull request says the build is still to verify. [Checks this machine cannot run](specs/task-execution.md#checks-this-machine-cannot-run)
 
+A fix waiting for my approval follows the default branch, extending US-39. When main moves on before I approve, nothing is published from the old base; the same task moves its edits onto the new head, resolves any overlap and asks me to approve the replacement. [Resuming after the default branch advances](specs/task-execution.md#resuming-after-the-default-branch-advances)
+
 Workspace-wide Slack and Google account connections extend US-01 and US-03. [Workspace accounts](specs/account-wide-connections.md)
 
 US-01 through US-05 are covered by the [task workflow](specs/task-workflow.md), US-07 through US-09 by [task agents and completion](specs/task-execution.md), and US-06 and US-10 through US-12 by [decision rules, writing style, and trust](specs/delegation-and-style.md).

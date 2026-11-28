@@ -2043,6 +2043,26 @@ class Engine:
                 latest = self.require_current_task(t)
                 latest.update(repository=repository, worktree=location, github_repository=t["github_repository"])
                 self.db.put("tasks", latest)
+            if (repository and t.get("changes") and not (t.get("milestones") or {}).get("branch")
+                    and (github_issue or t["kind"].lower() in {"bug", "bugfix"})
+                    and not self.pull_request_number(t)):
+                # An unpublished fix follows the default branch. See "Resuming after the default branch
+                # advances" in task-execution.md.
+                moved = worker.refresh_worktree(location, repository, t["changes"],
+                                                token=self.github_token(self.origin_of(repository)))
+                if moved:
+                    refreshed = dict(changes=moved["changes"], partial_changes=bool(moved["conflicts"]),
+                                     verification=[], base_moved=dict(start=moved["start"], previous=moved["previous"],
+                                                                      conflicts=moved["conflicts"]))
+                    with self.db.atomic():
+                        latest = self.require_current_task(t)
+                        latest.update(refreshed)
+                        self.db.put("tasks", latest)
+                    t = dict(t, **refreshed)
+                    self.db.log("Moved to the new default branch",
+                                f"{moved['previous'][:12]} -> {moved['start'][:12]}"
+                                + ("; overlapping edits to resolve: " + ", ".join(moved["conflicts"])
+                                   if moved["conflicts"] else ""), t["project"], t["id"])
             files = worker.worktree_context(location, hints, omissions, available)
         family = [row for row in self.db.rows("tasks") if row["project"] == t["project"]]
         children = [row for row in family if row.get("parent") == t["id"]]
@@ -2140,7 +2160,18 @@ class Engine:
                         self.db.log("Linked activity unavailable", str(exc), t["project"], t["id"])
                         context.setdefault("missing_context", []).append(f"{repo}#{number}: {exc}")
         bug = t["kind"].lower() in {"bug", "bugfix"}
-        if bug and t.get("changes") and t.get("milestones") and not t.get("partial_changes"):
+        if t.get("base_moved"):
+            moved = t["base_moved"]
+            context["base_moved"] = dict(
+                moved,
+                instruction="The default branch moved on after this fix was prepared, so the app moved the task's "
+                "edits onto its new head. " + (
+                    "These files hold Git conflict markers where your earlier edit overlaps newer commits: "
+                    + ", ".join(moved["conflicts"]) + ". Return each one's full resolved content without markers. "
+                    if moved["conflicts"] else "")
+                + "Re-run the relevant checks on the new base before finishing.")
+        if (bug and t.get("changes") and t.get("milestones") and not t.get("partial_changes")
+                and not t.get("base_moved")):
             out = dict(outcome="done", text=t["result"], kind="bug")
         else:
             out = self.infer("task", context, t["project"], t["id"])
@@ -2159,6 +2190,7 @@ class Engine:
                         self.save_prepared_files(t, out["files"], files, partial=True)
         result = out["text"]
         update = dict(
+            base_moved=t.get("base_moved") if out["outcome"] == "question" else None,
             result=result,
             worktree=location,
             repository=repository,
@@ -2678,6 +2710,10 @@ class Engine:
                 with self.db.atomic():
                     t["status"] = "failed" if isinstance(exc, connectors.Rejected) else "uncertain"
                     t["result"] = str(exc)
+                    if isinstance(exc, bugflow.BaseMoved):
+                        # Nothing was written. Prepare a replacement on the new head for fresh approval.
+                        t.update(status="queued", due=0, draft="",
+                                 reason="The default branch moved; preparing a replacement fix on its new head")
                     self.save(t, str(exc))
                 raise ValueError(f"{t['status']}: {exc}") from exc
             with self.db.atomic():

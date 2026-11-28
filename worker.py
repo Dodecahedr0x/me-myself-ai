@@ -1104,6 +1104,57 @@ def prepare_worktree(repo, root, task_id, *, base=None, pull=None, token=None) -
     return path
 
 
+def _succeeds(repo, *args):
+    try:
+        _git(repo, *args)
+    except WorkerError:
+        return False
+    return True
+
+
+def refresh_worktree(path, source, changes, token=None):
+    """Move a task clone onto the default branch's current head when that head has moved past the clone's base,
+    replaying the task's edits. Returns None when there is nothing newer, else the new start, the previous base,
+    the refreshed full-text changes and the paths whose edits overlap newer commits. Overlapping files are left
+    with conflict markers for the agent to resolve and are dropped from the changes. The edits as they stood
+    are kept at refs/memyselfai/before-refresh. See "Resuming after the default branch advances" in
+    task-execution.md."""
+    path = _check_worktree(path)
+    target, described = _start_point(path, check_checkout_root(source), None, token)
+    if target == "HEAD":
+        return None
+    try:
+        new = os.fsdecode(_git(path, "rev-parse", target + "^{commit}")).strip()
+    finally:
+        _git(path, "update-ref", "-d", target)
+    old = os.fsdecode(_git(path, "rev-parse", "HEAD")).strip()
+    if _succeeds(path, "merge-base", "--is-ancestor", new, old):
+        return None
+    branch = os.fsdecode(_git(path, "branch", "--show-current")).strip()
+    _git(path, "add", "-A")
+    _git(path, "commit", "-q", "--no-verify", "--allow-empty", "-m", "MeMyselfAI task edits before refresh")
+    edits = os.fsdecode(_git(path, "rev-parse", "HEAD")).strip()
+    _git(path, "update-ref", "refs/memyselfai/before-refresh", edits)
+    _git(path, "checkout", "-q", "-B", branch, new)
+    conflicts = []
+    if not _succeeds(path, "cherry-pick", "--no-commit", "--allow-empty", edits):
+        listed = _git(path, "diff", "--name-only", "--diff-filter=U", "-z")
+        conflicts = sorted(os.fsdecode(p) for p in listed.split(b"\0") if p)
+    # Leave the result as unstaged working edits on the new head, like the task's own edits.
+    _git(path, "reset", "-q")
+    _succeeds(path, "cherry-pick", "--quit")
+    refreshed = []
+    for edit in changes:
+        if edit["path"] in conflicts:
+            continue
+        try:
+            refreshed.append(dict(path=edit["path"], content=(path / edit["path"]).read_text(encoding="utf-8")))
+        except (OSError, UnicodeError):
+            conflicts.append(edit["path"])
+    _git(path, "config", "memyselfai.start", described)
+    return dict(start=new, previous=old, changes=refreshed, conflicts=sorted(set(conflicts)))
+
+
 # Moving a task's worktree between instances. See "Worktree handoff" in docs/specs/instances-and-sync.md.
 
 MAX_BUNDLE = 4 * 1024 * 1024

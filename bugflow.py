@@ -63,6 +63,14 @@ class CheckoutAccessError(ValueError):
     pass
 
 
+class BaseMoved(Rejected):
+    """The default branch moved between preparation and approval. Nothing was written; the task prepares a
+    replacement proposal on the new head. See "Resuming after the default branch advances" in task-execution.md."""
+
+
+CONFLICT_MARKER = re.compile(r"(?m)^(?:<{7}|>{7})(?: |$)")
+
+
 def _git(worktree, *args):
     result = subprocess.run(
         ["git", "--literal-pathspecs", "-C", worktree, *args],
@@ -161,7 +169,8 @@ def _check_moved_base(conn, api, head, sha, files):
     clash = sorted(p for p in touched if p in edited or any(p.startswith(e + "/") or e.startswith(p + "/") for e in edited))
     if clash:
         raise Rejected("The default branch changed files this fix edits since the task started: "
-                       + ", ".join(clash[:5]) + ". Ask the agent to update the worktree to the current default branch and redo those edits.")
+                       + ", ".join(clash[:5]) + ". Retry once the folder has fetched the new default branch, "
+                       "so the task can move its edits onto it.")
 
 
 DIFF_LINES = 400  # per file; the full proposed content stays in the preview beside it
@@ -205,6 +214,9 @@ def _branch_data(t, conn, api, number):
         _check_moved_base(conn, api, head, sha, files)
     if not files:
         raise ValueError("A proposed fix is required before publishing a branch.")
+    marked = [f["path"] for f in files if CONFLICT_MARKER.search(f["content"])]
+    if marked:
+        raise Rejected("Unresolved merge conflict markers remain in " + ", ".join(marked[:5]) + ".")
     # The worktree's own HEAD: the newer base may be absent locally, and the
     # edited paths are identical in both when the base moved.
     tracked = _git(t["worktree"], "ls-tree", "-rz", head, "--", *(f["path"] for f in files))
@@ -420,7 +432,7 @@ def send(t, conn, api, identity):
             raise Rejected("Another person is assigned to this issue.")
         if op == "publish branch":
             if _remote_base(conn, api) != (p["base"], p["sha"]):
-                raise Rejected("The default branch changed after preparation.")
+                raise BaseMoved("The default branch changed after preparation.")
             commit = api(conn, "GET", f"git/commits/{p['sha']}")
         if op == "create pull request":
             ref = api(conn, "GET", "git/ref/heads/" + p["head"])
