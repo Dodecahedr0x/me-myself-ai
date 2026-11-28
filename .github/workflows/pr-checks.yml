@@ -1,0 +1,42 @@
+# Builds the Mac app and runs the test suites on macOS for every pull request and every push to main,
+# so no task has to ask the user whether the build passed on a Mac. Task agents read this check's
+# result from GitHub. See "Pull request checks" in docs/specs/task-execution.md.
+name: macOS build and tests
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS build and tests
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build the app
+        run: ./scripts/build-app.sh
+      - name: Check the app bundle
+        run: |
+          test -x build/MeMyselfAI.app/Contents/MacOS/MeMyselfAI
+          codesign --verify build/MeMyselfAI.app
+      - name: Python tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Node tests
+        run: node --test tests/test_google_identity.cjs
+      - name: Dashboard script syntax
+        run: node --check ui/app.js

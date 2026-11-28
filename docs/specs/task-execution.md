@@ -69,6 +69,24 @@ Coding work on an open GitHub issue follows the same workflow. When the agent re
 
 The desktop bug workflow verifies the worktree's origin and HEAD against the configured GitHub repository and its default branch before publishing a fix. The branch preview names the base revision, commit message, paths, file modes and full contents. A moved base or a newly assigned issue pauses delivery. The PR must target the recorded base from the published fix branch and revision and link the original open issue. The reporter receives the PR URL by email, in the original Slack thread, or in the GitHub conversation with the reporter mentioned. An uncertain notification remains open until reconciled.
 
+## Pull request checks
+
+No task asks the user whether a build or tests passed on their machine. A task can run on the Linux server, which cannot build the Mac app, so the repository verifies every pull request on macOS instead.
+
+- `.github/workflows/pr-checks.yml` runs the **macOS build and tests** check on every pull request when it is opened, reopened, marked ready or updated, and on every push to `main`. It runs `./scripts/build-app.sh`, checks the bundle's executable and signature, and runs `python3 -m unittest discover -s tests`, `node --test tests/test_google_identity.cjs` and `node --check ui/app.js`. It reads no secrets and keeps no Git credentials.
+- When a task works on an existing pull request, its agent receives `pull_request_checks`: the pull request number, head commit, state and each check's name, status, conclusion and link. A failed, cancelled or timed-out check also carries up to ten of its annotations. The app reads them with the task's GitHub connection, read only. When GitHub cannot be read, the reason goes into `missing_context` and the agent still runs.
+- The agent uses those checks as verification evidence. A failed check is work to fix. When the next step depends on a check that is still queued or running, the agent returns a question with `wait_for_checks`. The app confirms from the checks it read that one is still pending, then schedules the task again in 5 minutes instead of showing the question. After 18 waits, 90 minutes, the question reaches the user and says how long the checks have run. A question while no check is pending reaches the user at once.
+- Every command a task agent runs is recorded by the app with its exit code, timeout and platform. The pull request the bug workflow opens ends with a **Verification** section listing those commands, written by the app rather than the agent. With none, it says the agent ran none. It points to the pull request's checks for the builds and tests the agent's machine could not run.
+- [AGENTS.md](../../AGENTS.md) step 6 tells agents on a machine that cannot build the Mac app to leave the build to the check and never ask the user to run it.
+
+Acceptance, verified in `tests/test_engine.py` and `tests/test_bugflow.py` with GitHub faked:
+
+- A task on pull request #17 receives the head commit's checks, with annotations for a failed one, and GitHub is read only with GET.
+- A question with `wait_for_checks` while a check is in progress schedules the task 5 minutes later with no question shown. The 19th such question reaches the user. A `wait_for_checks` question while every check has completed reaches the user at once.
+- The pull request body lists each command the app ran with its exit code and platform, and says so when there were none.
+
+Not verified here: the workflow's first run on GitHub. It runs when this change's pull request opens.
+
 ## Promises become work
 
 When drafting a commitment such as “I'll send the figures on Friday,” show the promised work and timing alongside the proposed message. Once the message is delivered, create a linked follow-up task for each distinct promise, with the project, beneficiary, source message, and any stated deadline or trigger. The scheduler makes the follow-up actionable in time to address it. Where timing or scope is unclear, ask for clarification. Reconcile uncertain delivery before activating the follow-up. Discarding a draft discards its proposed commitments. A commitment already made by the user in connected content also creates a follow-up when discovered.

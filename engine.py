@@ -308,6 +308,32 @@ class Engine:
                 return numbers.pop() if len(numbers) == 1 else None
         return None
 
+    CHECK_WAIT = 300
+    CHECK_WAITS = 18
+
+    def pull_request_checks(self, github, number):
+        """The checks GitHub reports on a pull request's head, such as the macOS build and tests, so a task agent
+        reads them instead of asking the user. Read only. See "Pull request checks" in task-execution.md."""
+        pr = connectors.github_request(github, "GET", f"pulls/{int(number)}")
+        sha = (pr.get("head") or {}).get("sha") or ""
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise ValueError("GitHub did not report the pull request's head commit.")
+        runs = connectors.github_request(github, "GET", f"commits/{sha}/check-runs", {"per_page": 50})
+        checks = []
+        for run in (runs.get("check_runs") or [])[:50]:
+            check = dict(name=str(run.get("name", ""))[:200], status=run.get("status", ""),
+                         conclusion=run.get("conclusion") or "", url=run.get("html_url", ""))
+            if check["conclusion"] in {"failure", "timed_out", "cancelled", "action_required"} and run.get("id"):
+                notes = connectors.github_request(github, "GET", f"check-runs/{int(run['id'])}/annotations",
+                                                  {"per_page": 10})
+                check["annotations"] = [
+                    f"{a.get('path', '')}:{a.get('start_line', '')} {a.get('message', '')}"[:1000]
+                    for a in (notes if isinstance(notes, list) else [])[:10]
+                ]
+            checks.append(check)
+        return dict(number=int(number), head=sha, state=pr.get("state", ""), checks=checks,
+                    pending=any(c["status"] != "completed" for c in checks))
+
     def step_parent(self, task):
         if task.get("depth") and task.get("parent"):
             parent = self.db.get("tasks", task["parent"])
@@ -659,6 +685,15 @@ class Engine:
                     self.require_current_task(initial)
                 if answer.get("outcome") not in ("run", "setup"):
                     self.db.log("Agent result", json.dumps(answer, ensure_ascii=False), project, task)
+                    ran = [r for r in results if not r.get("setup")]
+                    if ran:
+                        # What the app observed, not what the agent says. Pull requests quote it.
+                        system = os.uname()
+                        answer = dict(answer, verification=[
+                            dict(command=r["command"][:500], exit_code=r.get("exit_code"),
+                                 timed_out=bool(r.get("timed_out")), platform=f"{system.sysname} {system.machine}")
+                            for r in ran
+                        ])
                     return answer
                 if answer.get("outcome") == "setup":
                     if not can_run or setups >= 4:
@@ -2085,6 +2120,16 @@ class Engine:
                     except Exception as exc:
                         self.db.log("Linked activity unavailable", str(exc), t["project"], t["id"])
                         context.setdefault("missing_context", []).append(f"{repo}#{number}: {exc}")
+        pull = self.pull_request_number(t)
+        github = self.github_for({**t, "worktree": location, "repository": repository}, conn) if pull else None
+        if github:
+            try:
+                context["pull_request_checks"] = self.pull_request_checks(github, pull)
+                self.db.log("Pull request checks read", json.dumps(context["pull_request_checks"], ensure_ascii=False),
+                            t["project"], t["id"])
+            except Exception as exc:
+                self.db.log("Pull request checks unavailable", str(exc), t["project"], t["id"])
+                context.setdefault("missing_context", []).append(f"Checks for pull request #{pull}: {exc}")
         bug = t["kind"].lower() in {"bug", "bugfix"}
         if bug and t.get("changes") and t.get("milestones") and not t.get("partial_changes"):
             out = dict(outcome="done", text=t["result"], kind="bug")
@@ -2117,7 +2162,19 @@ class Engine:
             commitments=[],
             due=0,
         )
+        if out.get("verification"):
+            update["verification"] = out["verification"]
         outcome = out["outcome"]
+        checks = context.get("pull_request_checks")
+        waits = t.get("check_waits", 0)
+        if outcome == "question" and out.get("wait_for_checks") and checks and checks["pending"]:
+            # The app, not the agent, confirms a check is still running. Bounded so a stuck check reaches the user.
+            if waits < self.CHECK_WAITS:
+                return dict(update, status="scheduled", due=self.now() + self.CHECK_WAIT, check_waits=waits + 1,
+                            reason=f"Waiting for pull request #{checks['number']}'s checks to finish")
+            result = out["text"] = update["result"] = (f"Pull request #{checks['number']}'s checks are still running after "
+                                    f"{self.CHECK_WAITS * self.CHECK_WAIT // 60} minutes. " + result)
+        update["check_waits"] = 0
         newkind = out.get("kind") or t["kind"]
         needs_checkout = outcome == "question" and re.search(r"\b(worktree|(?:git|local|registered) checkout)\b", result, re.I)
         if not location and (out.get("files") or needs_checkout) and newkind.lower() not in {"bug", "bugfix"}:

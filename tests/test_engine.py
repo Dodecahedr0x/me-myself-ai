@@ -254,6 +254,82 @@ class EngineTests(unittest.TestCase):
             send.assert_not_called()
         self.assertEqual(self.db.get("tasks", key)["status"], "review")
 
+    def checks_fixture(self, status="in_progress"):
+        source = dict(id="repo", kind="github", label="Repo", config={"repository": "owner/project"})
+        self.db.put("connections", source)
+        task = self.engine.new_task("Verify and merge PR #17", "A", "Merge once it passes.", github="repo")
+        head = "c" * 40
+        calls = []
+
+        def github(conn, method, path, data=None):
+            calls.append((method, path))
+            if path == "pulls/17":
+                return dict(state="open", head=dict(sha=head))
+            if path == f"commits/{head}/check-runs":
+                return dict(check_runs=[
+                    dict(id=5, name="macOS build and tests", status=status, conclusion=None if status != "completed"
+                         else "failure", html_url="https://github.com/owner/project/runs/5"),
+                    dict(id=6, name="lint", status="completed", conclusion="success", html_url=""),
+                ])
+            if path == "check-runs/5/annotations":
+                return [dict(path="tests/test_x.py", start_line=3, message="AssertionError: 1 != 0")]
+            raise AssertionError(path)
+
+        return task, github, calls
+
+    def test_task_on_a_pull_request_reads_its_checks(self):
+        task, github, calls = self.checks_fixture("completed")
+        seen = []
+
+        def agent(role, payload, model, workdir):
+            seen.append(payload["pull_request_checks"])
+            return dict(outcome="question", text="The macOS build failed. Fix it now?", kind="task",
+                        commitments=[], wait_for_checks=True)
+
+        with (
+            patch("engine.connectors.github_request", side_effect=github),
+            patch("engine.worker.run_agent", side_effect=lambda role, *a: agent(role, *a) if role == "task"
+                  else dict(question="Fix it now?", context="", choices=[])),
+        ):
+            self.engine.process(task["id"])
+        checks = seen[0]
+        self.assertEqual((checks["number"], checks["head"], checks["pending"]), (17, "c" * 40, False))
+        self.assertEqual(checks["checks"][0]["conclusion"], "failure")
+        self.assertEqual(checks["checks"][0]["annotations"], ["tests/test_x.py:3 AssertionError: 1 != 0"])
+        self.assertNotIn("annotations", checks["checks"][1])
+        self.assertTrue(all(method == "GET" for method, _ in calls))
+        # Nothing is pending, so the question reaches the user at once.
+        self.assertEqual(self.db.get("tasks", task["id"])["status"], "question")
+
+    def test_question_waiting_on_running_checks_is_retried_instead_of_asked(self):
+        task, github, _ = self.checks_fixture("in_progress")
+
+        def agent(role, payload, model, workdir):
+            return dict(outcome="question", text="Did the macOS build pass?", kind="task", commitments=[],
+                        wait_for_checks=True)
+
+        for wait in range(1, Engine.CHECK_WAITS + 1):
+            with (
+                patch("engine.connectors.github_request", side_effect=github),
+                patch("engine.worker.run_agent", side_effect=agent),
+            ):
+                self.engine.process(task["id"])
+            row = self.db.get("tasks", task["id"])
+            self.assertEqual((row["status"], row["due"], row["check_waits"]),
+                             ("scheduled", self.now + Engine.CHECK_WAIT, wait))
+            self.assertEqual(row["question"], "")
+            self.assertIn("pull request #17's checks", row["reason"])
+            self.now += Engine.CHECK_WAIT
+        with (
+            patch("engine.connectors.github_request", side_effect=github),
+            patch("engine.worker.run_agent", side_effect=lambda role, *a: agent(role, *a) if role == "task"
+                  else dict(question="Checks are stuck. Rerun?", context="", choices=[])),
+        ):
+            self.engine.process(task["id"])
+        row = self.db.get("tasks", task["id"])
+        self.assertEqual((row["status"], row["check_waits"]), ("question", 0))
+        self.assertIn("still running after 90 minutes", row["result"])
+
     def test_feedback_retires_preview(self):
         t = self.draft()
         self.engine.action(dict(op="feedback", id=t["id"], text="Use the short version"))
