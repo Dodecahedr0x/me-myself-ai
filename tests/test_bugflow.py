@@ -228,6 +228,8 @@ class BugFlow(unittest.TestCase):
         (repo / "report.py").write_text("".join(lines))
         (repo / "run.sh").write_text("echo old\n")
         (repo / "big.txt").write_text("".join(f"old {i}\n" for i in range(2000)))
+        form = "".join(f"row {i}\n" for i in range(8)) + "page\x0cbreak\nline sep\nlast\r\nend\n"
+        (repo / "form.txt").write_bytes(form.encode())
         git("add", ".")
         git("update-index", "--chmod=+x", "run.sh")
         git("commit", "-qm", "Initial fixture")
@@ -240,6 +242,7 @@ class BugFlow(unittest.TestCase):
             dict(path="docs/new.md", content="# New\n\nAdded."),
             dict(path="run.sh", content="echo new\n"),
             dict(path="big.txt", content="".join(f"new {i}\n" for i in range(2000))),
+            dict(path="form.txt", content=form.replace("end\n", "END\n")),
         ])
         prepared = b.prepare(self.t, self.event, self.conn, self.api, self.who)
         self.assertEqual(prepared["operation"], "publish branch")
@@ -249,7 +252,16 @@ class BugFlow(unittest.TestCase):
         self.assertEqual(preview["sha"], self.api.base)
         self.assertEqual(preview["files"], prepared["payload"]["files"])
         diffs = {d["path"]: d for d in preview["diffs"]}
-        self.assertEqual(list(diffs), ["report.py", "docs/new.md", "run.sh", "big.txt"])
+        self.assertEqual(list(diffs), ["report.py", "docs/new.md", "run.sh", "big.txt", "form.txt"])
+
+        # Lines end only at \n, as in Git, so form feeds and U+2028 stay inside a line.
+        (repo / "form.txt").write_bytes(form.replace("end\n", "END\n").encode())
+        expected = subprocess.check_output(["git", "-C", str(repo), "diff", "--no-color", "-U3", "--", "form.txt"])
+        expected = expected.decode().split("\n")
+        hunk = next(i for i, l in enumerate(expected) if l.startswith("@@"))
+        expected = [expected[hunk].rsplit("@@", 1)[0] + "@@"] + expected[hunk + 1:-1]  # drop Git's function context
+        self.assertEqual(diffs["form.txt"]["diff"][2:], expected)
+        self.assertEqual((diffs["form.txt"]["additions"], diffs["form.txt"]["deletions"]), (1, 1))
 
         report = diffs["report.py"]
         self.assertEqual((report["status"], report["additions"], report["deletions"]), ("modified", 1, 1))

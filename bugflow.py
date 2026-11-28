@@ -179,7 +179,8 @@ def _file_diff(worktree, head, item, tracked):
         except UnicodeDecodeError:
             return dict(entry, status="binary")
     lines = []
-    for line in difflib.unified_diff(before.splitlines(keepends=True), item["content"].splitlines(keepends=True),
+    split = lambda text: re.findall(r"[^\n]*\n|[^\n]+", text)  # Git's lines end only at \n
+    for line in difflib.unified_diff(split(before), split(item["content"]),
                                      "a/" + path if tracked else "/dev/null", "b/" + path):
         lines += [line[:-1]] if line.endswith("\n") else [line, "\\ No newline at end of file"]
     body = lines[2:]
