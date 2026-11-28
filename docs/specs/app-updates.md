@@ -20,7 +20,7 @@ Only a copy installed in `/Applications` or `~/Applications` updates itself. A b
 
 An installed copy checks 30 seconds after launch, then every six hours, and when the user chooses **Check for Updates…** in the app menu or the menu bar menu. It reads `https://api.github.com/repos/Dodecahedr0x/me-myself-ai/releases/latest` over HTTPS without credentials. That endpoint skips drafts and prereleases. The tag's version is compared with the running version number by number, so `0.10` is newer than `0.9`. An update needs a newer version and an asset named for this Mac's architecture.
 
-The menu bar menu shows a line under the service state: the running version and *up to date*, *checking*, *downloading*, *installing* or the reason the last attempt failed. A failed automatic check is retried at the next interval. A failure never stops the services.
+**About MeMyselfAI** in the app menu shows the running version. The menu bar menu also shows a line under the service state: the running version and *up to date*, *checking*, *downloading*, *installing* or the reason the last attempt failed. A failed automatic check is retried at the next interval. A failure never stops the services.
 
 ## Verifying
 
@@ -30,7 +30,7 @@ The builds are ad-hoc signed. Their signature proves the bundle is intact, not w
 
 ## Installing and restarting
 
-With a verified bundle, the app replaces itself in place with `FileManager.replaceItemAt`, which keeps the old copy until the new one is in place. It then quits through the normal quit path. Services stop their agents, and those tasks are queued again on the next start, as the [desktop runtime](desktop-runtime.md) describes. A small helper waits for the old process to exit and opens the new app with the same arguments, so a `--data` workspace is kept. At launch the service copies the new build into `app-runtime/` because its signature seal changed.
+With a verified bundle, the app replaces itself in place with `FileManager.replaceItemAt`, which keeps the old copy until the new one is in place. It then quits through the normal quit path. The quit is started from the main run loop, not from inside the update task: a quit that waits for the service runs a nested event loop, and the service's exit is delivered on the main queue, which cannot run while a main-queue job is still executing. Version 0.2.0 and 0.2.1 called it from inside the task and hung in *Stopping services…* with the new bundle already in place. Services stop their agents, and those tasks are queued again on the next start, as the [desktop runtime](desktop-runtime.md) describes. A small helper waits for the old process to exit and opens the new app with `open -n` and the same arguments, so another running copy with the same bundle identifier is not activated in its place, so a `--data` workspace is kept. At launch the service copies the new build into `app-runtime/` because its signature seal changed.
 
 If replacing fails, the old app keeps running and the menu shows why. Nothing in the workspace data changes during an update.
 
@@ -40,7 +40,9 @@ If replacing fails, the old app keeps running and the menu shows why. Nothing in
 2. A copy of version `0.1.0` in `~/Applications`, pointed at a feed whose latest release is `0.2.0`, downloads it, replaces itself and is running `0.2.0` from the same path, with the same `--data` folder, without user action.
 3. A download whose hash differs from the published digest is refused. The installed copy is unchanged and the menu shows the failure.
 4. A build run from `build/` never checks or installs.
-5. A latest release that is equal or older, or that has no asset for this architecture, leaves the app as it is and the menu shows *up to date*.
+5. After installing, the old process exits within the 30-second stop limit and the new one starts from the same path, with no user action, even while another copy of the app is running elsewhere.
+6. **About MeMyselfAI** shows the running version.
+7. A latest release that is equal or older, or that has no asset for this architecture, leaves the app as it is and the menu shows *up to date*.
 
 For testing, the environment variable `MEMYSELFAI_UPDATE_FEED` replaces the releases URL. The app accepts only `https` feeds, or `http` on `127.0.0.1`.
 
