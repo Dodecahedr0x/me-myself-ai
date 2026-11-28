@@ -518,8 +518,9 @@ class Engine:
             tasks = self.db.dashboard_tasks()
             if self.instances.peers():
                 for t in tasks:
-                    if not self.owns("task:" + t["id"]):
-                        t["owner"] = self.instances.owner_name("task:" + t["id"])
+                    record = self.instances.owner("task:" + t["id"])
+                    t["owner_here"] = bool(record and record["owner"] == self.instances.id)
+                    t["owner"] = self.instances.owner_name("task:" + t["id"])
                 for c in connections:
                     if not self.owns("connection:" + c["id"]):
                         c["owner"] = self.instances.owner_name("connection:" + c["id"])
