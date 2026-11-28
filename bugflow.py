@@ -168,7 +168,7 @@ def _check_moved_base(conn, api, head, sha, files):
     edited = {f["path"] for f in files}
     clash = sorted(p for p in touched if p in edited or any(p.startswith(e + "/") or e.startswith(p + "/") for e in edited))
     if clash:
-        raise Rejected("The default branch changed files this fix edits since the task started: "
+        raise BaseMoved("The default branch changed files this fix edits since the task started: "
                        + ", ".join(clash[:5]) + ". Retry once the folder has fetched the new default branch, "
                        "so the task can move its edits onto it.")
 
@@ -210,6 +210,9 @@ def _branch_data(t, conn, api, number):
     base, sha = _remote_base(conn, api)
     head = _git(t["worktree"], "rev-parse", "HEAD").decode().strip()
     files = t.get("changes", [])
+    if t.get("changes_base") and t["changes_base"] != head:
+        raise Rejected("The saved edits were written against " + t["changes_base"][:12] + ", not the task clone's "
+                       + head[:12] + ". Retry so the task moves them onto its current revision.")
     if head != sha:
         _check_moved_base(conn, api, head, sha, files)
     if not files:

@@ -292,6 +292,14 @@ class BugFlow(unittest.TestCase):
             b.send(self.t, self.conn, self.api, self.who)
         self.assertTrue(all(row[0] == "GET" for row in self.api.calls))
 
+    def test_edits_written_against_another_revision_are_never_proposed(self):
+        self.t["changes_base"] = "c" * 40
+        with self.assertRaises(c.Rejected) as caught:
+            self.prepared_branch()
+        self.assertIn("written against cccccccccccc", str(caught.exception))
+        self.t["changes_base"] = self.api.base
+        self.assertEqual(self.prepared_branch()["operation"], "publish branch")
+
     def test_unresolved_conflict_markers_are_never_proposed(self):
         self.t["changes"] = [dict(path="script", content="<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> edits\n")]
         with self.assertRaises(c.Rejected) as caught:

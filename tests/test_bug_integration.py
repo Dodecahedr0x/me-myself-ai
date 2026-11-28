@@ -179,6 +179,8 @@ class BugIntegrationTests(unittest.TestCase):
             "/pulls/8/files": [dict(filename="report.py", status="modified", additions=1, deletions=1,
                                     patch="@@ -2 +2 @@\n-    return values[0]\n+    return sum(values)")],
         }
+        if suffix.startswith("/compare/"):
+            return dict(status="ahead", files=[dict(filename=n) for n in getattr(self, "compare_files", [])]), {}
         return reads[suffix], {}
 
     def row(self):
@@ -442,6 +444,66 @@ class BugIntegrationTests(unittest.TestCase):
             return dict(outcome="done", kind="bug", text="Resolved the overlap.",
                         files=[dict(path="report.py", content=self.fixed)])
         self.finish_replacement(stale, old, agent)
+
+    def test_an_interrupted_refresh_never_publishes_old_contents_on_the_new_base(self):
+        stale, old = self.stale_fix_after_main_moves(
+            {"report.py": '"""Report helpers."""\n\n\ndef total(values):\n    return values[0]\n'})
+        row = self.row()
+        # Stored milestones send a finished bug straight to bugflow without the agent.
+        row["milestones"] = dict(issue=7, repository="fixture/report")
+        self.engine.db.put("tasks", row)
+        with patch("worker._replace_file", side_effect=OSError("disk full")):
+            self.engine.process(self.key)
+        failed = self.row()
+        self.assertEqual(failed["status"], "failed", failed["result"])
+        self.assertEqual(failed["changes_base"], old, "The saved edits still record their own base")
+        self.assertEqual(subprocess.check_output(["git", "-C", failed["worktree"], "rev-parse", "HEAD"],
+                                                 text=True).strip(), self.base, "The clone moved before the failure")
+        self.engine.action(dict(op="retry", id=self.key))
+        self.fixed = '"""Report helpers."""\n\n\ndef total(values):\n    return sum(values)\n'
+
+        def agent(role, payload, model, workdir):
+            self.assertEqual(payload["base_moved"]["conflicts"], [])
+            self.assertEqual(payload["files"]["report.py"], self.fixed, "Both the fix and main's change are kept")
+            return dict(outcome="done", kind="bug", text="Sum the values on the new base.")
+        fresh = self.finish_replacement(stale, old, agent)
+        self.assertEqual(fresh["payload"]["files"][0]["content"], self.fixed)
+
+    def test_an_unresolved_overlap_blocks_any_proposal_until_resolved(self):
+        stale, old = self.stale_fix_after_main_moves(
+            {"report.py": "def total(values):\n    return values[0] if values else 0\n"})
+        omit = dict(outcome="done", kind="bug", text="Done.")
+        with patch("engine.worker.run_agent", return_value=omit):
+            self.engine.process(self.key)
+        blocked = self.row()
+        self.assertEqual(blocked["status"], "failed")
+        self.assertIn("report.py", blocked["result"])
+        self.assertEqual(blocked["base_moved"]["conflicts"], ["report.py"])
+        self.assertIn("<<<<<<<", next(c["content"] for c in blocked["changes"] if c["path"] == "report.py"))
+        self.assertEqual(self.writes, [])
+        b_head = self.base
+
+        # Main moves again before the overlap is resolved: the clone stays put and the overlap is kept.
+        self.advance({"NOTES.md": "Release notes\n"})
+        self.compare_files = ["NOTES.md"]
+        self.engine.action(dict(op="retry", id=self.key))
+        with patch("engine.worker.run_agent", return_value=omit):
+            self.engine.process(self.key)
+        again = self.row()
+        self.assertEqual((again["status"], again["base_moved"]["conflicts"]), ("failed", ["report.py"]))
+        self.assertEqual(again["changes_base"], b_head)
+        self.assertEqual(self.writes, [])
+
+        self.engine.action(dict(op="retry", id=self.key))
+        self.fixed = "def total(values):\n    return sum(values) if values else 0\n"
+
+        def agent(role, payload, model, workdir):
+            self.assertEqual(payload["base_moved"]["conflicts"], ["report.py"])
+            return dict(outcome="done", kind="bug", text="Resolved the overlap.",
+                        files=[dict(path="report.py", content=self.fixed)])
+        fresh = self.finish_replacement(stale, old, agent)
+        self.assertIsNone(self.row()["base_moved"])
+        self.assertEqual(fresh["payload"]["files"], [dict(path="report.py", mode="100644", content=self.fixed)])
 
     def test_restart_reopens_issue_work_closed_without_a_branch(self):
         task = self.own_issue()

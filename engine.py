@@ -173,7 +173,8 @@ class Engine:
                     except (OSError, worker.WorkerError) as exc:
                         self.db.log("Worktree kept", str(exc), t["project"], t["id"])
                         continue
-                    t.update(status="queued", due=0, result="", worktree="", changes=[], partial_changes=False)
+                    t.update(status="queued", due=0, result="", worktree="", changes=[], partial_changes=False,
+                             changes_base=None, base_moved=None)
                     self.save(t, "Reopened: edits for this open issue were never proposed")
             for e in self.db.rows("events"):
                 if e["state"] == "working":
@@ -860,6 +861,7 @@ class Engine:
     PLATFORMS = {"macos": "darwin", "linux": "linux"}
     PLATFORM_NAMES = {"darwin": "Mac", "linux": "Linux"}
     PLATFORM_WAIT = 1800
+    REFRESH_INTERVAL = 600  # seconds between default branch checks for an unpublished fix
 
     @staticmethod
     def platform_fits(t, info):
@@ -1837,6 +1839,10 @@ class Engine:
                     if isinstance(exc, bugflow.CheckoutAccessError):
                         latest.update(status="question", question=str(exc), repository_question=True,
                                       checkout_inaccessible=True, reason="Waiting for access to the registered checkout")
+                    elif isinstance(exc, bugflow.BaseMoved) and not latest.get("base_stale"):
+                        # One automatic pass to move the edits onto the new head; then it waits for a retry.
+                        latest.update(status="queued", due=0, base_stale=True, result=str(exc),
+                                      reason="The default branch moved; preparing a replacement fix on its new head")
                     elif isinstance(exc, worker.CheckoutTimeout) and attempts < 2:
                         delay = (30, 120)[attempts]
                         latest.update(status="scheduled", due=self.now() + delay, checkout_retries=attempts + 1,
@@ -1934,10 +1940,18 @@ class Engine:
             saved = list(changes.values())
             worker._validate_files(saved, saved=True)
             paths = [edit["path"] for edit in applied]
-            latest.update(changes=saved, partial_changes=partial)
+            recorded = dict(changes=saved, partial_changes=partial)
+            if not latest.get("changes"):
+                recorded["changes_base"] = worker.worktree_head(task["worktree"])
+            moved = latest.get("base_moved")
+            if moved and moved.get("conflicts"):
+                left = [p for p in moved["conflicts"] if p not in paths
+                        or bugflow.CONFLICT_MARKER.search(changes[p]["content"])]
+                recorded["base_moved"] = dict(moved, conflicts=left)
+            latest.update(recorded)
             self.db.put("tasks", latest)
             self.db.log("Files edited", "\n".join(paths), task["project"], task["id"])
-            task.update(changes=saved, partial_changes=partial)
+            task.update(recorded)
 
     def prepare(self, t):
         e = self.db.get("events", t.get("event", ""))
@@ -2047,22 +2061,32 @@ class Engine:
                     and (github_issue or t["kind"].lower() in {"bug", "bugfix"})
                     and not self.pull_request_number(t)):
                 # An unpublished fix follows the default branch. See "Resuming after the default branch
-                # advances" in task-execution.md.
-                moved = worker.refresh_worktree(location, repository, t["changes"],
-                                                token=self.github_token(self.origin_of(repository)))
+                # advances" in task-execution.md. The fetch waits while overlaps are unresolved and runs at
+                # most every REFRESH_INTERVAL unless approval found the base moved; an interrupted refresh
+                # is redone from the saved edits and their recorded base either way.
+                unresolved = list((t.get("base_moved") or {}).get("conflicts") or [])
+                fetch = not unresolved and (t.get("base_stale")
+                                            or self.now() - t.get("base_checked", 0) >= self.REFRESH_INTERVAL)
+                moved = worker.refresh_worktree(location, repository, t["changes"], base=t.get("changes_base"),
+                                                token=self.github_token(self.origin_of(repository)), fetch=fetch)
+                refreshed = dict(base_checked=self.now()) if fetch else {}
                 if moved:
-                    refreshed = dict(changes=moved["changes"], partial_changes=bool(moved["conflicts"]),
-                                     verification=[], base_moved=dict(start=moved["start"], previous=moved["previous"],
-                                                                      conflicts=moved["conflicts"]))
+                    conflicts = sorted(set(unresolved) | set(moved["conflicts"]))
+                    refreshed.update(changes=moved["changes"], changes_base=moved["start"], base_stale=False,
+                                     partial_changes=bool(conflicts), verification=[],
+                                     base_moved=dict(start=moved["start"], previous=moved["previous"],
+                                                     conflicts=conflicts))
+                if refreshed:
                     with self.db.atomic():
                         latest = self.require_current_task(t)
                         latest.update(refreshed)
                         self.db.put("tasks", latest)
                     t = dict(t, **refreshed)
+                if moved:
                     self.db.log("Moved to the new default branch",
                                 f"{moved['previous'][:12]} -> {moved['start'][:12]}"
-                                + ("; overlapping edits to resolve: " + ", ".join(moved["conflicts"])
-                                   if moved["conflicts"] else ""), t["project"], t["id"])
+                                + ("; overlapping edits to resolve: " + ", ".join(conflicts) if conflicts else ""),
+                                t["project"], t["id"])
             files = worker.worktree_context(location, hints, omissions, available)
         family = [row for row in self.db.rows("tasks") if row["project"] == t["project"]]
         children = [row for row in family if row.get("parent") == t["id"]]
@@ -2190,7 +2214,6 @@ class Engine:
                         self.save_prepared_files(t, out["files"], files, partial=True)
         result = out["text"]
         update = dict(
-            base_moved=t.get("base_moved") if out["outcome"] == "question" else None,
             result=result,
             worktree=location,
             repository=repository,
@@ -2272,6 +2295,12 @@ class Engine:
                     **self.decision(t, "Which local Git repository should be linked to this project?"),
                 }
             self.save_prepared_files(t, out["files"], files, partial=False)
+        moved = t.get("base_moved")
+        if moved and moved.get("conflicts"):
+            raise ValueError("The default branch moved and these files still overlap the fix: "
+                             + ", ".join(moved["conflicts"]) + ". Retry so the agent resolves them.")
+        if moved:
+            update["base_moved"] = None
         update["partial_changes"] = False
         if not bug and outcome == "done" and github_issue and coding and t.get("changes"):
             # Finished edits for an open issue ship as a fix branch and PR, never as a silent "done".
@@ -2712,7 +2741,7 @@ class Engine:
                     t["result"] = str(exc)
                     if isinstance(exc, bugflow.BaseMoved):
                         # Nothing was written. Prepare a replacement on the new head for fresh approval.
-                        t.update(status="queued", due=0, draft="",
+                        t.update(status="queued", due=0, draft="", base_stale=True,
                                  reason="The default branch moved; preparing a replacement fix on its new head")
                     self.save(t, str(exc))
                 raise ValueError(f"{t['status']}: {exc}") from exc
