@@ -17,7 +17,14 @@ The workflow `Tests` runs on every `pull_request` event (opened, reopened, head 
 
 The macOS check is the one the issue asked for. It is the app's platform, and it runs the tests that need it: the macOS command sandbox and the bundled Google Workspace connector runtime. The Linux check runs the suite as the headless VPS service sees it, so the vault tests (which need `cryptography`) and the bubblewrap sandbox test run there instead of being skipped. A test that cannot run on a runner is skipped with a reason by its `skipUnless`/`skipIf`, never deleted.
 
+Ubuntu 24.04 blocks unprivileged user namespaces through AppArmor, which bubblewrap needs. The Linux check lifts that restriction for its runner (`kernel.apparmor_restrict_unprivileged_userns=0`), matching Debian, which the VPS image uses.
+
 Either command exiting non-zero fails its check. A failing check blocks nothing automatically: the repository has no branch protection rule, and the maintainer decides whether to merge, as with reviews. The check does not build the app. `./scripts/build-app.sh` stays a local step for each change ([AGENTS.md](../../AGENTS.md)) and runs in CI only for release tags.
+
+## Bugs the first runs found
+
+- An instance identity made by an `openssl` that is OpenSSL 1.1 (as on the macOS runner's `PATH`) carried `basicConstraints` twice, because OpenSSL 1.1's default config adds it too. OpenSSL 3 then refuses the certificate as a trust anchor and paired instances report each other as unreachable. `sync.make_identity` now passes its own minimal config, so OpenSSL 1.1, OpenSSL 3 and LibreSSL all produce the same extensions.
+- The setup guide could miss the signed-in GitHub CLI login for its first two minutes after the machine boots, because its cache started at monotonic time 0. It now starts empty.
 
 ## Permission boundary
 

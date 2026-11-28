@@ -84,22 +84,38 @@ def fingerprint(cert_pem):
     return hashlib.sha256(der).hexdigest()
 
 
+IDENTITY_CONFIG = """[req]
+distinguished_name = dn
+x509_extensions = identity
+prompt = no
+[dn]
+CN = {cn}
+[identity]
+basicConstraints = critical,CA:TRUE
+keyUsage = critical,digitalSignature,keyCertSign
+subjectKeyIdentifier = hash
+"""
+
+
 def make_identity(directory, instance_id):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     key, cert = directory / "key.pem", directory / "cert.pem"
     if not cert.exists():
         old = os.umask(0o077)
+        # Our own config, not the system default: OpenSSL 1.1's default adds basicConstraints itself,
+        # and a duplicate extension makes OpenSSL 3 reject the certificate as a trust anchor.
+        config = directory / "openssl.cnf"
         try:
+            config.write_text(IDENTITY_CONFIG.format(cn="memyselfai-" + instance_id))
             subprocess.run(
-                [_openssl(), "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
-                 "-nodes", "-keyout", str(key), "-out", str(cert), "-days", "36500",
-                 "-subj", "/CN=memyselfai-" + instance_id,
-                 "-addext", "basicConstraints=critical,CA:TRUE",
-                 "-addext", "keyUsage=critical,digitalSignature,keyCertSign"],
+                [_openssl(), "req", "-x509", "-config", str(config), "-newkey", "ec",
+                 "-pkeyopt", "ec_paramgen_curve:prime256v1",
+                 "-nodes", "-keyout", str(key), "-out", str(cert), "-days", "36500"],
                 check=True, capture_output=True, timeout=30,
             )
         finally:
+            config.unlink(missing_ok=True)
             os.umask(old)
     os.chmod(key, 0o600)
     return key, cert
