@@ -59,6 +59,9 @@ flowchart LR
     HermesCurator[Hermes orchestrator] <-->|App MCP: context and schedule tools| ContextStore[Context store and schedules]
     ContextStore -->|Due schedule| Tasks
     ContextStore -->|Scoped, fresh context| CLI
+    Dashboard -->|Corrections, answers, dismissals, chat| Interactions[User interactions]
+    Interactions -->|App MCP: pending interactions| HermesCurator
+    ContextStore -->|Every change| Learned[Learning history: review and remove]
     Checks[MeMyselfAI fixture tests or maintainer report] --> Findings[Self-improvement findings]
     Findings --> Tasks
     Tasks -->|Issue, fix branch, linked PR and code review| Executor
@@ -66,7 +69,7 @@ flowchart LR
     Handoff -->|Runs the check there| CLI
 ```
 
-The app's own Hermes keeps a shared context store current through the app MCP server and manages recurring tasks. It cannot send anything. The executor applies dry mode and the user's rules for each project and decision type. A promise in a delivered message creates a task of its own. Each task agent checks its completion criteria and records evidence in the dashboard.
+The app's own Hermes keeps a shared context store current through the app MCP server and manages recurring tasks. It learns lasting lessons from the user's corrections, answers, dismissals and messages, and every lesson is kept in a learning history the user can review and undo. It cannot send anything. The executor applies dry mode and the user's rules for each project and decision type. A promise in a delivered message creates a task of its own. Each task agent checks its completion criteria and records evidence in the dashboard.
 
 ## Planned direction: an inbox for a proactive agent you host
 
@@ -110,6 +113,7 @@ The first project for this workflow is MeMyselfAI itself. Tasks can test the app
 - [Updating the app from GitHub releases](specs/app-updates.md) keeps a copy installed in Applications current without reinstalling it.
 - [Guided setup and VPS setup over SSH](specs/guided-setup.md) walks a new user through setup and installs and pairs a VPS from one of their SSH hosts.
 - [Shared context and schedules](specs/context-and-schedules.md) shows how the Hermes agent maintains context agents share, cleans stale context and creates or cancels schedules. It also lists planned transcript and collaborator support.
+- [Learning from interactions](specs/learning-from-interactions.md) shows how agents learn from what the user does, and how the user sees and removes what they learnt.
 - [Repository rules](../AGENTS.md) describe how to take a change from spec to verification.
 
 ## Running the desktop implementation

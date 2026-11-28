@@ -56,6 +56,12 @@ FORMAT = """Write your answer as Markdown for a narrow chat panel in the app. Th
 PURPOSES = {
     "sweep": """Sweep: search recent activity for unanswered requests, promises the user made, and
 deadlines. Dispatch each one as above.
+Then learn from the user. Call interactions_pending: these are the user's own corrections, answers,
+dismissals, closures and messages to you. For each one that shows something lasting, such as a stated
+preference, how they want a kind of work handled, or a fact about a person or project, call context_save
+with interaction:ID in its sources. A correction that only fixes one task teaches nothing lasting.
+Then call interactions_reviewed with every id you looked at. If context_save says the user removed an
+entry, do not save it again under another subject.
 Then keep the shared context current. Task agents receive it, so record only what lasts: people (role,
 relation to the user), projects, open commitments the user made with their due dates, stated preferences,
 and durable facts. Check context_search first and update an existing entry rather than duplicating it.
@@ -75,7 +81,9 @@ user: what you dispatched, what finished, and what is stuck. Mention only what g
 such as a reply waiting for their approval. Post it with post_update and also return it as your answer.
 """ + FORMAT,
     "prompt": """The user wrote to you. Answer them using the workspace tools. If they ask for work to be
-done, dispatch it.
+done, dispatch it. If they tell you something lasting about themselves or how they want work done,
+save it with context_save, citing the matching interaction from interactions_pending, and mark it
+reviewed with interactions_reviewed.
 
 """ + FORMAT + """
 
@@ -160,7 +168,9 @@ class Orchestrator:
     def signature(self):
         events = sorted((e["id"], e.get("generation", 0)) for e in self.db.rows("events"))
         tasks = sorted((t["id"], t["status"]) for t in self.db.rows("tasks"))
-        return hashlib.sha256(json.dumps([events, tasks]).encode()).hexdigest()
+        # A new interaction to learn from makes a sweep due even when nothing else changed.
+        learn = sorted(i["id"] for i in self.engine.context.pending_interactions())
+        return hashlib.sha256(json.dumps([events, tasks, learn]).encode()).hexdigest()
 
     def due(self, now):
         c = self.config()
@@ -177,6 +187,7 @@ class Orchestrator:
         if now - c["last_sweep"] < MIN_GAP_SECONDS or self.signature() == c["signature"]:
             return None
         newest = max((e["raw"].get("timestamp", 0) for e in self.db.rows("events")), default=0)
+        newest = max([newest, *(i["at"] for i in self.engine.context.pending_interactions())])
         settled = now - newest >= SETTLE_SECONDS
         if now - c["last_sweep"] >= SWEEP_SECONDS or (settled and newest > c["last_sweep"]):
             return "sweep"
@@ -189,6 +200,7 @@ class Orchestrator:
         if c["pending"]:
             raise ValueError("The orchestrator is still answering your last message.")
         self.add_message("user", text.strip())
+        self.engine.context.interaction("chat", text.strip())
         self.save(pending=text.strip(), retry_at=0)
         self.engine.wake.set()
 

@@ -4,7 +4,7 @@ const $ = selector => document.querySelector(selector);
 const esc = (value = "") => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const plain = value => typeof value === "string" ? value : value == null ? "" : JSON.stringify(value, null, 2);
 const titleCase = text => String(text ?? "").replace(/[_-]/g, " ").replace(/^./, c => c.toUpperCase());
-const viewNames = {inbox:"Inbox", overview:"Overview", tasks:"Tasks", activity:"Activity", connections:"Connections", projects:"Projects", context:"Context", policies:"Decision rules", skills:"Skills & style", setup:"Setup", settings:"Settings"};
+const viewNames = {inbox:"Inbox", overview:"Overview", tasks:"Tasks", activity:"Activity", connections:"Connections", projects:"Projects", context:"Context", learned:"Learned", policies:"Decision rules", skills:"Skills & style", setup:"Setup", settings:"Settings"};
 const paths = {
   ignore:'<circle cx="12" cy="12" r="9"/><path d="m6 6 12 12"/>',
   overview:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
@@ -12,6 +12,7 @@ const paths = {
   activity:'<path d="M2 12h5l3-7 4 14 3-7h5"/>', connections:'<path d="m9 15 6-6m-4-2 2-2a4.2 4.2 0 0 1 6 6l-3 3m-3 3-2 2a4.2 4.2 0 0 1-6-6l3-3"/>',
   projects:'<path d="M3 7V5a1 1 0 0 1 1-1h6l2 3h8a1 1 0 0 1 1 1v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
   policies:'<path d="M4 6h4m5 0h7M4 12h9m5 0h2M4 18h2m5 0h9"/><circle cx="10.5" cy="6" r="2.2"/><circle cx="15.5" cy="12" r="2.2"/><circle cx="8.5" cy="18" r="2.2"/>',
+  learned:'<path d="M12 3a6 6 0 0 0-3.5 10.9V17h7v-3.1A6 6 0 0 0 12 3Zm-2.5 17h5"/>',
   skills:'<path d="M3 5c4-1 6 0 9 2 3-2 5-3 9-2v14c-4-1-6 0-9 2-3-2-5-3-9-2Zm9 2v14"/>',
   settings:'<path d="m9.2 4 .7-2h4.2l.7 2 2 .9 2.1-.4 2.1 3.6-1.4 1.6.2 2.3 1.2 1.7-2.1 3.6-2-.3-2 1-.8 2h-4l-.8-2-2-1-2 .3-2.1-3.6 1.3-1.7.1-2.3-1.4-1.6L5.3 4.5l2 .4Z"/><circle cx="12" cy="11.5" r="3"/>',
   setup:'<path d="M9 6h11M9 12h11M9 18h11"/><path d="m3.5 6 1.5 1.5L7.5 5M3.5 12l1.5 1.5L7.5 11"/><circle cx="5" cy="18" r="1.6"/>',
@@ -101,7 +102,7 @@ function shell(view) {
     (key==="inbox" && waiting?'<b class="badge" aria-label="'+waiting+' need you">'+waiting+'</b>':"")+'</a>';
   const who=providerNames[state.settings.provider]||"Choose an agent";
   const account='<a class="account" href="#settings?tab=agents" aria-label="Settings: '+esc(who)+'"><span class="avatar" aria-hidden="true">'+esc(who[0])+'</span><span><strong>'+esc(who)+'</strong><small>'+(loaded?(state.settings.dry?"Dry mode":"Live mode"):"Connecting…")+'</small></span>'+icon("chevron",14)+'</a>';
-  setIfChanged($("#sidebar"), '<div class="brand">'+mark+'<span><strong>MeMyselfAI</strong><small>AI agent workspace</small></span></div><nav><div class="navgroup">'+["overview","inbox","tasks","activity","projects","connections"].map(nav).join("")+'</div><div class="navgroup">'+["context","policies","skills","setup","settings"].map(nav).join("")+'</div></nav><div class="sidebar-foot">'+account+'</div>');
+  setIfChanged($("#sidebar"), '<div class="brand">'+mark+'<span><strong>MeMyselfAI</strong><small>AI agent workspace</small></span></div><nav><div class="navgroup">'+["overview","inbox","tasks","activity","projects","connections"].map(nav).join("")+'</div><div class="navgroup">'+["context","learned","policies","skills","setup","settings"].map(nav).join("")+'</div></nav><div class="sidebar-foot">'+account+'</div>');
   document.body.dataset.view=view;
   const buttons = {
     overview:["New task","task","add"], tasks:["New task","task","add"],
@@ -570,6 +571,28 @@ function contextPage() {
   return '<div class="policy-note">'+icon("context")+'<span>'+esc(hermes)+'</span></div>'+
     section("Schedules","",schedules||empty("No schedules yet. Ask for recurring work in a task, for example “every Friday, summarize open pull requests”."))+
     section("What agents know","",entries||empty("No context yet."));
+}
+// Every change to what agents know, newest first. See docs/specs/learning-from-interactions.md.
+let learnedAuthor = "";
+const learnedAuthors = {hermes:"Hermes", agent:"A task agent", user:"You"};
+const learnedVerbs = {learned:"learnt", updated:"updated", proposed:"proposed", approved:"approved", retired:"retired", restored:"restored", removed:"removed", declined:"declined", reverted:"reverted"};
+function learnedList() {
+  const rows=(state.learnings||[]).filter(r=>!learnedAuthor||r.author===learnedAuthor);
+  if (!rows.length) return empty(learnedAuthor?"Nothing learnt by "+learnedAuthors[learnedAuthor].toLowerCase()+" yet.":"Nothing learnt yet. Corrections, answers and messages to Hermes become lessons here.");
+  return rows.map(r=>{
+    const who=learnedAuthors[r.author]||titleCase(r.author);
+    const title=who+" "+(learnedVerbs[r.action]||r.action)+" · "+(r.target==="skill"?"":titleCase(r.kind)+" · ")+r.subject;
+    const text=r.action==="updated"?'<p class="learned-before"><span>Was</span> '+esc(r.before)+'</p><p><span>Now</span> '+esc(r.after)+'</p>':r.after?'<p>'+esc(r.after)+'</p>':"";
+    const from=(r.tasks||[]).map(t=>'<button type="button" class="text-link" data-action="detail" data-id="'+esc(t.id)+'">'+esc(t.title||"Task")+'</button>').join(", ");
+    const meta=[fullDate(r.at),r.project,r.reason].filter(Boolean).map(esc).join(" · ")+(from?' · From '+from:"");
+    const control=r.in_effect?button("Remove","learning_remove",null,"secondary",'data-id="'+esc(r.id)+'"'):"";
+    return '<div class="entry learned-entry"><div class="source-icon">'+icon("learned")+'</div><div class="entry-text"><strong>'+esc(title)+'</strong>'+text+'<small>'+meta+'</small></div><div class="entry-actions">'+control+'</div></div>';
+  }).join("");
+}
+function learnedPage() {
+  const pending=state.interactions_pending?'<div class="policy-note">'+icon("learned")+'<span>'+esc(state.interactions_pending===1?"1 of your recent interactions is waiting for Hermes to learn from it.":state.interactions_pending+" of your recent interactions are waiting for Hermes to learn from them.")+'</span></div>':"";
+  const authors='<select aria-label="Filter by who learnt it" id="learned-author">'+selectOptions([["","Everyone"],["hermes","Hermes"],["agent","Task agents"],["user","You"]],learnedAuthor)+'</select>';
+  return pending+'<div class="filters">'+authors+'</div><div id="learned-list">'+learnedList()+'</div>';
 }
 const modes = {auto:"Allow autonomous handling",review:"Require review",user:"Leave to me"};
 function policiesPage() {
@@ -1121,7 +1144,7 @@ async function retryGroup(key) {
   notify(done===members.length?done+" tasks queued for retry.":done+" of "+members.length+" tasks queued. Retry the rest one by one.");
   await refresh();
 }
-const pages = {inbox:()=>inboxSkeleton,setup:setupPage,overview,tasks:tasksPage,activity:activityPage,connections:connectionsPage,projects:projectsPage,context:contextPage,policies:policiesPage,skills:skillsPage,settings:settingsPage};
+const pages = {inbox:()=>inboxSkeleton,setup:setupPage,overview,tasks:tasksPage,activity:activityPage,connections:connectionsPage,projects:projectsPage,context:contextPage,learned:learnedPage,policies:policiesPage,skills:skillsPage,settings:settingsPage};
 function closeMenu() {
   document.body.classList.remove("menu-open"); $("#scrim").hidden=true;
   $(".menu-toggle")?.setAttribute("aria-expanded","false");
@@ -1748,6 +1771,7 @@ function handleAction(el) {
     case "schedule_cancel": void mutate({op:action,id},"Schedule cancelled."); return;
     case "context_retire": void mutate({op:action,id},"Context retired. Agents will no longer receive it."); return;
     case "context_restore": void mutate({op:action,id},"Context restored."); return;
+    case "learning_remove": void mutate({op:action,id},"Removed. Agents will no longer use it."); return;
     case "handoff": void mutate({op:"rule",project,kind,mode:"auto"},"Autonomous handling allowed. Dry mode still applies while it is on."); return;
     case "sync": void mutate({op:action},"Source sync requested."); return;
   }
@@ -1820,6 +1844,7 @@ document.addEventListener("change",event=>{
   if (event.target.id==="task-project") {projectFilter=event.target.value;setIfChanged($("#task-list"),taskList());}
   if (event.target.id==="task-instance") {instanceFilter=event.target.value;setIfChanged($("#task-list"),taskList());}
   if (event.target.id==="activity-connection") location.hash = event.target.value?"activity?connection="+encodeURIComponent(event.target.value):"activity";
+  if (event.target.id==="learned-author") {learnedAuthor=event.target.value;setIfChanged($("#learned-list"),learnedList());}
   if (event.target.id==="activity-project") {activityProject=event.target.value;setIfChanged($("#activity-list"),activityList());}
   if (event.target.closest("#editor")) rememberForm();
   if (event.target.name?.startsWith("set-")) settingChanged(event.target);

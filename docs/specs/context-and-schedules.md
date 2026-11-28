@@ -28,7 +28,7 @@ Hermes's tools cannot send anything. A schedule only enqueues a local task. That
 
 An entry has a kind (`person`, `project`, `commitment`, `preference` or `fact`), a subject, a body, a project, its supporting sources, an author (`hermes` or `user`), a status and a review date. Saving an entry with the same kind, subject and project updates it in place.
 
-Each entry is due for review after a period that depends on its kind. Commitments are reviewed after 14 days, facts after 30, and people, projects and preferences after 90. Hermes may choose 1 to 365 days. An active entry past its review date is **stale**. Stale entries stay visible but are withheld from task agents until Hermes refreshes or retires them. Retiring keeps the entry and its reason in history. The user can also retire or restore an entry from the dashboard.
+Each entry is due for review after a period that depends on its kind. Commitments are reviewed after 14 days, facts after 30, and people, projects and preferences after 90. Hermes may choose 1 to 365 days. An active entry past its review date is **stale**. Stale entries stay visible but are withheld from task agents until Hermes refreshes or retires them. Retiring keeps the entry and its reason in history. The user can also retire or restore an entry from the dashboard. An entry the user removes from the [learning history](learning-from-interactions.md#removing-a-lesson) gets status `removed`. Hermes cannot save it again until the user restores it.
 
 ### Access by task agents
 
@@ -65,6 +65,7 @@ These are orchestrator tools on the app MCP server. A task session neither lists
 | `context_save(kind, subject, body, project, sources, review_after_days)` | Create or refresh an entry |
 | `context_retire(id, reason)` | Retire an entry |
 | `context_stale()` | Active entries past review |
+| `interactions_pending(limit)`, `interactions_reviewed(ids)` | The user's interactions to learn from. See [learning from interactions](learning-from-interactions.md) |
 | `schedule_list()` | All schedules |
 | `schedule_create(title, body, project, time, days \| once_at, origin, reason)` | Create a schedule |
 | `schedule_cancel(id, reason)` | Cancel a schedule |

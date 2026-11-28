@@ -131,7 +131,7 @@ class Engine:
             settings = self.db.get("config", "settings")
             if not settings:
                 self.db.put("config", {"id": "settings", "dry": True, "provider": worker.default_provider()})
-                self.skill("workflow", BASE_SKILL, True)
+                self.skill("workflow", BASE_SKILL, True, record=False)
             elif "provider" not in settings:
                 settings.pop("model", None)
                 settings["provider"] = worker.default_provider()
@@ -457,7 +457,7 @@ class Engine:
                 paths.append(local)
         return paths
 
-    def skill(self, kind, body, active, reason=""):
+    def skill(self, kind, body, active, reason="", record=True):
         body = str(body).strip()
         if not body:
             return
@@ -481,6 +481,35 @@ class Engine:
         )
         self.db.put("skills", s)
         self.db.log("Skill applied" if active else "Style review", body + ("\n" + reason if reason else ""))
+        if record:
+            self.context.learned("learned" if active else "proposed", "skill", s, "agent", reason=reason)
+
+    def skill_decision(self, op, key, removed=False):
+        """Approve, decline or revert a skill revision from Skills & style or the learning history."""
+        with self.db.atomic():
+            s = self.db.get("skills", key)
+            if not s:
+                raise ValueError("Select a skill revision.")
+            if op in {"accept_skill", "reject_skill"} and (s["kind"] != "style" or s.get("status") != "pending"):
+                raise ValueError("Workflow improvements are applied by recovery.")
+            if op == "revert_skill" and not s["active"]:
+                raise ValueError("This revision is inactive.")
+            if op == "revert_skill" and s["kind"] == "workflow":
+                older = [r for r in self.db.rows("skills") if r["kind"] == "workflow" and r["at"] < s["at"]]
+                if not older:
+                    raise ValueError("The initial discovery skill has no previous revision.")
+                prev = max(older, key=lambda x: x["at"])
+                prev.update(active=True, status="active")
+                self.db.put("skills", prev)
+            s["active"] = op == "accept_skill"
+            s["status"] = {"accept_skill": "active", "revert_skill": "reverted", "reject_skill": "rejected"}[op]
+            self.db.put("skills", s)
+            self.db.log("Skill " + s["status"], s["body"])
+            action = "removed" if removed else {"accept_skill": "approved", "revert_skill": "reverted",
+                                                "reject_skill": "declined"}[op]
+            self.context.learned(action, "skill", s, "user", reason="Removed by you" if removed else "")
+        self.write_markdown()
+        return s
 
     def write_markdown(self):
         with self.db.lock:
@@ -2824,6 +2853,9 @@ class Engine:
             self.connect(d)
             self.wake.set()
             return
+        if op == "learning_remove":
+            self.context.remove(key)
+            return
         if op in {"context_retire", "context_restore"}:
             self.context.retire(key, d.get("reason") or "Retired in the dashboard", "user", op == "context_restore")
             return
@@ -2957,33 +2989,7 @@ class Engine:
                 self.db.delete("connections", key)
                 self.db.log("Disconnected", saved["label"], connection=key)
             elif op in {"accept_skill", "revert_skill", "reject_skill"}:
-                s = self.db.get("skills", key)
-                if not s:
-                    raise ValueError("Select a skill revision.")
-                if op in {"accept_skill", "reject_skill"} and (
-                    s["kind"] != "style" or s.get("status") != "pending"
-                ):
-                    raise ValueError("Workflow improvements are applied by recovery.")
-                if op == "revert_skill" and not s["active"]:
-                    raise ValueError("This revision is inactive.")
-                if op == "revert_skill" and s["kind"] == "workflow":
-                    older = [
-                        r for r in self.db.rows("skills") if r["kind"] == "workflow" and r["at"] < s["at"]
-                    ]
-                    if not older:
-                        raise ValueError("The initial discovery skill has no previous revision.")
-                    prev = max(older, key=lambda x: x["at"])
-                    prev.update(active=True, status="active")
-                    self.db.put("skills", prev)
-                s["active"] = op == "accept_skill"
-                s["status"] = {
-                    "accept_skill": "active",
-                    "revert_skill": "reverted",
-                    "reject_skill": "rejected",
-                }[op]
-                self.db.put("skills", s)
-                self.db.log("Skill " + s["status"], s["body"])
-                self.write_markdown()
+                self.skill_decision(op, key)
             elif op == "demo":
                 if not any(t.get("sample") for t in self.db.rows("tasks")):
                     self.add_project("Sample workspace", "")
@@ -3045,11 +3051,13 @@ class Engine:
                     if t["status"] != "closed":
                         t.update(status="closed", draft="", question="", reason="Closed by you")
                         self.save(t, "Closed by user")
+                        self.context.interaction("closed", "Closed this task as handled by me: " + t["title"], t)
                 elif t["status"] == "closed":
                     raise ValueError("This task is closed.")
                 elif op == "dismiss":
                     t.update(status="dismissed", draft="", question="")
                     self.save(t, "Dismissed by user")
+                    self.context.interaction("dismissed", "Dismissed this task: " + t["title"], t)
                 elif op == "retry":
                     if t["status"] not in {"failed", "question"}:
                         raise ValueError("Only failed tasks or tasks awaiting an answer can be retried.")
@@ -3124,6 +3132,10 @@ class Engine:
                     t["feedback"].append(entry)
                     t.update(status="queued", draft="", question="", due=0, new_feedback="" if choice else text)
                     self.save(t, text)
+                    self.context.interaction(
+                        "answer" if op == "answer" else "correction",
+                        f"Asked: {entry['question']}\nAnswered: {text}" if op == "answer" else text, t,
+                    )
                     if op == "answer" and t.get("decision_id"):
                         for dependent in self.db.rows("tasks"):
                             if (
