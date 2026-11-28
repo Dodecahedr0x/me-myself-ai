@@ -642,7 +642,7 @@ const settingsIntro={
   delivery:"Decide what may leave without you.",
   agents:"The command-line agents that prepare tasks and the orchestrator that dispatches them, on this instance.",
   instances:"Machines that share this workspace and its work.",
-  workspace:"Folder permissions, ignored work and sample data."
+  workspace:"Folder permissions, ignored work, sample data and app updates."
 };
 function settingsTab() {
   const tab=new URLSearchParams(location.hash.split("?")[1]).get("tab");
@@ -686,11 +686,37 @@ function instancesTab() {
     '<label class="field"><span>Agent slots</span><input type="number" name="set-slots" min="0" max="64" value="'+esc(String(state.settings.slots||""))+'" placeholder="Default"><small>How many tasks run here at once. Leave empty for the default.</small></label></div>'):"";
   return instancesSection()+capacity;
 }
+// App updates come from the Mac app, so the row only appears inside it. See docs/specs/app-updates.md#from-settings.
+let appUpdate=null;
+const updateBridge=()=>window.webkit?.messageHandlers?.appUpdate;
+window.appUpdateChanged=snapshot=>{
+  appUpdate=snapshot;
+  if (activeView==="settings" && settingsTab()==="workspace") render();
+};
+async function askUpdater(op) {
+  const bridge=updateBridge();
+  if (!bridge) return;
+  try { window.appUpdateChanged(await bridge.postMessage(op)); }
+  catch(e) { notify(e.message || "Updates are unavailable."); }
+}
+function appUpdateRow() {
+  if (!updateBridge()) return "";
+  const u=appUpdate;
+  if (!u) { void askUpdater("status"); return entry("sync","App updates","Checking the installed version…"); }
+  const busy=["checking","downloading","installing","restarting"].includes(u.phase);
+  const detail=u.line+(u.checked_at && !busy?" · checked "+ago(u.checked_at):"")+
+    (u.phase==="available"?" · Installing restarts the app. Running agents stop and their tasks resume after it reopens.":"");
+  const controls=!u.installed||busy?"":
+    (u.phase==="available"?button("Install version "+u.latest+" and restart","app-update-install","sync","primary"):"")+
+    button("Check for updates","app-update-check",u.phase==="available"?null:"sync",u.phase==="available"?"quiet":"secondary");
+  return entry("sync","App updates",detail,controls);
+}
 function workspaceTab() {
   const ignored=[(state.ignorelist?.projects||[]).length+" projects",(state.ignorelist?.repositories||[]).length+" repositories"].join(" · ");
   return entry("projects","Folder access","Check a repository folder or update its macOS permission.",button("Manage folder access","folder-access",null))+
     entry("projects","Ignore list",ignored+" ignored",button("Edit ignore list","ignorelist",null))+
-    entry("stack","Sample workspace","Add fixture tasks and activity to explore the app.",button("Load sample","demo",null));
+    entry("stack","Sample workspace","Add fixture tasks and activity to explore the app.",button("Load sample","demo",null))+
+    appUpdateRow();
 }
 function settingsPage() {
   const tab=settingsTab();
@@ -1569,6 +1595,8 @@ function handleAction(el) {
     case "suggestion_dismiss": void mutate({op:action,id},"Suggestion dismissed.");return;
     case "choose-repository": void chooseRepository(el); return;
     case "folder-access": folderAccess(t); return;
+    case "app-update-check": void askUpdater("check"); return;
+    case "app-update-install": void askUpdater("install"); return;
     case "allow-folder":
     case "check-folder": void checkFolder(el); return;
     case "open-folder-settings":

@@ -12,9 +12,20 @@ final class Updater {
     static let asset = "MeMyselfAI-macos-x86_64.zip"
     #endif
 
+    /// Where the updater stands, shown in Settings → Workspace as well as the menu.
+    enum Phase: String {
+        case idle, checking, upToDate = "up_to_date", available, downloading, installing, restarting, failed
+        /// Not in Applications, or the folder can't be written: it checks but never installs.
+        case unavailable
+    }
+
     /// The status line shown in the menu bar menu.
     private(set) var line = ""
-    var onChange: ((String) -> Void)?
+    private(set) var phase = Phase.idle
+    /// The newer release found by the last check, if any.
+    private(set) var latest: String?
+    private(set) var checkedAt: Date?
+    var onChange: (() -> Void)?
     /// Called once the new bundle is in place. The app quits and the helper reopens it.
     var onInstalled: (() -> Void)?
 
@@ -23,6 +34,14 @@ final class Updater {
     private let feed: URL
     private var busy = false
     private var timer: Timer?
+    /// The release a check found, kept so Settings can install it without asking GitHub again.
+    private var found: Found?
+
+    private struct Found {
+        let version: String
+        let release: Release
+        let asset: Release.Asset
+    }
 
     init() {
         current = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
@@ -32,7 +51,11 @@ final class Updater {
             feed = custom
         }
         self.feed = feed
-        set(installed ? "Version \(current)" : "Version \(current) · updates only from Applications")
+        if installed {
+            set(.idle, "Version \(current)")
+        } else {
+            set(.unavailable, "Version \(current) · updates only from Applications")
+        }
     }
 
     /// Only a copy in /Applications or ~/Applications updates itself, so builds in checkouts run their own code.
@@ -40,6 +63,14 @@ final class Updater {
         let parent = bundle.deletingLastPathComponent().path
         let home = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications").resolvingSymlinksInPath().path
         return parent == "/Applications" || parent == home
+    }
+
+    /// What Settings shows. Plain JSON types only, so it can cross into the page.
+    var snapshot: [String: Any] {
+        var out: [String: Any] = ["version": current, "phase": phase.rawValue, "line": line, "installed": installed]
+        if let latest { out["latest"] = latest }
+        if let checkedAt { out["checked_at"] = checkedAt.timeIntervalSince1970 }
+        return out
     }
 
     func start() {
@@ -50,27 +81,46 @@ final class Updater {
         }
     }
 
-    func check() {
+    /// Looks for a newer release. Automatic checks and the menu install it at once; Settings passes
+    /// `install: false` so the user sees the version first and installs it with `install()`.
+    func check(install: Bool = true) {
         guard installed else {
-            set("Version \(current) · updates only from Applications")
+            set(.unavailable, "Version \(current) · updates only from Applications")
             return
         }
         guard !busy else { return }
         busy = true
-        set("Version \(current) · checking for updates…")
+        set(.checking, "Version \(current) · checking for updates…")
         Task {
             do {
-                try await update()
+                if let found = try await find(), install {
+                    try await self.install(found)
+                }
             } catch {
-                set("Version \(current) · update failed: \(error.localizedDescription)")
+                set(.failed, "Version \(current) · update failed: \(error.localizedDescription)")
             }
             busy = false
         }
     }
 
-    private func set(_ text: String) {
+    /// Installs the release the last check found, or checks and installs when there is none.
+    func install() {
+        guard let found, installed, !busy else { return check(install: true) }
+        busy = true
+        Task {
+            do {
+                try await install(found)
+            } catch {
+                set(.failed, "Version \(current) · update failed: \(error.localizedDescription)")
+            }
+            busy = false
+        }
+    }
+
+    private func set(_ phase: Phase, _ text: String) {
+        self.phase = phase
         line = text
-        onChange?(text)
+        onChange?()
     }
 
     private static func allowed(_ url: URL) -> Bool {
@@ -115,31 +165,52 @@ final class Updater {
         return request
     }
 
-    private func update() async throws {
+    /// Reads the feed. Returns the newer release when this copy can install it; otherwise sets the line and returns nil.
+    private func find() async throws -> Found? {
         let (body, response) = try await URLSession.shared.data(for: request(feed))
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            if (response as? HTTPURLResponse)?.statusCode == 404 {
-                set("Version \(current) · up to date")
-                return
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200 else {
+            if status == 404 {
+                checked(nil)
+                set(.upToDate, "Version \(current) · up to date")
+                return nil
             }
-            throw Failure("GitHub answered \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+            throw Failure("GitHub answered \(status)")
         }
         let release = try JSONDecoder().decode(Release.self, from: body)
         let version = release.tag_name.hasPrefix("v") ? String(release.tag_name.dropFirst()) : release.tag_name
         guard Updater.newer(version, than: current),
               let asset = release.assets.first(where: { $0.name == Updater.asset }) else {
-            set("Version \(current) · up to date")
-            return
+            checked(nil)
+            set(.upToDate, "Version \(current) · up to date")
+            return nil
         }
         let fm = FileManager.default
         guard fm.isWritableFile(atPath: bundle.deletingLastPathComponent().path), fm.isWritableFile(atPath: bundle.path) else {
-            set("Version \(version) available · this folder can't be written")
-            return
+            checked(nil)
+            latest = version
+            set(.unavailable, "Version \(version) available · this folder can't be written")
+            return nil
         }
-        guard Updater.allowed(asset.browser_download_url) else { throw Failure("unexpected download address") }
-        let expected = try await digest(of: asset, in: release)
+        let result = Found(version: version, release: release, asset: asset)
+        checked(result)
+        set(.available, "Version \(current) · version \(version) available")
+        return result
+    }
 
-        set("Downloading version \(version)…")
+    private func checked(_ result: Found?) {
+        found = result
+        latest = result?.version
+        checkedAt = Date()
+    }
+
+    private func install(_ found: Found) async throws {
+        let version = found.version, asset = found.asset
+        let fm = FileManager.default
+        guard Updater.allowed(asset.browser_download_url) else { throw Failure("unexpected download address") }
+        let expected = try await digest(of: asset, in: found.release)
+
+        set(.downloading, "Downloading version \(version)…")
         let staging = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: bundle, create: true)
         defer { try? fm.removeItem(at: staging) }
         let (download, downloadResponse) = try await URLSession.shared.download(for: request(asset.browser_download_url))
@@ -149,7 +220,7 @@ final class Updater {
         let zip = staging.appendingPathComponent(asset.name)
         try fm.moveItem(at: download, to: zip)
 
-        set("Installing version \(version)…")
+        set(.installing, "Installing version \(version)…")
         let fresh = try await Task.detached { () throws -> URL in
             guard try Updater.sha256(zip) == expected else { throw Failure("the download doesn't match its published hash") }
             let expanded = staging.appendingPathComponent("expanded")
@@ -169,7 +240,7 @@ final class Updater {
             return app
         }.value
         _ = try fm.replaceItemAt(bundle, withItemAt: fresh)
-        set("Restarting into version \(version)…")
+        set(.restarting, "Restarting into version \(version)…")
         relaunch()
         onInstalled?()
     }

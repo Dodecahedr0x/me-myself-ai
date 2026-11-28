@@ -31,12 +31,13 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
         updater = Updater()
         installMenus()
         installStatusItem()
-        updater.onChange = { [weak self] text in self?.updateItem.title = text }
+        updater.onChange = { [weak self] in self?.updaterChanged() }
         updater.onInstalled = { NSApp.terminate(nil) }
         updater.start()
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "chooseRepository")
+        configuration.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "appUpdate")
         view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = self
         view.uiDelegate = self
@@ -347,9 +348,22 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
     // WebKit hides absolute filesystem paths. Return the directory selected in this sheet.
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
                                replyHandler: @escaping (Any?, String?) -> Void) {
-        guard message.name == "chooseRepository", message.webView === view,
-              message.frameInfo.isMainFrame, let url = message.frameInfo.request.url, sameOrigin(url),
-              window.attachedSheet == nil else {
+        guard message.webView === view, message.frameInfo.isMainFrame,
+              let url = message.frameInfo.request.url, sameOrigin(url) else {
+            replyHandler(nil, message.name == "appUpdate" ? "Updates are unavailable." : "The folder picker is unavailable.")
+            return
+        }
+        if message.name == "appUpdate" {
+            // Settings → Workspace → App updates. See app-updates.md#from-settings.
+            switch message.body as? String {
+            case "check": updater.check(install: false)
+            case "install": updater.install()
+            default: break
+            }
+            replyHandler(updater.snapshot, nil)
+            return
+        }
+        guard message.name == "chooseRepository", window.attachedSheet == nil else {
             replyHandler(nil, "The folder picker is unavailable.")
             return
         }
@@ -414,6 +428,14 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         if service?.isRunning == true { webView.reload() }
+    }
+
+    /// Mirrors the updater in the menu and in an open Settings page.
+    private func updaterChanged() {
+        updateItem?.title = updater.line
+        guard let view, let data = try? JSONSerialization.data(withJSONObject: updater.snapshot),
+              let json = String(data: data, encoding: .utf8) else { return }
+        view.evaluateJavaScript("window.appUpdateChanged?.(\(json))", in: nil, in: .page, completionHandler: nil)
     }
 
     @objc private func checkForUpdates() {

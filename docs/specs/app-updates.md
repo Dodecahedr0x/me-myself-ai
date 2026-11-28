@@ -22,6 +22,16 @@ An installed copy checks 30 seconds after launch, then every six hours, and when
 
 The menu bar menu shows a line under the service state: the running version and *up to date*, *checking*, *downloading*, *installing* or the reason the last attempt failed. A failed automatic check is retried at the next interval. A failure never stops the services.
 
+## From Settings
+
+**Settings → Workspace → App updates** appears only inside the Mac app, because the updater lives in its shell; a browser opened on the service or a VPS shows no row. The row shows the same line as the menu (running version, *up to date*, *version X available*, *checking*, *downloading*, *installing*, *restarting* or the failure) and when the last check ran. It changes as the updater moves, without a reload.
+
+- **Check for updates** reads the feed but does not install. When a newer release exists for this Mac, the row says so, warns that installing restarts the app and stops running agents (their tasks resume after it reopens), and offers **Install version X and restart**.
+- **Install version X and restart** downloads, verifies and installs the release that check found, exactly as below, then restarts. If anything fails the row shows why and the old app keeps running.
+- While a check or install runs, the buttons are hidden. A copy outside Applications shows *updates only from Applications* and no buttons; one in a folder it can't write shows the available version and no install button.
+
+Automatic checks and **Check for Updates…** in the menus still install a newer release without asking. The page reaches the shell through the `appUpdate` script message handler, which answers only the app's own page in its main frame. It accepts `status`, `check` and `install`, and replies with `{version, phase, line, installed, latest?, checked_at?}`; every change is pushed back to the page through `window.appUpdateChanged`.
+
 ## Verifying
 
 The app downloads the zip into a temporary folder on the same volume as the installed app. It needs the asset's SHA-256 from the release API's `digest` field, or else the release's `.sha256` file for that asset. It refuses the download when neither is present or the hash differs. It expands the zip with `ditto` and accepts it only when it holds exactly one `MeMyselfAI.app`, `codesign --verify --deep --strict` passes, the bundle identifier is `local.memyselfai.desktop` and its version equals the release's.
@@ -41,10 +51,12 @@ If replacing fails, the old app keeps running and the menu shows why. Nothing in
 3. A download whose hash differs from the published digest is refused. The installed copy is unchanged and the menu shows the failure.
 4. A build run from `build/` never checks or installs.
 5. A latest release that is equal or older, or that has no asset for this architecture, leaves the app as it is and the menu shows *up to date*.
+6. In an installed `0.1.0` pointed at a `0.2.0` feed, **Settings → Workspace → Check for updates** shows *version 0.2.0 available* and an install button, and nothing is downloaded. **Install version 0.2.0 and restart** replaces the app and it reopens as `0.2.0`. A `0.1.0` feed shows *up to date* and no install button.
+7. The App updates row is absent when the dashboard is opened in a browser instead of the app.
 
 For testing, the environment variable `MEMYSELFAI_UPDATE_FEED` replaces the releases URL. The app accepts only `https` feeds, or `http` on `127.0.0.1`.
 
 ## Open questions
 
 - The restart interrupts running agents. A later version could wait until no agent is running, or until the Mac is idle.
-- There is no switch to turn automatic installs off.
+- There is no switch to turn automatic installs off. Settings can install on demand, but automatic checks still install by themselves.
