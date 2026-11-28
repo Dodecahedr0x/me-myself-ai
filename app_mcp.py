@@ -37,6 +37,9 @@ TASK_TYPES = {
 # Which connection kinds each action tool can deliver to.
 ACTION_SOURCES = {"send_email": {"email", "gmail"}, "send_message": {"slack"}, "comment": {"github"}}
 REPLY_ACTIONS = tuple(ACTION_SOURCES)
+# Filing a new GitHub issue in one of the task's project repositories. Every task but a bug task gets it.
+ISSUE_ACTION = "create_issue"
+GATED_ACTIONS = REPLY_ACTIONS + (ISSUE_ACTION,)
 
 
 def _digest(*values):
@@ -133,6 +136,10 @@ TOOLS = {
                      "The app decides whether it needs the user's review first.", _schema(["text"], text=_S)),
     "comment": ({TASK}, "Post the exact comment text on this task's GitHub issue or pull request. "
                 "The app decides whether it needs the user's review first.", _schema(["text"], text=_S)),
+    ISSUE_ACTION: ({TASK}, "File a new GitHub issue with this exact title and body in one of this task's project "
+                   "repositories (owner/name; required when there are several). Outside dry mode it is filed at "
+                   "once; in dry mode the user reviews it first. Filing it completes the task.",
+                   _schema(["title", "body"], title=_S, body=_S, repository=_S)),
 }
 # Shared context and schedules, curated by the orchestrator. See docs/specs/context-and-schedules.md.
 CONTEXT_TOOLS = tuple(name for name in context.TOOLS if name != "activity_recent")
@@ -183,13 +190,13 @@ class Tools:
         return [
             {"name": name, "description": description, "inputSchema": schema}
             for name, (roles, description, schema) in TOOLS.items()
-            if session.role in roles and (name not in REPLY_ACTIONS or name in session.actions)
+            if session.role in roles and (name not in GATED_ACTIONS or name in session.actions)
         ]
 
     def call(self, session, name, args):
         if name not in TOOLS or session.role not in TOOLS[name][0]:
             raise Refused(f"{name} is not available to this agent.")
-        if name in REPLY_ACTIONS and name not in session.actions:
+        if name in GATED_ACTIONS and name not in session.actions:
             raise Refused(f"{name} is not allowed for this task type.")
         if not isinstance(args, dict):
             raise Refused("Arguments must be an object.")
@@ -388,24 +395,32 @@ class Tools:
 
     def _reply(self, session, args, action):
         text = _text(args, "text")
+
+        def change(t):
+            e, c = self._event(t.get("event"))
+            source = e["raw"].get("context", {}).get("google_service") or c["kind"]
+            if c["kind"] not in ACTION_SOURCES[action] and source not in ACTION_SOURCES[action]:
+                raise Refused(f"{action} cannot deliver to a {c['kind']} source.")
+            subject = e["raw"].get("context", {}).get("subject", "") if c["kind"] == "email" else ""
+            if subject and not subject.casefold().startswith("re:"):
+                subject = "Re: " + subject
+            return dict(
+                status="review", draft=text, subject=subject, account=e["raw"]["account"],
+                destination=e["raw"]["destination"], operation="reply",
+                categories=sorted({"reply", t["kind"]}), question="",
+            )
+
+        return self._act(session, action, change)
+
+    def _act(self, session, action, change):
+        """Record one action version from change(task), then let the executor review or deliver it."""
         with self.engine.dispatch_lock:
             with self.db.atomic():
                 t = self.own_task(session)
                 if t["status"] == "uncertain":
                     return {"status": "uncertain",
                             "detail": "The last send has an unknown outcome. It must be reconciled first."}
-                e, c = self._event(t.get("event"))
-                source = e["raw"].get("context", {}).get("google_service") or c["kind"]
-                if c["kind"] not in ACTION_SOURCES[action] and source not in ACTION_SOURCES[action]:
-                    raise Refused(f"{action} cannot deliver to a {c['kind']} source.")
-                subject = e["raw"].get("context", {}).get("subject", "") if c["kind"] == "email" else ""
-                if subject and not subject.casefold().startswith("re:"):
-                    subject = "Re: " + subject
-                t = self._update(session, dict(
-                    status="review", draft=text, subject=subject, account=e["raw"]["account"],
-                    destination=e["raw"]["destination"], operation="reply",
-                    categories=sorted({"reply", t["kind"]}), question="",
-                ), "Agent proposed " + action)
+                t = self._update(session, change(t), "Agent proposed " + action)
                 version = t["version"]
                 automatic = self.engine.auto(t)
             if not automatic:
@@ -429,6 +444,56 @@ class Tools:
 
     def comment(self, session, args):
         return self._reply(session, args, "comment")
+
+    def issue_repositories(self, t):
+        """Connected GitHub repositories a task may file a new issue in, keyed by lowercase owner/name."""
+        engine = self.engine
+        names = set()
+        if t["project"] != engine.global_project:
+            projects = self.db.rows("projects")
+            parents = {p["name"]: p.get("parent") for p in projects}
+            for p in projects:
+                if p["name"] == t["project"] or t["project"] in engine.ancestors(p["name"], parents):
+                    names |= {o.removeprefix("github.com/").casefold() for o in engine.project_origins(p)
+                              if o.casefold().startswith("github.com/")}
+        e = self.db.get("events", t.get("event", ""))
+        source = self.connection(e)
+        if source and source["kind"] == "github" and source["config"].get("repository"):
+            names.add(source["config"]["repository"].casefold())
+        found = {}
+        for c in self.db.rows("connections"):
+            repo = c["config"].get("repository", "") if c["kind"] == "github" else ""
+            if (repo.casefold() in names and c.get("identity") and not c.get("unavailable")
+                    and not engine.scope.connection(c)):
+                found.setdefault(repo.casefold(), c)
+        return found
+
+    def create_issue(self, session, args):
+        title = _text(args, "title", 256)
+        body = _text(args, "body", 60000)
+        asked = args.get("repository", "")
+        if not isinstance(asked, str):
+            raise Refused("Invalid repository.")
+
+        def change(t):
+            options = self.issue_repositories(t)
+            allowed = ", ".join(sorted(c["config"]["repository"] for c in options.values())) or "none"
+            if asked:
+                conn = options.get(asked.strip().removeprefix("https://github.com/").casefold())
+                if not conn:
+                    raise Refused(f"{asked} is not a connected repository of this task's project. Allowed: {allowed}.")
+            elif len(options) == 1:
+                conn = next(iter(options.values()))
+            else:
+                raise Refused(f"Name the repository for this issue. Allowed: {allowed}.")
+            repo = conn["config"]["repository"]
+            return dict(
+                status="review", operation="create issue", issue_action=True, github=conn["id"],
+                account=conn["identity"], destination=repo, payload=dict(title=title, body=body),
+                draft=title + "\n\n" + body, subject="", categories=["issue"], question="",
+            )
+
+        return self._act(session, "create_issue", change)
 
 
 def handle(tools, session, message):

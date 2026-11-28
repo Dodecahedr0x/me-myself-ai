@@ -225,6 +225,90 @@ class TaskAgentTests(Fixture):
         self.assertEqual(self.db.get("tasks", task)["status"], "skipped")
 
 
+class IssueTests(Fixture):
+    """create_issue: a task files a new GitHub issue in a repository its project knows."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo = dict(id="gh", kind="github", label="Owner/Repo", config={"repository": "Owner/Repo"},
+                         status="Connected", identity="me")
+        self.elsewhere = dict(id="gh2", kind="github", label="Owner/Other", config={"repository": "Owner/Other"},
+                              status="Connected", identity="me")
+        for c in (self.repo, self.elsewhere):
+            self.db.put("connections", c)
+        project = next(p for p in self.db.rows("projects") if p["name"] == "A")
+        project["origins"] = {"/peer/repo": {"origin": "github.com/owner/repo", "instance": "peer"}}
+        self.db.put("projects", project)
+        self.task = self.engine.new_task("Draft an issue", "A", "Write up the scratch folder bug")["id"]
+
+    def file(self, **args):
+        return self.call(self.task_session(self.task), "create_issue",
+                         **{"title": "Scratch folder", "body": "Steps to reproduce", **args})
+
+    def posted(self, number=7):
+        return {"number": number, "html_url": f"https://github.com/Owner/Repo/issues/{number}"}
+
+    def test_local_task_gets_the_tool_and_a_bug_task_does_not(self):
+        self.assertIn("create_issue", self.engine.task_actions(self.task))
+        self.assertIn("create_issue", self.engine.task_actions(self.dispatch()))
+        bug = self.engine.new_task("Fix crash", "A", kind="bug")["id"]
+        self.assertNotIn("create_issue", self.engine.task_actions(bug))
+        self.assertTrue(self.call(self.task_session(bug), "create_issue", title="x", body="y")[1])
+
+    def test_dry_mode_files_only_the_approved_version_once(self):
+        with patch.object(connectors, "github_request") as api:
+            out, error = self.file()
+        self.assertFalse(error, out)
+        self.assertEqual(out["status"], "pending_review")
+        api.assert_not_called()
+        t = self.db.get("tasks", self.task)
+        self.assertEqual((t["status"], t["operation"], t["account"], t["destination"], t["draft"]),
+                         ("review", "create issue", "me", "Owner/Repo", "Scratch folder\n\nSteps to reproduce"))
+        with patch.object(connectors, "github_identity", return_value="me"), \
+                patch.object(connectors, "github_request", return_value=self.posted()) as api:
+            self.engine.deliver(self.task, out["action_version"])
+        api.assert_called_once_with(self.repo, "POST", "issues", {"title": "Scratch folder", "body": "Steps to reproduce"})
+        t = self.db.get("tasks", self.task)
+        self.assertEqual(t["status"], "done")
+        self.assertIn("https://github.com/Owner/Repo/issues/7", t["result"])
+
+    def test_outside_dry_mode_it_files_on_its_own_without_a_rule(self):
+        self.engine.action({"op": "settings", "dry": False})
+        with patch.object(connectors, "github_identity", return_value="me"), \
+                patch.object(connectors, "github_request", return_value=self.posted(9)) as api:
+            out, error = self.file()
+            self.assertEqual((out["status"], out["receipt"]), ("sent", "https://github.com/Owner/Repo/issues/9"))
+            self.assertTrue(self.file()[1])  # the task is done; a second filing is refused
+        api.assert_called_once()
+        self.assertEqual(self.db.get("tasks", self.task)["status"], "done")
+
+    def test_only_the_projects_repositories_are_allowed(self):
+        out, error = self.file(repository="Owner/Other")
+        self.assertTrue(error)
+        self.assertIn("Allowed: Owner/Repo", out["refused"])
+        self.assertFalse(self.file(repository="owner/repo")[1])
+        self.repo["unavailable"] = True
+        self.db.put("connections", self.repo)
+        self.task = self.engine.new_task("Another", "A")["id"]
+        self.assertIn("Allowed: none", self.file()[0]["refused"])
+
+    def test_several_repositories_need_a_name(self):
+        project = next(p for p in self.db.rows("projects") if p["name"] == "A")
+        project["origins"]["/peer/other"] = {"origin": "github.com/owner/other", "instance": "peer"}
+        self.db.put("projects", project)
+        self.assertIn("Name the repository", self.file()[0]["refused"])
+        self.assertEqual(self.file(repository="Owner/Other")[0]["status"], "pending_review")
+        self.assertEqual(self.db.get("tasks", self.task)["destination"], "Owner/Other")
+
+    def test_uncertain_filing_blocks_a_second_one(self):
+        self.engine.action({"op": "settings", "dry": False})
+        with patch.object(connectors, "github_identity", return_value="me"), \
+                patch.object(connectors, "github_request", side_effect=TimeoutError("timed out")) as api:
+            self.assertEqual(self.file()[0]["status"], "uncertain")
+            self.assertEqual(self.file()[0]["status"], "uncertain")
+        api.assert_called_once()
+
+
 class EngineWiringTests(Fixture):
     def test_task_runs_get_a_scoped_session_only_with_a_running_server(self):
         task = self.dispatch()
@@ -235,7 +319,7 @@ class EngineWiringTests(Fixture):
             if mcp:
                 session = self.sessions.get(mcp["token"])
                 self.assertEqual((session.role, session.task, set(session.actions)),
-                                 (app_mcp.TASK, task, {"send_email"}))
+                                 (app_mcp.TASK, task, {"send_email", "create_issue"}))
             return {"outcome": "done", "text": "ok", "kind": "summary", "commitments": []}
 
         with patch("engine.worker.run_agent", side_effect=agent):
