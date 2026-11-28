@@ -1876,11 +1876,15 @@ class Engine:
             latest = self.require_current_task(task)
             if self.scope.checkout(task["worktree"]):
                 raise ValueError("This checkout belongs to an ignored repository.")
+            worker._validate_files(edits)
             changes = {edit["path"]: edit for edit in latest.get("changes", [])}
-            changes.update((edit["path"], edit) for edit in edits)
+            # Saved changes hold each file's full resulting text, which may be
+            # larger than one agent response may carry.
+            applied = worker.apply_worktree_edits(task["worktree"], edits, originals)
+            changes.update((edit["path"], edit) for edit in applied)
             saved = list(changes.values())
-            worker._validate_files(saved)
-            paths = worker.apply_worktree_files(task["worktree"], edits, originals)
+            worker._validate_files(saved, saved=True)
+            paths = [edit["path"] for edit in applied]
             latest.update(changes=saved, partial_changes=partial)
             self.db.put("tasks", latest)
             self.db.log("Files edited", "\n".join(paths), task["project"], task["id"])

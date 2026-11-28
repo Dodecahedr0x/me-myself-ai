@@ -41,6 +41,11 @@ MAX_NAMED_FILE = 104 * 1024
 MAX_NAMED_CONTEXT = 136 * 1024
 MAX_FILES = 24
 MAX_EDITS = 12
+# An existing file too large for context can still take exact-text replacements.
+MAX_EDIT_FILE = 1024 * 1024
+# Saved changes accumulate across attempts and hold full resulting text.
+MAX_SAVED_EDITS = 100
+MAX_SAVED_CONTEXT = 4 * 1024 * 1024
 
 
 class WorkerError(RuntimeError):
@@ -131,8 +136,11 @@ results as evidence. Only propose steps that can proceed independently of your q
 Use the current checkout facts even if an earlier result reported missing setup. For coding,
 files is an optional list of {path, content} containing complete replacements inside the
 isolated checkout. With a question, include only finished edits that can be applied before
-the answer. Describe conditional changes in text. Only change existing files whose full content was supplied, or create
-new files. Cite missing context or verification. When local_commands_remaining is positive,
+the answer. Describe conditional changes in text. Each files entry has path, content, old and new. For a
+whole-file replacement set content and leave old and new empty. Only replace existing files whose full
+content was supplied, or create new files. For an existing file too large to supply, inspect it with a
+run command and edit it by exact-text replacement: content empty, old a passage that occurs exactly once
+in the current file, new its replacement. Several such entries for one file apply in order. Cite missing context or verification. When local_commands_remaining is positive,
 use outcome run with the shell command in text for local inspection and tests. Use the task
 worktree for repository commands. Read command_results for the observed exit status and output.
 The command already receives a clean environment without account credentials. Keep its HOME,
@@ -210,7 +218,7 @@ _SCHEMAS = {
         kind=_TEXT,
         commitments=_PROMISES,
         style=_TEXT,
-        files=_array(_object("path content", path=_TEXT, content=_TEXT)),
+        files=_array(_object("path content old new", path=_TEXT, content=_TEXT, old=_TEXT, new=_TEXT)),
         calendar_event=_object(
             "title start end", title=_TEXT, start={"type": "number"}, end={"type": "number"}
         ),
@@ -312,29 +320,51 @@ def _parts(path):
     return parts
 
 
-def _validate_files(files):
-    if not isinstance(files, list) or len(files) > MAX_EDITS:
-        raise WorkerError("Invalid file list or too many edits.")
-    paths = set()
+def _validate_files(files, *, saved=False):
+    """Check agent edits, or with saved=True the task's accumulated full-text changes."""
+    count, per_file, budget = (
+        (MAX_SAVED_EDITS, MAX_EDIT_FILE, MAX_SAVED_CONTEXT) if saved else (MAX_EDITS, MAX_NAMED_FILE, MAX_NAMED_CONTEXT)
+    )
+    if not isinstance(files, list):
+        raise WorkerError("Invalid file list.")
+    if len(files) > count:
+        raise WorkerError(f"Too many file edits: {len(files)} exceeds the limit of {count}.")
+    whole = set()
+    replaced = set()
     total = 0
     for edit in files:
         if not isinstance(edit, dict):
             raise WorkerError("Invalid file edit.")
         path = edit.get("path")
         _parts(path)
-        content = _string(edit.get("content"), "content", empty=True, limit=MAX_NAMED_FILE)
-        size = len(content.encode())
+        old = "" if saved else edit.get("old", "")
+        new = "" if saved else edit.get("new", "")
+        content = edit.get("content")
+        for label, value in (("content", content), ("old", old), ("new", new)):
+            if not isinstance(value, str) or "\0" in value:
+                raise WorkerError(f"Invalid {label} for {path}.")
+        size = sum(len(v.encode()) for v in (content, old, new))
         total += size
+        if size > per_file:
+            raise WorkerError(f"The edit to {path} exceeds the {per_file // 1024} KiB per-file limit. "
+                              "Edit a large existing file by exact-text replacement.")
+        if total > budget:
+            raise WorkerError(f"The edits exceed the {budget // 1024} KiB total limit at {path}.")
         key = unicodedata.normalize("NFD", path.casefold())
-        if (
-            size > MAX_NAMED_FILE
-            or total > MAX_NAMED_CONTEXT
-            or "\0" in content
-            or key in paths
-            or any(p.startswith(key + "/") or key.startswith(p + "/") for p in paths)
-        ):
-            raise WorkerError("Invalid, conflicting or oversized file replacement.")
-        paths.add(key)
+        if old:
+            if content:
+                raise WorkerError(f"The edit to {path} sets both content and a replacement.")
+            if key in whole:
+                raise WorkerError(f"{path} has both a whole-file replacement and a text replacement.")
+            replaced.add(key)
+        else:
+            if new:
+                raise WorkerError(f"The text replacement for {path} has an empty old passage.")
+            if key in whole or key in replaced:
+                raise WorkerError(f"{path} is replaced more than once in one batch.")
+            whole.add(key)
+        if any(p.startswith(key + "/") or key.startswith(p + "/") for p in whole | replaced):
+            raise WorkerError(f"{path} conflicts with another edited path.")
 
 
 def _validate(role, result):
@@ -1337,10 +1367,16 @@ def worktree_context(worktree, hints="", omissions=None, available=None) -> dict
 
 
 def apply_worktree_files(worktree, files, original_context=None) -> list:
-    """Validate the batch first; atomically replace each file under directory handles."""
+    return [edit["path"] for edit in apply_worktree_edits(worktree, files, original_context)]
+
+
+def apply_worktree_edits(worktree, files, original_context=None) -> list:
+    """Validate the batch first; atomically write each file under directory handles.
+
+    Returns the resulting full-text edits, one per path, for saving and publication."""
     root = _check_worktree(worktree)
     _validate_files(files)
-    if original_context is None:
+    if original_context is None and any(not edit.get("old") for edit in files):
         original_context = worktree_context(root)
 
     def check_original(parent, path, name):
@@ -1349,27 +1385,58 @@ def apply_worktree_files(worktree, files, original_context=None) -> list:
             if path in original_context:
                 raise WorkerError("The original file was removed. Refresh the worktree context.")
         elif path not in original_context or _read_file(parent, name) != original_context[path].encode():
-            raise WorkerError("An existing file was omitted or changed. Refresh the worktree context.")
+            raise WorkerError(f"{path} was omitted from the supplied files or has changed. "
+                              "Refresh the worktree context, or edit it by exact-text replacement.")
         return mode
 
+    def current(parent, path, name):
+        if _regular_mode(parent, name, MAX_EDIT_FILE) is None:
+            raise WorkerError(f"A text replacement needs an existing file: {path} is missing.")
+        try:
+            return _read_file(parent, name, MAX_EDIT_FILE).decode("utf-8")
+        except UnicodeError:
+            raise WorkerError(f"{path} is not UTF-8 text.") from None
+
+    results = {}
+    bases = {}
     try:
         for edit in files:
-            parts = _parts(edit["path"])
+            path = edit["path"]
+            parts = _parts(path)
             try:
                 with _parent_fd(root, parts) as parent:
-                    check_original(parent, edit["path"], parts[-1])
+                    if edit.get("old"):
+                        if path not in results:
+                            bases[path] = current(parent, path, parts[-1])
+                            results[path] = bases[path]
+                        found = results[path].count(edit["old"])
+                        if found != 1:
+                            raise WorkerError(f"The passage to replace occurs {found} times in {path}; "
+                                              "it must occur exactly once.")
+                        results[path] = results[path].replace(edit["old"], edit["new"], 1)
+                    else:
+                        check_original(parent, path, parts[-1])
+                        results[path] = edit["content"]
             except FileNotFoundError:
-                if edit["path"] in original_context:
+                if edit.get("old"):
+                    raise WorkerError(f"A text replacement needs an existing file: {path} is missing.")
+                if path in original_context:
                     raise WorkerError("The original directory was removed. Refresh the worktree context.")
-        for edit in files:
-            parts = _parts(edit["path"])
+                results[path] = edit["content"]
+        for path, content in results.items():
+            parts = _parts(path)
             with _parent_fd(root, parts, create=True) as parent:
-                mode = check_original(parent, edit["path"], parts[-1])
+                if path in bases:
+                    if current(parent, path, parts[-1]) != bases[path]:
+                        raise WorkerError(f"{path} changed while the edit was prepared. Retry.")
+                    mode = _regular_mode(parent, parts[-1], MAX_EDIT_FILE)
+                else:
+                    mode = check_original(parent, path, parts[-1])
                 tmp = ".memyselfai-" + uuid.uuid4().hex
                 fd = os.open(tmp, os.O_EXCL | os.O_CREAT | os.O_WRONLY, 0o600, dir_fd=parent)
                 try:
                     with os.fdopen(fd, "wb") as out:
-                        out.write(edit["content"].encode("utf-8"))
+                        out.write(content.encode("utf-8"))
                         os.fchmod(fd, mode if mode is not None else 0o644)
                     os.replace(tmp, parts[-1], src_dir_fd=parent, dst_dir_fd=parent)
                 finally:
@@ -1379,4 +1446,4 @@ def apply_worktree_files(worktree, files, original_context=None) -> list:
                         pass
     except OSError as exc:
         raise WorkerError("Could not apply the edit inside the isolated checkout.") from exc
-    return [edit["path"] for edit in files]
+    return [dict(path=path, content=content) for path, content in results.items()]
