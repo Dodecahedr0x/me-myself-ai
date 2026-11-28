@@ -15,6 +15,7 @@ from pathlib import Path
 import agents
 import app_mcp
 import bugflow
+import notifications
 import orchestrator
 import selfcheck
 import sync as instances
@@ -122,6 +123,10 @@ class Engine:
         self.mcp_url = None
         self.agents = agents.Agents(root, self.settings)
         self.orchestrator = orchestrator.Orchestrator(self)
+        # Posted by the desktop host. The service sets the sink only when one is attached. See dashboard.md#notifications.
+        self.notifier = notifications.Notifier(self.db.root / "notifications.json",
+                                               enabled=lambda: self.settings().get("notifications", True) is not False,
+                                               clock=clock)
         # Guided setup and VPS setup over SSH. See docs/specs/guided-setup.md.
         self.vps = vps_setup.VpsSetup(self.instances, self.settings, self.db.log,
                                       Path(__file__).resolve().parent, open_terminal=agents.open_in_terminal,
@@ -1318,6 +1323,10 @@ class Engine:
                 submit("discover:" + e["id"], self.discover, e["id"], self.pool)
         if self.legacy_questions and "format-question" not in self.jobs:
             submit("format-question", self.format_existing_question, self.legacy_questions.pop(), self.pool)
+        try:
+            self.notifier.check(tasks)
+        except Exception as exc:
+            self.db.log("Notifications", f"Could not post a notification: {exc}")
 
     def close_finished_sources(self, events=None):
         """Close open tasks whose GitHub issue or PR was closed after they began. See task-workflow.md."""
@@ -2908,6 +2917,10 @@ class Engine:
                     if type(d["slots"]) is not int or not 0 <= d["slots"] <= 64:
                         raise ValueError("Enter between 0 and 64 agent slots, or 0 for the default.")
                     s["slots"] = d["slots"]
+                if "notifications" in d:
+                    if type(d["notifications"]) is not bool:
+                        raise ValueError("Invalid notification setting.")
+                    s["notifications"] = d["notifications"]
                 if "preference" in d:
                     if d["preference"] not in {"first", "overflow", "never"}:
                         raise ValueError("Choose where tasks should run.")

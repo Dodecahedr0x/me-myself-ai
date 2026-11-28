@@ -2,8 +2,10 @@ import AppKit
 import IOKit.pwr_mgt
 import WebKit
 import UniformTypeIdentifiers
+import UserNotifications
 
-final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandlerWithReply {
+final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandlerWithReply,
+    UNUserNotificationCenterDelegate {
     private var window: NSWindow!
     private var view: WKWebView!
     private var message: NSTextField!
@@ -26,6 +28,16 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
     private var powerNotifier: io_object_t = 0
     private var pendingSleep: Int?
     private var sleepAck: DispatchSourceSignal?
+    // A task to open once the dashboard has loaded, from a clicked notification. See dashboard.md#notifications.
+    private var pendingTask: String?
+    // Permission is asked once per launch, at the first notification.
+    private var notificationsAllowed: Bool?
+    private var waitingNotifications: [UNNotificationRequest] = []
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Set before launch finishes, so a click that launched the app is delivered.
+        UNUserNotificationCenter.current().delegate = self
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         updater = Updater()
@@ -330,7 +342,81 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
                 self.origin = url
                 self.view.load(URLRequest(url: url))
             }
+            // Every later line the service writes is a notification to post. See dashboard.md#notifications.
+            var rest = Data(bytes.drop(while: { $0 != 10 }).dropFirst())
+            while true {
+                while let end = rest.firstIndex(of: 10) {
+                    let line = rest[rest.startIndex..<end]
+                    rest = Data(rest[rest.index(after: end)...])
+                    DispatchQueue.main.async { self.notify(line) }
+                }
+                if rest.count > 65536 { rest.removeAll() }
+                let chunk = reader.availableData
+                if chunk.isEmpty { break }
+                rest.append(chunk)
+            }
         }
+    }
+
+    private func notify(_ line: Data) {
+        let prefix = Data("notify ".utf8)
+        guard line.starts(with: prefix),
+              let item = try? JSONSerialization.jsonObject(with: line.dropFirst(prefix.count)) as? [String: Any],
+              let task = item["task"] as? String, let key = item["key"] as? String,
+              let title = item["title"] as? String, let body = item["body"] as? String else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        content.userInfo = ["task": task]
+        // The service sends each task state once; the identifier also stops the system showing a version twice.
+        let request = UNNotificationRequest(identifier: key, content: content, trigger: nil)
+        let center = UNUserNotificationCenter.current()
+        switch notificationsAllowed {
+        case true?: center.add(request)
+        case false?: return
+        case nil:
+            // Ask once, at the first notification; hold the ones that arrive meanwhile.
+            waitingNotifications.append(request)
+            guard waitingNotifications.count == 1 else { return }
+            center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                DispatchQueue.main.async {
+                    self.notificationsAllowed = granted
+                    if granted { self.waitingNotifications.forEach { center.add($0) } }
+                    self.waitingNotifications.removeAll()
+                }
+            }
+        }
+    }
+
+    // Shown unless the dashboard is the focused window, where the task is already in view.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        DispatchQueue.main.async {
+            let focused = NSApp.isActive && self.window?.isKeyWindow == true && self.window?.isVisible == true
+            completionHandler(focused ? [] : [.banner, .list, .sound])
+        }
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        let task = response.notification.request.content.userInfo["task"] as? String
+        DispatchQueue.main.async {
+            if let task = task {
+                self.pendingTask = task
+                if self.window != nil { self.showDashboard() }
+                self.openPendingTask()
+            }
+            completionHandler()
+        }
+    }
+
+    private func openPendingTask() {
+        guard let task = pendingTask, let view = view, let url = view.url, sameOrigin(url),
+              let data = try? JSONSerialization.data(withJSONObject: [task]),
+              let argument = String(data: data, encoding: .utf8) else { return }
+        pendingTask = nil
+        view.evaluateJavaScript("window.openTaskFromNotification && openTaskFromNotification(...\(argument))")
     }
 
     @objc private func retryService() {
@@ -408,6 +494,7 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
         webView.isHidden = false
         setState(.running)
         window.makeFirstResponder(webView)
+        openPendingTask()
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {

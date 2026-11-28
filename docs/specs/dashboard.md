@@ -48,7 +48,7 @@ Settings is one page with four tabs. Each control sits on its tab and saves when
 | **Delivery** (default) | Dry mode and Live mode as two radio cards, each saying what it lets leave without you, and a link to Decision rules. |
 | **Agents** | *Task agent*: Claude Code and Codex CLI as a radio list with their state, version and **Sign in** when needed. The chosen one is marked *Prepares tasks*. A note says the CLI may send task context to its AI service. One **Check again** rechecks every agent. *Orchestrator*: the Hermes row with its state, a **Uses** subscription picker, **Sign in**, **Open dashboard** and **Retry install**. |
 | **Instances** | This instance and every paired one, with Rename, Add checkout, Add instance, Join and Remove. With a paired instance, *This instance's share* adds **Tasks on this instance** (Run here first, Overflow only, Never run agents) and **Agent slots**. |
-| **Workspace** | Folder access, the ignore list with its counts, and loading the sample workspace. |
+| **Workspace** | A **Notify me** switch for [notifications](#notifications), folder access, the ignore list with its counts, and loading the sample workspace. |
 
 - Choosing **Live mode** saves nothing yet. The radio stays on Dry mode and a dialog explains that agents will send without asking whenever every applicable rule allows the full action. **Turn on live mode** saves it. Closing the dialog keeps dry mode. Choosing **Dry mode** saves at once, because it only adds approvals.
 - Every other change saves immediately and confirms in a notice, such as "Codex CLI now prepares tasks.". Changing the task agent or the Hermes subscription rechecks agent status.
@@ -64,6 +64,44 @@ Settings is one page with four tabs. Each control sits on its tab and saves when
 - With a paired instance, change Tasks on this instance and Agent slots, then reload: both are kept. An invalid slot count is refused with a message.
 - Setup's **Change agent** opens Agents and its delivery **Change** opens Delivery.
 - At 390 pixels wide every tab is readable and every control is reachable.
+- On Workspace, turn **Notify me** off and reload: it stays off.
+
+## Notifications
+
+Covers [US-40](../user-stories.md). The user can leave the dashboard closed and still hear when work needs them. Implemented in `notifications.py`, the tick in `engine.py`, `server.py` and `desktop/main.swift`.
+
+- **When.** The desktop app posts one macOS notification when a task enters a state that needs the user, and when a task the orchestrator dispatched (`origin` is `orchestrator`) becomes done. The states and what the notification says:
+
+  | Task state | Title |
+  |---|---|
+  | `review` | Needs your approval |
+  | `question` | Needs your answer |
+  | `question` on an inaccessible checkout | Needs folder access |
+  | `failed` | Failed: retry or give instructions |
+  | `uncertain` | Check whether it was delivered |
+  | `done`, dispatched by the orchestrator | Finished |
+
+  The body is the task title, at most 200 characters, and nothing from the proposed content. Tasks the user started, tasks a reactive pass created, and skipped tasks do not notify when they finish. Sample workspace tasks never notify.
+- **Once per state change.** The service records the state each task was last seen in, in `notifications.json` in the data directory. It notifies only when a task's state differs from that record. A new version in the same state, such as an edited draft still in review, a dashboard refresh or a restart, posts nothing. A task that leaves a state and later returns to it, such as a draft sent back with instructions and proposed again, notifies again. The record is written before the notification is posted, so a crash can lose one notification but never repeats one. If the file cannot be written, memory still prevents repeats until the next start. The system notification's identifier is the task id and version, as a second guard.
+- **First start.** With no record yet, for example after updating to this version, the current states are recorded without notifying, so existing work does not flood the screen. States reached while the app was closed notify on the next start.
+- **Synced history.** The record also keeps `since`, the time this instance last checked, refreshed at least once a minute while it runs. A task seen for the first time notifies only if it was created after `since`, less 10 minutes for sync delay. Older tasks that first arrive by pairing or sync, including finished orchestrator tasks, are recorded silently. Once recorded, a later state change notifies as usual. A task's state-entry time is not tracked, so an older task that first arrives already needing the user stays silent; it is still in the Inbox.
+- **Setting.** Settings → Workspace has a **Notify me** switch, on by default, saved as `notifications` in settings. When it is off, states are still recorded but nothing is posted, so turning it back on does not replay what happened meanwhile.
+- **Which instance.** Only a service started by the desktop app notifies. The host passes its process id, and the service then writes each notification to its standard output as a `notify {json}` line after the launch link. The host reads these lines and posts them with the UserNotifications framework. A headless VPS writes nothing. The Mac notifies for tasks on any paired instance, because tasks sync. Each Mac keeps its own record, which is not synced.
+- **Permission.** The first notification asks macOS for permission. If the user declines, nothing is shown; the app keeps working. The notification is not shown while the dashboard window is focused, since the task is already on screen. It still goes to Notification Center.
+- **Clicking.** Clicking a notification brings the dashboard forward and opens the task: in the Inbox when it needs the user, otherwise in its detail dialog. If the task has not reached the dashboard yet, it opens after the next refresh. If the app was quit, macOS relaunches it and the task opens once the dashboard has loaded.
+
+### Acceptance criteria
+
+- A task that moves from working to review produces exactly one notification titled "Needs your approval" with the task title. Further refreshes, an edited draft and a restart produce none.
+- Each state in the table produces its title. A done task dispatched by the orchestrator says "Finished". A done task the user created and a skipped dispatched task produce none.
+- A draft sent back with instructions and proposed again notifies a second time.
+- The first start with no record posts nothing for tasks already waiting. A task that fails while the app is closed notifies on the next start.
+- Pairing an instance that brings 40 older tasks, some waiting and some finished by the orchestrator, posts nothing. A task created on the peer seconds before it synced does notify, and so does a later state change on one of the older tasks.
+- With **Notify me** off, nothing is posted. Turning it on again posts nothing for changes made while it was off.
+- A service without the desktop host, such as on a VPS, tracks and writes nothing.
+- Clicking a notification opens that task in the dashboard, including after the window was closed.
+
+Verified by `tests/test_notifications.py`. Not yet verified on screen: that macOS shows the permission prompt and the banner for the ad-hoc signed build, that clicking opens the task, and the relaunch-on-click path after quitting.
 
 ## Inbox view
 

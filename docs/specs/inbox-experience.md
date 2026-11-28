@@ -104,7 +104,7 @@ A narrow left rail holds Inbox, Board, Activity, Connections, Projects, Instance
 
 ## Notifications
 
-When a row enters Urgent or Needs you and the dashboard window is not focused, the desktop app posts one system notification. It names the row's line one and nothing from its content. Notifications are batched to at most one per five minutes per row. The user can turn them off in Settings. A headless VPS instance does not notify. The laptop notifies for rows that reach Needs you on any paired instance.
+A first version is implemented: see [notifications](dashboard.md#notifications). It notifies once per state change rather than batching per five minutes, and has no Urgent group yet. When a row enters Urgent or Needs you and the dashboard window is not focused, the desktop app posts one system notification. It names the row's line one and nothing from its content. Notifications are batched to at most one per five minutes per row. The user can turn them off in Settings. A headless VPS instance does not notify. The laptop notifies for rows that reach Needs you on any paired instance.
 
 ## First run
 
