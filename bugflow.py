@@ -145,18 +145,39 @@ def _remote_base(conn, api):
     return base, sha
 
 
+def _check_moved_base(conn, api, head, sha, files):
+    """Allow a fix prepared on an older default branch revision only when the
+    newer commits leave every edited path untouched, since edits carry full contents."""
+    try:
+        diff = api(conn, "GET", f"compare/{head}...{sha}")
+        status, changed = diff["status"], diff.get("files") or []
+        touched = {f["filename"] for f in changed} | {f["previous_filename"] for f in changed if f.get("previous_filename")}
+    except Exception:
+        raise Rejected("The worktree does not start at a published revision of the default branch.") from None
+    if status != "ahead" or len(changed) >= 300:
+        raise Rejected("The worktree does not start at a published revision of the default branch.")
+    edited = {f["path"] for f in files}
+    clash = sorted(p for p in touched if p in edited or any(p.startswith(e + "/") or e.startswith(p + "/") for e in edited))
+    if clash:
+        raise Rejected("The default branch changed files this fix edits since the task started: "
+                       + ", ".join(clash[:5]) + ". Ask the agent to update the worktree to the current default branch and redo those edits.")
+
+
 def _branch_data(t, conn, api, number):
     repo = repo_name(conn)
     origin = _git(t["worktree"], "remote", "get-url", "origin").decode().strip()
     if _github_repository(origin) != repo.casefold():
         raise Rejected("The worktree origin differs from the configured GitHub repository.")
     base, sha = _remote_base(conn, api)
-    if _git(t["worktree"], "rev-parse", "HEAD").decode().strip() != sha:
-        raise Rejected("The worktree does not start at the current default branch revision.")
+    head = _git(t["worktree"], "rev-parse", "HEAD").decode().strip()
     files = t.get("changes", [])
+    if head != sha:
+        _check_moved_base(conn, api, head, sha, files)
     if not files:
         raise ValueError("A proposed fix is required before publishing a branch.")
-    tracked = _git(t["worktree"], "ls-tree", "-rz", sha, "--", *(f["path"] for f in files))
+    # The worktree's own HEAD: the newer base may be absent locally, and the
+    # edited paths are identical in both when the base moved.
+    tracked = _git(t["worktree"], "ls-tree", "-rz", head, "--", *(f["path"] for f in files))
     modes = {}
     for entry in tracked.split(b"\0"):
         if entry:
