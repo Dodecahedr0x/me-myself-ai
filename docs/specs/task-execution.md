@@ -88,6 +88,23 @@ Acceptance, verified in `tests/test_engine.py` and `tests/test_bugflow.py`:
 
 Not verified here: a real handoff between a paired Linux server and a Mac. The ownership handoff itself is covered by the existing sync tests.
 
+## State the app can look up
+
+Status: implemented.
+
+A task never asks the user about state the app records or can look up: which pull request or branch holds a fix, whether it is open, linked or merged, which instance has the work, or a task's status. The user does not keep that for the app.
+
+- **Evidence.** For each GitHub issue a task names, as its source event, a `owner/repo#N` reference or an issue URL in a connected repository, the agent receives `issue_fixes`: the issue's state, the pull requests GitHub cross-references from it with their state and whether they merged, and the app's own tasks for that issue on every paired instance, synced, with status, owning instance, branch, pull request and unpublished changed paths. At most four issues per repository. A failed lookup is logged and listed in `missing_context`.
+- **Decide from it.** No fix in the evidence means there is none yet. The agent does the work, or finishes and says what it found and what it left alone. A failed lookup is a note in `unverified`.
+- **One send-back.** When the agent still returns a question about that state (which PR, which branch, is it merged, is it only on one machine), the app logs it, saves any prepared files, and runs the agent once more with `state_question` naming what it asked. A second such question goes through as a normal decision, so a broken lookup cannot loop.
+
+Acceptance, verified in `tests/test_engine.py`:
+
+- A task naming `owner/project#1` receives the issue's state, the cross-referenced pull requests and another instance's fix task for #1 with its branch and pull request.
+- An agent that asks "Which PR has the fix for #1, and is it merged?" is run again with `state_question`, and its done result lands without a question.
+
+Not verified here: the GitHub timeline response from a live repository; the test uses a fixture of its documented shape.
+
 ## Promises become work
 
 When drafting a commitment such as “I'll send the figures on Friday,” show the promised work and timing alongside the proposed message. Once the message is delivered, create a linked follow-up task for each distinct promise, with the project, beneficiary, source message, and any stated deadline or trigger. The scheduler makes the follow-up actionable in time to address it. Where timing or scope is unclear, ask for clarification. Reconcile uncertain delivery before activating the follow-up. Discarding a draft discards its proposed commitments. A commitment already made by the user in connected content also creates a follow-up when discovered.

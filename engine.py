@@ -851,6 +851,66 @@ class Engine:
             return t["repository_origin"]
         return self.origin_of(t["repository"]) if self.owns("task:" + t["id"]) else ""
 
+    # Questions about state the app records or can look up. See "State the app can look up" in task-execution.md.
+    STATE_QUESTION = re.compile(
+        r"\b(?:which|what)\s+(?:pr|pull request|branch|instance|machine|commit)\b"
+        r"|\b(?:is|was|has|have)\s+(?:it|they|this|that|the\s+(?:pr|pull request|branch|fix))\s+(?:been\s+)?merged\b"
+        r"|\bonly\s+on\s+\S+\?"
+        r"|\b(?:pr|pull request)\s+(?:is\s+)?(?:open|linked|merged)\b.*\?", re.I)
+
+    def issue_fixes(self, t, e, context):
+        """For each GitHub issue the task names, the pull requests GitHub links to it and the app's own
+        tasks for it on every instance. Failed lookups go to missing_context."""
+        text = " ".join((t["title"], t["body"], e["raw"].get("body", "") if e else "", e["raw"].get("url", "") if e else ""))
+        found = []
+        for source in self.db.rows("connections"):
+            if (source["kind"] != "github" or not source["config"].get("repository")
+                    or source.get("unavailable") or self.scope.connection(source)):
+                continue
+            repo = source["config"]["repository"]
+            numbers = [int(n) for n in re.findall(
+                r"(?:https://github\.com/" + re.escape(repo) + r"/issues/|(?<![\w/])" + re.escape(repo) + r"#)([1-9]\d*)\b",
+                text, re.I)]
+            own = bugflow.issue_number(e, source) if e and e["connection"] == source["id"] else None
+            if own:
+                numbers.insert(0, own)
+            for number in list(dict.fromkeys(numbers))[:4]:
+                url = f"https://github.com/{repo}/issues/{number}".casefold()
+                tasks = []
+                for other in self.db.rows("tasks"):
+                    if other["id"] == t["id"]:
+                        continue
+                    m = other.get("milestones") or {}
+                    source_event = self.db.get("events", other.get("event", "")) if other.get("event") else None
+                    linked = (m.get("issue") == number and m.get("repository", repo).casefold() == repo.casefold()) or (
+                        source_event and source_event["raw"].get("url", "").casefold().rstrip("/") == url)
+                    if linked:
+                        tasks.append(dict(
+                            title=other["title"], status=other["status"],
+                            instance=self.instances.owner_name("task:" + other["id"]),
+                            branch=m.get("branch", ""), pull_request=m.get("url", ""),
+                            unpublished_changes=[c["path"] for c in other.get("changes", [])][:20] if not m.get("branch") else [],
+                            result=other.get("result", "")[:1500]))
+                entry = dict(issue=f"{repo}#{number}", app_tasks=tasks)
+                try:
+                    issue = next((x for x in context.get("linked_activity", [])
+                                  if str(x.get("html_url", "")).casefold().rstrip("/") == url), None)
+                    entry["state"] = (issue or connectors.github_request(source, "GET", f"issues/{number}")).get("state")
+                    timeline = connectors.github_request(source, "GET", f"issues/{number}/timeline", {"per_page": 100})
+                    pulls = {}
+                    for item in timeline if isinstance(timeline, list) else []:
+                        ref = (item.get("source") or {}).get("issue") or {}
+                        if item.get("event") == "cross-referenced" and ref.get("pull_request"):
+                            pulls[ref.get("html_url")] = dict(
+                                title=ref.get("title"), url=ref.get("html_url"), state=ref.get("state"),
+                                merged=bool(ref["pull_request"].get("merged_at")))
+                    entry["pull_requests"] = list(pulls.values())[:10]
+                except Exception as exc:
+                    self.db.log("Issue fixes unavailable", str(exc), t["project"], t["id"])
+                    context.setdefault("missing_context", []).append(f"{repo}#{number} pull requests: {exc}")
+                found.append(entry)
+        return found
+
     # Agent names for the machine kinds a check can need, and how instances report them.
     PLATFORMS = {"macos": "darwin", "linux": "linux"}
     PLATFORM_NAMES = {"darwin": "Mac", "linux": "Linux"}
@@ -2130,10 +2190,14 @@ class Engine:
                     except Exception as exc:
                         self.db.log("Linked activity unavailable", str(exc), t["project"], t["id"])
                         context.setdefault("missing_context", []).append(f"{repo}#{number}: {exc}")
+        fixes = self.issue_fixes(t, e, context)
+        if fixes:
+            context["issue_fixes"] = fixes
         bug = t["kind"].lower() in {"bug", "bugfix"}
         if bug and t.get("changes") and t.get("milestones") and not t.get("partial_changes"):
             out = dict(outcome="done", text=t["result"], kind="bug")
         else:
+            asked = context
             out = self.infer("task", context, t["project"], t["id"])
             if location and out["outcome"] == "question":
                 prepared = out.get("files") or []
@@ -2145,9 +2209,20 @@ class Engine:
                 if new_context or requested_omissions.keys() - omissions.keys():
                     files = extra
                     followup = dict(context, files=files, omitted_files=requested_omissions, file_request=out["text"])
+                    asked = followup
                     out = self.infer("task", followup, t["project"], t["id"])
                     if out["outcome"] == "question" and out.get("files"):
                         self.save_prepared_files(t, out["files"], files, partial=True)
+            if out["outcome"] == "question" and self.STATE_QUESTION.search(out["text"]):
+                # The user does not track pull requests, branches or instances for the app. Answer from
+                # the evidence instead. See "State the app can look up" in task-execution.md.
+                self.db.log("State question sent back to the agent", out["text"], t["project"], t["id"])
+                if location and out.get("files"):
+                    self.save_prepared_files(t, out["files"], files, partial=True)
+                out = self.infer("task", dict(asked, state_question=dict(
+                    asked=out["text"][:1000],
+                    note="The user is not asked this. Decide from issue_fixes and the other evidence. "
+                         "No fix in the evidence means there is none yet.")), t["project"], t["id"])
         result = out["text"]
         update = dict(
             result=result,

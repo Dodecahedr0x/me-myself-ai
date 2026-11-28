@@ -44,6 +44,8 @@
 
 No task waits on me to run a build or test, extending US-07 and US-26. A fix prepared on the VPS moves to my Mac to build the app there. With the Mac asleep, the pull request says the build is still to verify. [Checks this machine cannot run](specs/task-execution.md#checks-this-machine-cannot-run)
 
+No task asks me where a fix lives, extending US-07 and US-39. An agent asked to close issue #1 once it is fixed reads the pull requests GitHub links to #1 and the app's own fix tasks on my Mac and server. Finding none, it says so and leaves #1 open instead of asking me which PR has the fix or whether a branch exists only on one machine. [State the app can look up](specs/task-execution.md#state-the-app-can-look-up)
+
 Workspace-wide Slack and Google account connections extend US-01 and US-03. [Workspace accounts](specs/account-wide-connections.md)
 
 US-01 through US-05 are covered by the [task workflow](specs/task-workflow.md), US-07 through US-09 by [task agents and completion](specs/task-execution.md), and US-06 and US-10 through US-12 by [decision rules, writing style, and trust](specs/delegation-and-style.md).
