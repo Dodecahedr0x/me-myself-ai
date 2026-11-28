@@ -308,32 +308,6 @@ class Engine:
                 return numbers.pop() if len(numbers) == 1 else None
         return None
 
-    CHECK_WAIT = 300
-    CHECK_WAITS = 18
-
-    def pull_request_checks(self, github, number):
-        """The checks GitHub reports on a pull request's head, such as the macOS build and tests, so a task agent
-        reads them instead of asking the user. Read only. See "Pull request checks" in task-execution.md."""
-        pr = connectors.github_request(github, "GET", f"pulls/{int(number)}")
-        sha = (pr.get("head") or {}).get("sha") or ""
-        if not re.fullmatch(r"[0-9a-f]{40}", sha):
-            raise ValueError("GitHub did not report the pull request's head commit.")
-        runs = connectors.github_request(github, "GET", f"commits/{sha}/check-runs", {"per_page": 50})
-        checks = []
-        for run in (runs.get("check_runs") or [])[:50]:
-            check = dict(name=str(run.get("name", ""))[:200], status=run.get("status", ""),
-                         conclusion=run.get("conclusion") or "", url=run.get("html_url", ""))
-            if check["conclusion"] in {"failure", "timed_out", "cancelled", "action_required"} and run.get("id"):
-                notes = connectors.github_request(github, "GET", f"check-runs/{int(run['id'])}/annotations",
-                                                  {"per_page": 10})
-                check["annotations"] = [
-                    f"{a.get('path', '')}:{a.get('start_line', '')} {a.get('message', '')}"[:1000]
-                    for a in (notes if isinstance(notes, list) else [])[:10]
-                ]
-            checks.append(check)
-        return dict(number=int(number), head=sha, state=pr.get("state", ""), checks=checks,
-                    pending=any(c["status"] != "completed" for c in checks))
-
     def step_parent(self, task):
         if task.get("depth") and task.get("parent"):
             parent = self.db.get("tasks", task["parent"])
@@ -813,6 +787,7 @@ class Engine:
             hermes_ready=states.get("hermes") == "ready",
             origins=self.local_origins(),
             can_clone=bool(shutil.which("git")),
+            platform=self.instances.me()["platform"],
         )
 
     @staticmethod
@@ -876,7 +851,31 @@ class Engine:
             return t["repository_origin"]
         return self.origin_of(t["repository"]) if self.owns("task:" + t["id"]) else ""
 
+    # Agent names for the machine kinds a check can need, and how instances report them.
+    PLATFORMS = {"macos": "darwin", "linux": "linux"}
+    PLATFORM_NAMES = {"darwin": "Mac", "linux": "Linux"}
+    PLATFORM_WAIT = 1800
+
+    @staticmethod
+    def platform_fits(t, info):
+        need = t.get("needs_platform")
+        return not need or info.get("platform") == need
+
+    def platform_peer(self, t):
+        """A reachable paired instance of the machine kind this task's check needs."""
+        return next((p for p in sorted(self.fresh_peers(), key=self.rank)
+                     if self.eligible(p["capacity"]) and self.can_take(t, p["capacity"])), None)
+
+    def waiting_for_platform(self, t):
+        """Hold a task here only while a fitting instance can take it, for at most PLATFORM_WAIT.
+        See "Checks this machine cannot run" in task-execution.md."""
+        if self.platform_fits(t, {"platform": self.instances.me()["platform"]}):
+            return False
+        return self.now() - t.get("platform_since", 0) < self.PLATFORM_WAIT and bool(self.platform_peer(t))
+
     def can_take(self, t, info):
+        if not self.platform_fits(t, info):
+            return False
         origin = self.required_origin(t)
         if t.get("repository") and not origin:
             return False
@@ -1136,7 +1135,8 @@ class Engine:
                              and self.can_take(t, p["capacity"])
                              and not self.instances.declined_recently(item, p["id"])), key=self.rank)
             best = ranked[0] if ranked else None
-            stay = free > 0 and not (not first and best and best["capacity"].get("preference") == "first")
+            stay = free > 0 and self.platform_fits(t, me) and not (
+                not first and best and best["capacity"].get("preference") == "first")
             if stay:
                 free -= 1
             elif best and item not in offered:
@@ -1303,7 +1303,8 @@ class Engine:
                         self.save(t, "New evidence from a related task")
             if t["status"] in {"queued", "scheduled"} and t.get("due", 0) <= now:
                 # At most the slot count at once; nothing new while preparing for sleep or stop.
-                if "task:" + t["id"] not in self.jobs and not absent and running < slots:
+                if ("task:" + t["id"] not in self.jobs and not absent and running < slots
+                        and not self.waiting_for_platform(t)):
                     submit("task:" + t["id"], self.process, t["id"], self.pool)
                     running += 1
             if t["status"] == "review" and t.get("approved_version") == t["version"]:
@@ -1769,6 +1770,10 @@ class Engine:
             if self.scope.task(t):
                 self.save(t, "Paused by the workspace ignore list")
                 return
+            here = self.instances.me()["platform"]
+            if not self.platform_fits(t, {"platform": here}):
+                # No fitting instance took it in time: run here and note what stays unverified.
+                t.update(verification_unavailable=t["needs_platform"], needs_platform="")
             t.update(status="working", local_commands_available=True)
             t.pop("related_snapshot", None)
             self.save(t, "Agent picked up task")
@@ -2042,12 +2047,17 @@ class Engine:
             available_paths=available,
             google_calendars=list(self.calendars()),
             now=self.now(),
+            platform={"darwin": "macos"}.get(self.instances.me()["platform"], self.instances.me()["platform"]),
             thread=self.thread_context(e) if e else [],
             children=[
                 dict(title=x["title"], result=x["result"][:3000], status=x["status"])
                 for x in children
             ],
         )
+        if t.get("verification_unavailable"):
+            context["verification_unavailable"] = (
+                f"No {self.PLATFORM_NAMES.get(t['verification_unavailable'], t['verification_unavailable'])} "
+                "instance is reachable to run the checks that need one.")
         if parent:
             context["parent_task"] = dict(id=parent["id"], title=parent["title"], body=parent["body"][:12000],
                                           answers=related["parent_answers"], result=related["parent_result"])
@@ -2120,16 +2130,6 @@ class Engine:
                     except Exception as exc:
                         self.db.log("Linked activity unavailable", str(exc), t["project"], t["id"])
                         context.setdefault("missing_context", []).append(f"{repo}#{number}: {exc}")
-        pull = self.pull_request_number(t)
-        github = self.github_for({**t, "worktree": location, "repository": repository}, conn) if pull else None
-        if github:
-            try:
-                context["pull_request_checks"] = self.pull_request_checks(github, pull)
-                self.db.log("Pull request checks read", json.dumps(context["pull_request_checks"], ensure_ascii=False),
-                            t["project"], t["id"])
-            except Exception as exc:
-                self.db.log("Pull request checks unavailable", str(exc), t["project"], t["id"])
-                context.setdefault("missing_context", []).append(f"Checks for pull request #{pull}: {exc}")
         bug = t["kind"].lower() in {"bug", "bugfix"}
         if bug and t.get("changes") and t.get("milestones") and not t.get("partial_changes"):
             out = dict(outcome="done", text=t["result"], kind="bug")
@@ -2165,16 +2165,26 @@ class Engine:
         if out.get("verification"):
             update["verification"] = out["verification"]
         outcome = out["outcome"]
-        checks = context.get("pull_request_checks")
-        waits = t.get("check_waits", 0)
-        if outcome == "question" and out.get("wait_for_checks") and checks and checks["pending"]:
-            # The app, not the agent, confirms a check is still running. Bounded so a stuck check reaches the user.
-            if waits < self.CHECK_WAITS:
-                return dict(update, status="scheduled", due=self.now() + self.CHECK_WAIT, check_waits=waits + 1,
-                            reason=f"Waiting for pull request #{checks['number']}'s checks to finish")
-            result = out["text"] = update["result"] = (f"Pull request #{checks['number']}'s checks are still running after "
-                                    f"{self.CHECK_WAITS * self.CHECK_WAIT // 60} minutes. " + result)
-        update["check_waits"] = 0
+        here = self.instances.me()["platform"]
+        need = self.PLATFORMS.get(out.get("needs_platform", ""))
+        if need and need != here and not t.get("verification_unavailable"):
+            # A check needs another kind of machine. Move there rather than ask the user to run it.
+            # See "Checks this machine cannot run" in task-execution.md.
+            name = self.PLATFORM_NAMES[need]
+            moving = {**t, "needs_platform": need}
+            if self.platform_peer(moving):
+                if location and out.get("files"):
+                    self.save_prepared_files(t, out["files"], files, partial=True)
+                return dict(update, status="queued", needs_platform=need, platform_since=self.now(),
+                            reason=f"Moving to a {name} instance to run checks this machine cannot: " + result[:300])
+            return dict(update, status="queued", needs_platform="", verification_unavailable=need,
+                        reason=f"No {name} instance is reachable; continuing and noting what stays unverified")
+        update["needs_platform"] = ""
+        if out.get("unverified"):
+            update["unverified"] = out["unverified"]
+            if outcome == "done" and not bug:
+                result = update["result"] = result + "\n\nStill to verify:\n" + "\n".join(
+                    "- " + item for item in out["unverified"])
         newkind = out.get("kind") or t["kind"]
         needs_checkout = outcome == "question" and re.search(r"\b(worktree|(?:git|local|registered) checkout)\b", result, re.I)
         if not location and (out.get("files") or needs_checkout) and newkind.lower() not in {"bug", "bugfix"}:

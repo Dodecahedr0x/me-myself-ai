@@ -139,7 +139,10 @@ class BugFlow(unittest.TestCase):
         self.assertTrue(body.startswith("Fixes #4\n\nFixed.\n\n## Verification\n"))
         self.assertIn("- `python3 -m unittest tests.test_x` on Linux x86_64: exit 0", body)
         self.assertIn("- `./scripts/build-app.sh` on Linux x86_64: timed out", body)
-        self.assertIn("pull request's checks", body)
+        self.assertNotIn("Not verified yet", body)
+        self.t["unverified"] = ["./scripts/build-app.sh on a Mac"]
+        body = b.prepare(self.t, self.event, self.conn, self.api, self.who)["payload"]["body"]
+        self.assertIn("Not verified yet:\n\n- ./scripts/build-app.sh on a Mac", body)
         del self.t["verification"]
         body = b.prepare(self.t, self.event, self.conn, self.api, self.who)["payload"]["body"]
         self.assertIn("The agent ran no commands while preparing this fix.", body)

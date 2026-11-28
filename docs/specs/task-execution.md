@@ -69,23 +69,24 @@ Coding work on an open GitHub issue follows the same workflow. When the agent re
 
 The desktop bug workflow verifies the worktree's origin and HEAD against the configured GitHub repository and its default branch before publishing a fix. The branch preview names the base revision, commit message, paths, file modes and full contents. A moved base or a newly assigned issue pauses delivery. The PR must target the recorded base from the published fix branch and revision and link the original open issue. The reporter receives the PR URL by email, in the original Slack thread, or in the GitHub conversation with the reporter mentioned. An uncertain notification remains open until reconciled.
 
-## Pull request checks
+## Checks this machine cannot run
 
-No task asks the user whether a build or tests passed on their machine. A task can run on the Linux server, which cannot build the Mac app, so the repository verifies every pull request on macOS instead.
+A task never waits for the user to run a build or a test, or to say whether one passed. Its agent runs the check itself, moves the task to an instance that can, or notes what stays unverified and carries on.
 
-- `.github/workflows/pr-checks.yml` runs the **macOS build and tests** check on every pull request when it is opened, reopened, marked ready or updated, and on every push to `main`. It runs `./scripts/build-app.sh`, checks the bundle's executable and signature, and runs `python3 -m unittest discover -s tests`, `node --test tests/test_google_identity.cjs` and `node --check ui/app.js`. It reads no secrets and keeps no Git credentials.
-- When a task works on an existing pull request, its agent receives `pull_request_checks`: the pull request number, head commit, state and each check's name, status, conclusion and link. A failed, cancelled or timed-out check also carries up to ten of its annotations. The app reads them with the task's GitHub connection, read only. When GitHub cannot be read, the reason goes into `missing_context` and the agent still runs.
-- The agent uses those checks as verification evidence. A failed check is work to fix. When the next step depends on a check that is still queued or running, the agent returns a question with `wait_for_checks`. The app confirms from the checks it read that one is still pending, then schedules the task again in 5 minutes instead of showing the question. After 18 waits, 90 minutes, the question reaches the user and says how long the checks have run. A question while no check is pending reaches the user at once.
-- Every command a task agent runs is recorded by the app with its exit code, timeout and platform. The pull request the bug workflow opens ends with a **Verification** section listing those commands, written by the app rather than the agent. With none, it says the agent ran none. It points to the pull request's checks for the builds and tests the agent's machine could not run.
-- [AGENTS.md](../../AGENTS.md) step 6 tells agents on a machine that cannot build the Mac app to leave the build to the check and never ask the user to run it.
+- **Run it here.** The agent knows which machine it is on from `platform` (`macos` or `linux`). It runs what it can with local commands. The app records each command's exit code, timeout and platform on the task as `verification`.
+- **Move to a fitting instance.** For a check that needs another kind of machine, such as the Mac app build on the Linux server, the agent returns `needs_platform`. If a reachable, eligible paired instance of that kind can take the task, the app saves any prepared files, queues the task with that requirement and hands it over through the normal [capacity handoff](instances-and-sync.md#dividing-work), worktree included. Each instance advertises its `platform` in its capacity. Only a fitting instance can take or keep such a task. The receiver runs the agent with the check available and clears the requirement after that run.
+- **Note it and continue.** If no fitting instance is reachable, or none takes the task within 30 minutes, the task runs where it is with `verification_unavailable`. The agent lists each check it could not run in `unverified` and finishes with done or draft. It never turns the check into a question. The app keeps that list on the task, appends it to a done result as **Still to verify**, and the bug workflow's pull request lists it under **Not verified yet**. A task falls back like this only once, so a missing Mac cannot loop it between instances.
+- The bug workflow's pull request ends with a **Verification** section the app writes, not the agent: every command run and its exit code and platform, or a line saying none ran, then anything not verified yet.
+- [AGENTS.md](../../AGENTS.md) step 6 tells agents on a machine that cannot build the Mac app to move the task or note the build, never to ask.
 
-Acceptance, verified in `tests/test_engine.py` and `tests/test_bugflow.py` with GitHub faked:
+Acceptance, verified in `tests/test_engine.py` and `tests/test_bugflow.py`:
 
-- A task on pull request #17 receives the head commit's checks, with annotations for a failed one, and GitHub is read only with GET.
-- A question with `wait_for_checks` while a check is in progress schedules the task 5 minutes later with no question shown. The 19th such question reaches the user. A `wait_for_checks` question while every check has completed reaches the user at once.
-- The pull request body lists each command the app ran with its exit code and platform, and says so when there were none.
+- On Linux with a reachable Mac peer, `needs_platform: macos` queues the task for the Mac, asks no question, and only a Mac capacity can take it. The scheduler here does not start it while that Mac can take it.
+- With no Mac peer, the same answer queues the task to run again here with `verification_unavailable`. The agent then receives that fact, and its `unverified` list lands in the result. A second `needs_platform` is not acted on.
+- A task held for a Mac that no Mac takes within 30 minutes runs here and is told no Mac is reachable.
+- The pull request body lists each command with its exit code and platform, says when none ran, and lists the unverified checks.
 
-Not verified here: the workflow's first run on GitHub. It runs when this change's pull request opens.
+Not verified here: a real handoff between a paired Linux server and a Mac. The ownership handoff itself is covered by the existing sync tests.
 
 ## Promises become work
 

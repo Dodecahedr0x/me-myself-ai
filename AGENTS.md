@@ -9,7 +9,7 @@ The product goal is a personal agent that can take care of all the user's tasks 
 3. For a bug already covered by a spec, use its acceptance criteria to guide the fix. For a change to an internal component, document the contract it must preserve. Match the detail to the size of the change.
 4. Implement against the spec. If the design changes during implementation, update the spec before proceeding with the changed behavior.
 5. Verify the affected acceptance criteria. In the change summary, link the spec and report what was tested and anything still unverified.
-6. Always build the app after implementing something: run `./scripts/build-app.sh` and confirm it finishes and produces `build/MeMyselfAI.app`. Report a failed build as a failure, with its output, rather than finishing the change. On a machine that cannot build the Mac app, such as the Linux server, never ask the user to build or test it for you. Run the tests you can, say the build is left to the pull request's **macOS build and tests** check, and open or update the pull request. That check builds the app and runs every test suite on macOS. Read its result on the pull request, and fix a failure like any other.
+6. Always build the app after implementing something: run `./scripts/build-app.sh` and confirm it finishes and produces `build/MeMyselfAI.app`. Report a failed build as a failure, with its output, rather than finishing the change. Never ask the user to build or test for you. On a machine that cannot build the Mac app, such as the Linux server, ask the app to move the task to a Mac instance. If none is reachable, list the build under what stays unverified and carry on: the app records it on the task and in the pull request.
 
 ## Keep the docs usable
 

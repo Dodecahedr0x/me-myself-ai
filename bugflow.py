@@ -263,10 +263,10 @@ def reporter_message(event, url):
     return salutation + "The fix is ready for review: " + url
 
 
-def verification(ran):
-    """The pull request's Verification section: the commands the app ran for this fix and their exit codes,
-    as observed by the app. Builds and tests the agent's machine cannot run are left to the pull request's
-    checks. See "Pull request checks" in task-execution.md."""
+def verification(ran, unverified=()):
+    """The pull request's Verification section: the commands the app ran for this fix with their exit codes,
+    as the app observed them, and the checks the agent could not run anywhere it could reach.
+    See "Checks this machine cannot run" in task-execution.md."""
     lines = ["", "", "## Verification", ""]
     for r in ran or []:
         status = "timed out" if r.get("timed_out") else f"exit {r.get('exit_code')}"
@@ -274,8 +274,9 @@ def verification(ran):
         lines.append(f"- `{command}` on {r.get('platform', 'the agent machine')}: {status}")
     if not ran:
         lines.append("- The agent ran no commands while preparing this fix.")
-    lines += ["", "Recorded by MeMyselfAI. Builds and tests this machine could not run show in this pull request's checks, "
-              "where the repository defines them."]
+    if unverified:
+        lines += ["", "Not verified yet:", ""] + ["- " + " ".join(str(item).split()) for item in unverified]
+    lines += ["", "Recorded by MeMyselfAI."]
     return "\n".join(lines)
 
 
@@ -297,7 +298,8 @@ def prepare(t, event, conn, api, identity):
     if not m.get("pr"):
         data = dict(
             head=m["branch"], base=m["base"], title=t["title"],
-            body=f"Fixes #{number}\n\n" + t["result"] + verification(t.get("verification")),
+            body=f"Fixes #{number}\n\n" + t["result"]
+            + verification(t.get("verification"), t.get("unverified") or ()),
         )
         return action(
             "create pull request", account, repo, data, json.dumps(data, indent=2, ensure_ascii=False)

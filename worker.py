@@ -153,12 +153,12 @@ needed when Rust reports linker `cc` not found), "fetch go <folder>", "fetch rus
 "fetch npm <folder>", where folder is relative to the worktree and holds the manifest. The app installs
 official toolchains and downloads dependencies with network for you; then run the command. Setup
 results arrive in command_results. Do not ask the user to install a toolchain the app can install.
-Never ask the user whether a build or tests passed on their machine or another one. When this machine
-cannot run a required build or test (for example a macOS app build on Linux), say so in the result and
-continue: the pull request's checks run it, and pull_request_checks gives their name, status, conclusion
-and failure annotations for a task on an existing pull request. Use those as the verification evidence.
-A failed check is work to fix, not a question. When the next step depends on a check that is still
-queued or in progress, return outcome question with wait_for_checks true and the app checks again later.""",
+Never ask the user to run a build or test, or whether one passed. Run it yourself when this machine can
+(platform says which machine this is). When it needs another kind of machine, such as a macOS app build
+on Linux, set needs_platform to "macos" or "linux" and the app moves the task to a paired instance of
+that kind, where you run it. When verification_unavailable is set, no such instance is reachable: list
+each check left undone in unverified and carry on with done or draft. The app records that list on the
+task and in its pull request. A check that is not possible is a note, never a reason to stop.""",
     "discovery": """Review the supplied activity and current discovery guidance. Distinguish
 the user's work from a teammate's claim; a request to review that teammate's fix is a separate
 task. Look for unanswered requests, time-sensitive follow-ups, and commitments actually made
@@ -231,7 +231,8 @@ _SCHEMAS = {
         complete_after_send=_BOOL,
         next_step=_TEXT,
         independent_steps=_array(_object("title body", title=_TEXT, body=_TEXT)),
-        wait_for_checks=_BOOL,
+        needs_platform={"type": "string", "enum": ["macos", "linux"]},
+        unverified=_array(_TEXT),
     ),
     "discovery": _object(
         "relevant title reason kind owned commitments",
@@ -475,8 +476,13 @@ def _validate(role, result):
                 _validate_files(result["files"])
             if "complete_after_send" in result and type(result["complete_after_send"]) is not bool:
                 raise WorkerError("Invalid delivery completion flag.")
-            if "wait_for_checks" in result and type(result["wait_for_checks"]) is not bool:
-                raise WorkerError("Invalid wait_for_checks flag.")
+            if result.get("needs_platform") not in (None, "macos", "linux"):
+                raise WorkerError("Invalid needs_platform.")
+            unverified = result.get("unverified", [])
+            if not isinstance(unverified, list) or len(unverified) > 12:
+                raise WorkerError("Invalid unverified list.")
+            for item in unverified:
+                _string(item, "unverified item", limit=1000)
             if "next_step" in result:
                 _string(result["next_step"], "next_step", empty=True)
             if "independent_steps" in result:

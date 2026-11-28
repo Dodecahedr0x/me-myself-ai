@@ -254,81 +254,67 @@ class EngineTests(unittest.TestCase):
             send.assert_not_called()
         self.assertEqual(self.db.get("tasks", key)["status"], "review")
 
-    def checks_fixture(self, status="in_progress"):
-        source = dict(id="repo", kind="github", label="Repo", config={"repository": "owner/project"})
-        self.db.put("connections", source)
-        task = self.engine.new_task("Verify and merge PR #17", "A", "Merge once it passes.", github="repo")
-        head = "c" * 40
-        calls = []
+    def on_linux(self, peers):
+        me = self.engine.instances.me
+        mac = dict(platform="darwin", task_ready=True, free=2, preference="first", can_clone=True, origins=[])
+        found = [dict(id="mac", name="Mac", platform="darwin", capacity=mac)] if peers else []
+        return (patch.object(self.engine.instances, "me", side_effect=lambda: {**me(), "platform": "linux"}),
+                patch.object(self.engine, "fresh_peers", return_value=found))
 
-        def github(conn, method, path, data=None):
-            calls.append((method, path))
-            if path == "pulls/17":
-                return dict(state="open", head=dict(sha=head))
-            if path == f"commits/{head}/check-runs":
-                return dict(check_runs=[
-                    dict(id=5, name="macOS build and tests", status=status, conclusion=None if status != "completed"
-                         else "failure", html_url="https://github.com/owner/project/runs/5"),
-                    dict(id=6, name="lint", status="completed", conclusion="success", html_url=""),
-                ])
-            if path == "check-runs/5/annotations":
-                return [dict(path="tests/test_x.py", start_line=3, message="AssertionError: 1 != 0")]
-            raise AssertionError(path)
-
-        return task, github, calls
-
-    def test_task_on_a_pull_request_reads_its_checks(self):
-        task, github, calls = self.checks_fixture("completed")
+    def test_check_needing_a_mac_moves_the_task_instead_of_asking(self):
+        task = self.engine.new_task("Fix the menu bar icon", "A", "Build the app to check it.")
         seen = []
 
         def agent(role, payload, model, workdir):
-            seen.append(payload["pull_request_checks"])
-            return dict(outcome="question", text="The macOS build failed. Fix it now?", kind="task",
-                        commitments=[], wait_for_checks=True)
+            seen.append(payload)
+            return dict(outcome="question", text="Did the app build pass on your Mac?", kind="task",
+                        commitments=[], needs_platform="macos")
 
-        with (
-            patch("engine.connectors.github_request", side_effect=github),
-            patch("engine.worker.run_agent", side_effect=lambda role, *a: agent(role, *a) if role == "task"
-                  else dict(question="Fix it now?", context="", choices=[])),
-        ):
+        linux, peers = self.on_linux(True)
+        with linux, peers, patch("engine.worker.run_agent", side_effect=agent):
             self.engine.process(task["id"])
-        checks = seen[0]
-        self.assertEqual((checks["number"], checks["head"], checks["pending"]), (17, "c" * 40, False))
-        self.assertEqual(checks["checks"][0]["conclusion"], "failure")
-        self.assertEqual(checks["checks"][0]["annotations"], ["tests/test_x.py:3 AssertionError: 1 != 0"])
-        self.assertNotIn("annotations", checks["checks"][1])
-        self.assertTrue(all(method == "GET" for method, _ in calls))
-        # Nothing is pending, so the question reaches the user at once.
-        self.assertEqual(self.db.get("tasks", task["id"])["status"], "question")
-
-    def test_question_waiting_on_running_checks_is_retried_instead_of_asked(self):
-        task, github, _ = self.checks_fixture("in_progress")
-
-        def agent(role, payload, model, workdir):
-            return dict(outcome="question", text="Did the macOS build pass?", kind="task", commitments=[],
-                        wait_for_checks=True)
-
-        for wait in range(1, Engine.CHECK_WAITS + 1):
-            with (
-                patch("engine.connectors.github_request", side_effect=github),
-                patch("engine.worker.run_agent", side_effect=agent),
-            ):
-                self.engine.process(task["id"])
             row = self.db.get("tasks", task["id"])
-            self.assertEqual((row["status"], row["due"], row["check_waits"]),
-                             ("scheduled", self.now + Engine.CHECK_WAIT, wait))
-            self.assertEqual(row["question"], "")
-            self.assertIn("pull request #17's checks", row["reason"])
-            self.now += Engine.CHECK_WAIT
-        with (
-            patch("engine.connectors.github_request", side_effect=github),
-            patch("engine.worker.run_agent", side_effect=lambda role, *a: agent(role, *a) if role == "task"
-                  else dict(question="Checks are stuck. Rerun?", context="", choices=[])),
-        ):
-            self.engine.process(task["id"])
+            self.assertEqual(seen[0]["platform"], "linux")
+            self.assertEqual((row["status"], row["needs_platform"], row["question"]), ("queued", "darwin", ""))
+            self.assertIn("Moving to a Mac instance", row["reason"])
+            # Only a Mac can take it, and this Linux instance holds it for the Mac.
+            self.assertTrue(self.engine.can_take(row, dict(platform="darwin", can_clone=True)))
+            self.assertFalse(self.engine.can_take(row, dict(platform="linux", can_clone=True)))
+            self.assertTrue(self.engine.waiting_for_platform(row))
+            self.now += Engine.PLATFORM_WAIT
+            self.assertFalse(self.engine.waiting_for_platform(row))
+
+            def proceed(role, payload, model, workdir):
+                seen.append(payload)
+                return dict(outcome="done", text="Fixed the icon.", kind="task", commitments=[],
+                            unverified=["./scripts/build-app.sh produces build/MeMyselfAI.app"])
+
+            with patch("engine.worker.run_agent", side_effect=proceed):
+                self.engine.process(task["id"])
+        self.assertIn("No Mac instance is reachable", seen[1]["verification_unavailable"])
         row = self.db.get("tasks", task["id"])
-        self.assertEqual((row["status"], row["check_waits"]), ("question", 0))
-        self.assertIn("still running after 90 minutes", row["result"])
+        self.assertEqual((row["status"], row["needs_platform"]), ("done", ""))
+        self.assertTrue(row["result"].endswith(
+            "Still to verify:\n- ./scripts/build-app.sh produces build/MeMyselfAI.app"))
+
+    def test_check_needing_a_mac_with_none_reachable_continues_with_a_note(self):
+        task = self.engine.new_task("Fix the menu bar icon", "A", "Build the app to check it.")
+        answers = [
+            dict(outcome="question", text="Did the build pass?", kind="task", commitments=[], needs_platform="macos"),
+            dict(outcome="question", text="Still needs a Mac.", kind="task", commitments=[], needs_platform="macos"),
+        ]
+        linux, peers = self.on_linux(False)
+        with linux, peers, patch("engine.worker.run_agent", side_effect=answers + [
+                dict(question="Anything else?", context="", choices=[])]) as run:
+            self.engine.process(task["id"])
+            row = self.db.get("tasks", task["id"])
+            self.assertEqual((row["status"], row["verification_unavailable"], row["question"]),
+                             ("queued", "darwin", ""))
+            self.assertFalse(self.engine.waiting_for_platform(row))
+            self.engine.process(task["id"])
+            self.assertIn("verification_unavailable", run.call_args_list[1].args[1])
+        # The fallback happens once: a second request for a Mac is not acted on again.
+        self.assertEqual(self.db.get("tasks", task["id"])["status"], "question")
 
     def test_feedback_retires_preview(self):
         t = self.draft()
