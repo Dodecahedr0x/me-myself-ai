@@ -181,7 +181,9 @@ function answerChoices(t, detailed=false) {
 }
 function rows(tasks) {
   return tasks.map(t=>{
-    const preview = (t.status==="review"?t.draft:t.status==="question"?t.question:"") || t.result || t.reason || t.body || "";
+    const branch=t.operation==="publish branch"&&structuredDraft(t);
+    const proposal=Array.isArray(branch?.files)?"Publish "+branch.files.length+" changed files: "+branch.message:t.draft;
+    const preview = (t.status==="review"?proposal:t.status==="question"?t.question:"") || t.result || t.reason || t.body || "";
     const shortcuts=taskActionNames(t).map(action=>{
       const [label,glyph,key]=taskShortcuts[action];
       return '<button type="button" class="iconbtn" data-action="'+action+'" data-id="'+esc(t.id)+'" aria-label="'+esc(label+" · "+t.title)+'" aria-keyshortcuts="'+key+'" title="'+label+' ('+key+')">'+icon(glyph,16)+'</button>';
@@ -1309,7 +1311,20 @@ function draftPreview(t) {
     return facts([["Event",event.summary],["Starts",new Date(event.start.dateTime).toLocaleString()],["Ends",new Date(event.end.dateTime).toLocaleString()]])+
       '<details><summary>Event details</summary>'+quote(t.draft)+'</details>';
   }
+  const data=structuredDraft(t);
+  if (t.operation==="publish branch" && Array.isArray(data?.files)) return branchPreview(t,data);
+  if (t.operation==="create pull request" && data?.head) return facts([["Title",data.title],["Merges",data.head+" into "+data.base]])+group("Description",quote(data.body));
   return quote(t.draft);
+}
+function structuredDraft(t) {
+  try { const value=JSON.parse(t.draft); return value && typeof value==="object" ? value : null; } catch { return null; }
+}
+function branchPreview(t,data) {
+  const files=data.files, count=files.length+" changed file"+(files.length===1?"":"s");
+  const lines=text=>{ const n=plain(text).split("\n").length; return n+" line"+(n===1?"":"s"); };
+  return '<p class="policy-note">Publishing writes to GitHub as '+esc(t.account||"your account")+', so it waits for your approval.</p>'+
+    facts([["Branch",data.branch],["Based on",data.base+(data.sha?" at "+String(data.sha).slice(0,7):"")],["Fixes issue",data.issue?"#"+data.issue:""],["Commit message",data.message]])+
+    group(count,files.map(f=>'<details><summary>'+esc(f.path)+' · '+lines(f.content)+'</summary>'+quote(f.content)+'</details>').join(""));
 }
 const present=v=>v!=null && v!=="" && (!Array.isArray(v)||v.length>0);
 function proposalPreview(t) {
