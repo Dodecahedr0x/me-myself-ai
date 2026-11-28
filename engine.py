@@ -1981,8 +1981,13 @@ class Engine:
         repo_source = self.step_source(t) if parent else conn
         github_issue = (conn and conn["kind"] == "github"
                         and e["raw"].get("context", {}).get("is_pull_request") is False)
+        # A pull request also gets its repository's checkout, starting at the PR's head, so a review can
+        # run the PR's tests. See "Global work and project repositories" in task-execution.md.
+        github_pull = (conn and conn["kind"] == "github"
+                       and e["raw"].get("context", {}).get("is_pull_request") is True)
+        github_item = github_issue or github_pull
         candidates = None
-        if (github_issue or parent) and not location:
+        if (github_item or parent) and not location:
             candidates = self.repository_candidates(t, repo_source)
             if parent and not repository:
                 repository = parent.get("repository", "")
@@ -1992,7 +1997,7 @@ class Engine:
         available = []
         hints = "\n".join((t.get("question", ""), t.get("result", ""), t["title"], t["body"],
                            parent["body"] if parent else "", e["raw"]["body"] if e else ""))
-        if coding or location or ((github_issue or parent) and repository):
+        if coding or location or ((github_item or parent) and repository):
             if self.scope.checkout(repository or location):
                 raise ValueError("This checkout belongs to an ignored repository.")
             if location and not repository:

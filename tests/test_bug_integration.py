@@ -375,6 +375,25 @@ class BugIntegrationTests(unittest.TestCase):
         self.engine = Engine(self.state_dir, lambda: self.now)
         self.assertEqual(self.engine.db.get("tasks", task["id"])["version"], reopened["version"], "Recovery runs once")
 
+    def test_pull_request_review_gets_the_checkout_on_first_attempt(self):
+        raw = dict(key="issue:fixture/report:26", title="Verify and merge PR #26", body="Fixes the sum.",
+                   account="me", destination="fixture/report#26", timestamp=self.now,
+                   context=dict(repository="fixture/report", number=26, is_pull_request=True, state="open"))
+        self.engine.ingest(self.github, raw)
+        event = digest(self.github["id"], raw["key"])
+        task = self.engine.new_task("Verify and merge PR #26", "Reporting", event=event, kind="pull_request")
+        with patch("engine.worker.run_agent", side_effect=[
+            dict(outcome="question", text="Merge now?"), dict(question="Merge now?"),
+        ]) as agent:
+            self.engine.process(task["id"])
+        prepared = self.engine.db.get("tasks", task["id"])
+        self.assertEqual(prepared["repository"], str(self.repo), prepared["result"])
+        self.assertTrue((Path(prepared["worktree"]) / "report.py").is_file())
+        first = agent.call_args_list[0]
+        self.assertEqual(first.args[3], Path(prepared["worktree"]))
+        self.assertIn("report.py", first.args[1]["files"])
+        self.assertEqual(first.args[1]["local_commands_remaining"], 4)
+
     def test_issue_agents_receive_selected_checkout_on_first_attempt(self):
         raw = dict(key="issue:17", title="Inspect report", body="Inspect the calculation",
                    account="me", destination="fixture/report#17", timestamp=self.now,
