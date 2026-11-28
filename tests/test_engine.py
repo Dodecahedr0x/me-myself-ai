@@ -244,13 +244,17 @@ class EngineTests(unittest.TestCase):
 
         with (
             patch(
-                "engine.connectors.github_request", return_value={"title": "Export fix", "state": "open"}
+                "engine.connectors.github_request",
+                return_value={"title": "Export fix", "state": "open",
+                              "html_url": "https://github.com/owner/project/issues/17"},
             ) as read,
             patch("engine.worker.run_agent", side_effect=agent),
             patch("engine.connectors.send") as send,
         ):
             self.engine.process(key)
-            read.assert_called_once_with(source, "GET", "issues/17")
+            self.assertEqual(read.call_args_list[0].args, (source, "GET", "issues/17"))
+            # The issue is read once; its linked pull requests come from the timeline.
+            self.assertEqual([c.args[2] for c in read.call_args_list], ["issues/17", "issues/17/timeline"])
             send.assert_not_called()
         self.assertEqual(self.db.get("tasks", key)["status"], "review")
 
@@ -315,6 +319,45 @@ class EngineTests(unittest.TestCase):
             self.assertIn("verification_unavailable", run.call_args_list[1].args[1])
         # The fallback happens once: a second request for a Mac is not acted on again.
         self.assertEqual(self.db.get("tasks", task["id"])["status"], "question")
+
+    def test_question_about_where_a_fix_lives_is_answered_from_evidence(self):
+        source = dict(id="repo", kind="github", label="Project repo", config={"repository": "owner/project"})
+        self.db.put("connections", source)
+        self.engine.new_task("Fix export", "A", "Export drops rows.", kind="bug", status="review",
+                             milestones=dict(issue=1, repository="owner/project", branch="fix/export",
+                                             url="https://github.com/owner/project/pull/7"))
+        task = self.engine.new_task("Close owner/project#1 once fixed", "A", "Close owner/project#1 when the fix is in.")
+        timeline = [
+            dict(event="labeled"),
+            dict(event="cross-referenced", source=dict(issue=dict(
+                title="Fix export", html_url="https://github.com/owner/project/pull/7", state="open",
+                pull_request=dict(merged_at=None)))),
+        ]
+        seen = []
+
+        def agent(role, payload, model, workdir):
+            seen.append(payload)
+            if len(seen) == 1:
+                return dict(outcome="question", kind="task", commitments=[],
+                            text="Which PR has the fix for #1, and is it merged, or is the branch only on another machine?")
+            return dict(outcome="done", kind="task", commitments=[],
+                        text="The fix for #1 is in pull request 7, still open, so #1 stays open.")
+
+        def github(conn, method, endpoint, data=None):
+            return timeline if endpoint.endswith("/timeline") else {"state": "open"}
+
+        with (patch("engine.connectors.github_request", side_effect=github),
+              patch("engine.worker.run_agent", side_effect=agent)):
+            self.engine.process(task["id"])
+        fixes = seen[0]["issue_fixes"]
+        self.assertEqual((fixes[0]["issue"], fixes[0]["state"]), ("owner/project#1", "open"))
+        self.assertEqual(fixes[0]["pull_requests"], [dict(
+            title="Fix export", url="https://github.com/owner/project/pull/7", state="open", merged=False)])
+        self.assertEqual((fixes[0]["app_tasks"][0]["branch"], fixes[0]["app_tasks"][0]["pull_request"]),
+                         ("fix/export", "https://github.com/owner/project/pull/7"))
+        self.assertIn("Which PR", seen[1]["state_question"]["asked"])
+        row = self.db.get("tasks", task["id"])
+        self.assertEqual((row["status"], row["question"]), ("done", ""))
 
     def test_feedback_retires_preview(self):
         t = self.draft()

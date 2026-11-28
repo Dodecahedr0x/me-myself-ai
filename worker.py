@@ -161,7 +161,14 @@ Never ask the user to run a build or test, or whether one passed. Run it yoursel
 on Linux, set needs_platform to "macos" or "linux" and the app moves the task to a paired instance of
 that kind, where you run it. When verification_unavailable is set, no such instance is reachable: list
 each check left undone in unverified and carry on with done or draft. The app records that list on the
-task and in its pull request. A check that is not possible is a note, never a reason to stop.""",
+task and in its pull request. A check that is not possible is a note, never a reason to stop.
+Never ask the user about state the app records or can look up: which pull request or branch holds a
+fix, whether it is open, linked or merged, which instance has the work, or a task's status. issue_fixes
+gives, for each GitHub issue the task names, its state, the pull requests GitHub links to it and the
+app's own tasks for it on every paired instance with their branch, pull request and unpublished changes.
+Decide from that. No fix in the evidence means there is none yet: do the work, or finish and say what
+you found and what you left alone. A lookup in missing_context is a note in unverified, not a question.
+state_question means you asked such a question; answer it yourself from the evidence.""",
     "discovery": """Review the supplied activity and current discovery guidance. Distinguish
 the user's work from a teammate's claim; a request to review that teammate's fix is a separate
 task. Look for unanswered requests, time-sensitive follow-ups, and commitments actually made
