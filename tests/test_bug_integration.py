@@ -529,6 +529,25 @@ class BugIntegrationTests(unittest.TestCase):
         self.engine = Engine(self.state_dir, lambda: self.now)
         self.assertEqual(self.engine.db.get("tasks", task["id"])["version"], reopened["version"], "Recovery runs once")
 
+    def test_pull_request_review_gets_the_checkout_on_first_attempt(self):
+        raw = dict(key="issue:fixture/report:26", title="Verify and merge PR #26", body="Fixes the sum.",
+                   account="me", destination="fixture/report#26", timestamp=self.now,
+                   context=dict(repository="fixture/report", number=26, is_pull_request=True, state="open"))
+        self.engine.ingest(self.github, raw)
+        event = digest(self.github["id"], raw["key"])
+        task = self.engine.new_task("Verify and merge PR #26", "Reporting", event=event, kind="pull_request")
+        with patch("engine.worker.run_agent", side_effect=[
+            dict(outcome="question", text="Merge now?"), dict(question="Merge now?"),
+        ]) as agent:
+            self.engine.process(task["id"])
+        prepared = self.engine.db.get("tasks", task["id"])
+        self.assertEqual(prepared["repository"], str(self.repo), prepared["result"])
+        self.assertTrue((Path(prepared["worktree"]) / "report.py").is_file())
+        first = agent.call_args_list[0]
+        self.assertEqual(first.args[3], Path(prepared["worktree"]))
+        self.assertIn("report.py", first.args[1]["files"])
+        self.assertEqual(first.args[1]["local_commands_remaining"], 4)
+
     def test_issue_agents_receive_selected_checkout_on_first_attempt(self):
         raw = dict(key="issue:17", title="Inspect report", body="Inspect the calculation",
                    account="me", destination="fixture/report#17", timestamp=self.now,
@@ -608,6 +627,38 @@ class BugIntegrationTests(unittest.TestCase):
             self.assertEqual(agent.call_args_list[1].args[1]["command_results"][-1]["exit_code"], 7)
         self.engine.resume_repository_questions()
         self.assertEqual(self.engine.db.get("tasks", task["id"])["status"], "question")
+
+    def test_spent_command_budget_gets_one_wrap_up_turn_instead_of_failing(self):
+        task = self.engine.new_task("Run the fixture suite in this checkout", "Reporting", kind="coding",
+                                    status="question", context_checked=True, repository=str(self.repo),
+                                    question="I can't run commands in this checkout. Please paste the output.")
+        self.engine.resume_repository_questions()
+        responses = [dict(outcome="run", text="exit 1")] * 5 + [
+            dict(outcome="question", text="Which release?"), dict(question="Which release?")]
+        with patch("worker.run_agent", side_effect=responses) as agent, patch(
+                "worker.run_command", return_value=dict(exit_code=1, output="failed")) as command:
+            self.engine.process(task["id"])
+        self.assertEqual(command.call_count, 4, "the fifth request is not run")
+        final = agent.call_args_list[5].args[1]
+        self.assertTrue(final["command_budget_exhausted"])
+        self.assertEqual(final["local_commands_remaining"], 0)
+        self.assertEqual(len(final["command_results"]), 4)
+        row = self.engine.db.get("tasks", task["id"])
+        self.assertEqual(row["status"], "question")
+        self.assertTrue(any(r["kind"] == "Command budget spent" for r in self.engine.db.history()))
+
+    def test_command_request_after_wrap_up_still_fails(self):
+        task = self.engine.new_task("Run the fixture suite in this checkout", "Reporting", kind="coding",
+                                    status="question", context_checked=True, repository=str(self.repo),
+                                    question="I can't run commands in this checkout. Please paste the output.")
+        self.engine.resume_repository_questions()
+        with patch("worker.run_agent", return_value=dict(outcome="run", text="exit 1")), patch(
+                "worker.run_command", return_value=dict(exit_code=1, output="failed")) as command:
+            self.engine.process(task["id"])
+        self.assertEqual(command.call_count, 4)
+        row = self.engine.db.get("tasks", task["id"])
+        self.assertEqual(row["status"], "failed")
+        self.assertIn("No further local commands", row["result"])
 
     def test_setup_step_installs_without_asking_and_returns_its_result(self):
         task = self.engine.new_task("Run the Go tests in this checkout", "Reporting", kind="coding",

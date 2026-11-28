@@ -647,6 +647,7 @@ class Engine:
         can_run = role == "task" and initial and initial["status"] == "working" and "available_paths" in payload
         results = []
         setups = 0
+        wrap_up = False  # set once the command or setup budget is spent
         tools = self.db.root / "toolchains"
         cache = self.db.root / "toolcache" / ("task-" + task) if task else None
         # Task agents get an app MCP session scoped to their task, revoked when the agent returns.
@@ -660,6 +661,9 @@ class Engine:
                 if can_run:
                     request = dict(request, local_commands_remaining=4 - commands, setup_steps_remaining=4 - setups,
                                    command_results=list(results))
+                if wrap_up:
+                    request = dict(request, local_commands_remaining=0, setup_steps_remaining=0,
+                                   command_budget_exhausted=True)
                 answer = worker.run_agent(role, request, provider, directory, **deadline, **({"mcp": mcp} if mcp else {}))
                 if initial:
                     self.require_current_task(initial)
@@ -675,17 +679,24 @@ class Engine:
                             for r in ran
                         ])
                     return answer
+                spent = setups >= 4 if answer["outcome"] == "setup" else commands >= 4
+                if wrap_up or not can_run or spent:
+                    # Out of budget: one more turn to finish with the evidence it has, rather than
+                    # failing the task and leaving the user to say "retry".
+                    if wrap_up:
+                        kind = "setup steps" if answer["outcome"] == "setup" else "local commands"
+                        raise worker.WorkerError(f"No further {kind} are available for this request.")
+                    wrap_up = True
+                    self.db.log("Command budget spent", "Asked the agent to finish with the results it has.",
+                                project, task)
+                    continue
                 if answer.get("outcome") == "setup":
-                    if not can_run or setups >= 4:
-                        raise worker.WorkerError("No further setup steps are available for this request.")
                     setups += 1
                     result = self.setup_step(directory, answer["text"], tools, cache)
                     self.db.log("Setup step", json.dumps(result, ensure_ascii=False), project, task)
                     self.require_current_task(initial)
                     results.append(result)
                     continue
-                if not can_run or commands >= 4:
-                    raise worker.WorkerError("No further local commands are available for this request.")
                 command = answer["text"]
                 result = dict(command=command, **worker.run_command(directory, command, tools=tools, cache=cache))
                 self.db.log("Local command", json.dumps(result, ensure_ascii=False), project, task)
@@ -1993,8 +2004,13 @@ class Engine:
         repo_source = self.step_source(t) if parent else conn
         github_issue = (conn and conn["kind"] == "github"
                         and e["raw"].get("context", {}).get("is_pull_request") is False)
+        # A pull request also gets its repository's checkout, starting at the PR's head, so a review can
+        # run the PR's tests. See "Global work and project repositories" in task-execution.md.
+        github_pull = (conn and conn["kind"] == "github"
+                       and e["raw"].get("context", {}).get("is_pull_request") is True)
+        github_item = github_issue or github_pull
         candidates = None
-        if (github_issue or parent) and not location:
+        if (github_item or parent) and not location:
             candidates = self.repository_candidates(t, repo_source)
             if parent and not repository:
                 repository = parent.get("repository", "")
@@ -2004,7 +2020,7 @@ class Engine:
         available = []
         hints = "\n".join((t.get("question", ""), t.get("result", ""), t["title"], t["body"],
                            parent["body"] if parent else "", e["raw"]["body"] if e else ""))
-        if coding or location or ((github_issue or parent) and repository):
+        if coding or location or ((github_item or parent) and repository):
             if self.scope.checkout(repository or location):
                 raise ValueError("This checkout belongs to an ignored repository.")
             if location and not repository:
