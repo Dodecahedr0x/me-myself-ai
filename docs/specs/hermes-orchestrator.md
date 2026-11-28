@@ -150,11 +150,12 @@ Implemented in `orchestrator.py` and tested in `tests/test_orchestrator.py`. The
 - **Context.** Sweeps also curate the [shared context and schedules](context-and-schedules.md). A cleanup run follows once a day after 07:00 when an entry is stale.
 - **Conversation.** The [Overview dashboard](dashboard.md#overview-dashboard) has a chat with Hermes: status, the latest messages, a message box, quick prompts, a report request, **Sweep now** and **Pause**. New tasks today against the limit is one of its stats. Sweep summaries go to the activity log. Digests and replies go to the thread.
 - When Hermes is not ready, runs wait and a prompt gets an answer explaining what to fix.
+- **Finished work.** When a dispatched task is done, the desktop app posts a short "Finished" notification naming it. See [notifications](dashboard.md#notifications).
 
 Not implemented yet:
 
 - **Reactive pass.** The per-event pass still uses the existing fresh-CLI discovery. Both paths create tasks keyed by the activity item, so they never duplicate each other.
-- The project pass, a configurable digest time, resuming one Hermes session across runs, and a notification when a dispatched task finishes.
+- The project pass, a configurable digest time and resuming one Hermes session across runs.
 - Running on whichever instance owns the orchestrator. Today it runs on the single local instance.
 
 Live runs with the Claude subscription were verified on the VPS (see [Install](#install)). On a Mac, the first run reads Claude Code's Keychain login, which can show a macOS prompt; that path has not been verified.

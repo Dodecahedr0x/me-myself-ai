@@ -254,6 +254,9 @@ def main():
                 print(server.launch_url, flush=True)
 
         announce()
+        if os.environ.get("MEMYSELFAI_HOST_PID", "").isdigit():
+            # After the launch link, the desktop host reads these lines and posts each one. See dashboard.md#notifications.
+            engine.notifier.sink = lambda item: print("notify " + json.dumps(item), flush=True)
 
         def new_link(*_):
             # SIGUSR1 replaces the one-time link, for example to open the dashboard in another browser.
