@@ -410,7 +410,8 @@ class PairingTests(unittest.TestCase):
         with self.vps.db.atomic():
             self.vps.db.put("tasks", dict(id="from-vps", title="VPS task"))
         self.laptop.exchange_all()
-        self.assertEqual(self.laptop.peer(self.vps.id)["state"], "connected")
+        peer = self.laptop.peer(self.vps.id)
+        self.assertEqual(peer["state"], "connected", peer.get("error"))
         self.assertEqual(self.vps.db.get("tasks", "from-laptop")["title"], "Laptop task")
         self.assertEqual(self.laptop.db.get("tasks", "from-vps")["title"], "VPS task")
         self.assertEqual(self.vps.workspace_key(), self.laptop.workspace_key())
