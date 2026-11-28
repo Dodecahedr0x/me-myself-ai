@@ -152,7 +152,13 @@ outcome setup with text "install go", "install rust", "install c" (a C/C++ compi
 needed when Rust reports linker `cc` not found), "fetch go <folder>", "fetch rust <folder>" or
 "fetch npm <folder>", where folder is relative to the worktree and holds the manifest. The app installs
 official toolchains and downloads dependencies with network for you; then run the command. Setup
-results arrive in command_results. Do not ask the user to install a toolchain the app can install.""",
+results arrive in command_results. Do not ask the user to install a toolchain the app can install.
+Never ask the user to run a build or test, or whether one passed. Run it yourself when this machine can
+(platform says which machine this is). When it needs another kind of machine, such as a macOS app build
+on Linux, set needs_platform to "macos" or "linux" and the app moves the task to a paired instance of
+that kind, where you run it. When verification_unavailable is set, no such instance is reachable: list
+each check left undone in unverified and carry on with done or draft. The app records that list on the
+task and in its pull request. A check that is not possible is a note, never a reason to stop.""",
     "discovery": """Review the supplied activity and current discovery guidance. Distinguish
 the user's work from a teammate's claim; a request to review that teammate's fix is a separate
 task. Look for unanswered requests, time-sensitive follow-ups, and commitments actually made
@@ -225,6 +231,8 @@ _SCHEMAS = {
         complete_after_send=_BOOL,
         next_step=_TEXT,
         independent_steps=_array(_object("title body", title=_TEXT, body=_TEXT)),
+        needs_platform={"type": "string", "enum": ["macos", "linux"]},
+        unverified=_array(_TEXT),
     ),
     "discovery": _object(
         "relevant title reason kind owned commitments",
@@ -468,6 +476,13 @@ def _validate(role, result):
                 _validate_files(result["files"])
             if "complete_after_send" in result and type(result["complete_after_send"]) is not bool:
                 raise WorkerError("Invalid delivery completion flag.")
+            if result.get("needs_platform") not in (None, "macos", "linux"):
+                raise WorkerError("Invalid needs_platform.")
+            unverified = result.get("unverified", [])
+            if not isinstance(unverified, list) or len(unverified) > 12:
+                raise WorkerError("Invalid unverified list.")
+            for item in unverified:
+                _string(item, "unverified item", limit=1000)
             if "next_step" in result:
                 _string(result["next_step"], "next_step", empty=True)
             if "independent_steps" in result:

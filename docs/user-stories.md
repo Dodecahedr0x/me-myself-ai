@@ -42,6 +42,8 @@
 | US-38 | Install the app once and have it keep itself up to date. | I put MeMyselfAI in Applications. When a new version is published on GitHub, it downloads it, checks it, replaces itself and reopens on its own. [App updates](specs/app-updates.md) |
 | US-39 | Have every open issue I wrote or own worked on, including ones older than my connection. | An issue I filed last month in a repository I connect today becomes a task. When its agent finishes, I approve a fix branch and PR in the inbox; it never closes silently with the edits left on disk. [Connectors](specs/connectors.md), [Task execution](specs/task-execution.md) |
 
+No task waits on me to run a build or test, extending US-07 and US-26. A fix prepared on the VPS moves to my Mac to build the app there. With the Mac asleep, the pull request says the build is still to verify. [Checks this machine cannot run](specs/task-execution.md#checks-this-machine-cannot-run)
+
 Workspace-wide Slack and Google account connections extend US-01 and US-03. [Workspace accounts](specs/account-wide-connections.md)
 
 US-01 through US-05 are covered by the [task workflow](specs/task-workflow.md), US-07 through US-09 by [task agents and completion](specs/task-execution.md), and US-06 and US-10 through US-12 by [decision rules, writing style, and trust](specs/delegation-and-style.md).

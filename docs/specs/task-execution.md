@@ -69,6 +69,25 @@ Coding work on an open GitHub issue follows the same workflow. When the agent re
 
 The desktop bug workflow verifies the worktree's origin and HEAD against the configured GitHub repository and its default branch before publishing a fix. The branch preview names the base revision, commit message, paths, file modes and full contents. A moved base or a newly assigned issue pauses delivery. The PR must target the recorded base from the published fix branch and revision and link the original open issue. The reporter receives the PR URL by email, in the original Slack thread, or in the GitHub conversation with the reporter mentioned. An uncertain notification remains open until reconciled.
 
+## Checks this machine cannot run
+
+A task never waits for the user to run a build or a test, or to say whether one passed. Its agent runs the check itself, moves the task to an instance that can, or notes what stays unverified and carries on.
+
+- **Run it here.** The agent knows which machine it is on from `platform` (`macos` or `linux`). It runs what it can with local commands. The app records each command's exit code, timeout and platform on the task as `verification`.
+- **Move to a fitting instance.** For a check that needs another kind of machine, such as the Mac app build on the Linux server, the agent returns `needs_platform`. If a reachable, eligible paired instance of that kind can take the task, the app saves any prepared files, queues the task with that requirement and hands it over through the normal [capacity handoff](instances-and-sync.md#dividing-work), worktree included. Each instance advertises its `platform` in its capacity. Only a fitting instance can take or keep such a task. The receiver runs the agent with the check available and clears the requirement after that run.
+- **Note it and continue.** If no fitting instance is reachable, or none takes the task within 30 minutes, the task runs where it is with `verification_unavailable`. The agent lists each check it could not run in `unverified` and finishes with done or draft. It never turns the check into a question. The app keeps that list on the task, appends it to a done result as **Still to verify**, and the bug workflow's pull request lists it under **Not verified yet**. A task falls back like this only once, so a missing Mac cannot loop it between instances.
+- The bug workflow's pull request ends with a **Verification** section the app writes, not the agent: every command run and its exit code and platform, or a line saying none ran, then anything not verified yet.
+- [AGENTS.md](../../AGENTS.md) step 6 tells agents on a machine that cannot build the Mac app to move the task or note the build, never to ask.
+
+Acceptance, verified in `tests/test_engine.py` and `tests/test_bugflow.py`:
+
+- On Linux with a reachable Mac peer, `needs_platform: macos` queues the task for the Mac, asks no question, and only a Mac capacity can take it. The scheduler here does not start it while that Mac can take it.
+- With no Mac peer, the same answer queues the task to run again here with `verification_unavailable`. The agent then receives that fact, and its `unverified` list lands in the result. A second `needs_platform` is not acted on.
+- A task held for a Mac that no Mac takes within 30 minutes runs here and is told no Mac is reachable.
+- The pull request body lists each command with its exit code and platform, says when none ran, and lists the unverified checks.
+
+Not verified here: a real handoff between a paired Linux server and a Mac. The ownership handoff itself is covered by the existing sync tests.
+
 ## Promises become work
 
 When drafting a commitment such as “I'll send the figures on Friday,” show the promised work and timing alongside the proposed message. Once the message is delivered, create a linked follow-up task for each distinct promise, with the project, beneficiary, source message, and any stated deadline or trigger. The scheduler makes the follow-up actionable in time to address it. Where timing or scope is unclear, ask for clarification. Reconcile uncertain delivery before activating the follow-up. Discarding a draft discards its proposed commitments. A commitment already made by the user in connected content also creates a follow-up when discovered.

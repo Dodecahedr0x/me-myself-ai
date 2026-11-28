@@ -62,6 +62,8 @@ flowchart LR
     Checks[MeMyselfAI fixture tests or maintainer report] --> Findings[Self-improvement findings]
     Findings --> Tasks
     Tasks -->|Issue, fix branch, linked PR and code review| Executor
+    CLI -->|Check needs another kind of machine| Handoff[Handoff to a Mac or Linux instance]
+    Handoff -->|Runs the check there| CLI
 ```
 
 The app's own Hermes keeps a shared context store current through the app MCP server and manages recurring tasks. It cannot send anything. The executor applies dry mode and the user's rules for each project and decision type. A promise in a delivered message creates a task of its own. Each task agent checks its completion criteria and records evidence in the dashboard.
