@@ -15,6 +15,7 @@ from pathlib import Path
 import agents
 import app_mcp
 import bugflow
+import notifications
 import orchestrator
 import selfcheck
 import sync as instances
@@ -122,11 +123,15 @@ class Engine:
         self.mcp_url = None
         self.agents = agents.Agents(root, self.settings)
         self.orchestrator = orchestrator.Orchestrator(self)
+        # Posted by the desktop host. The service sets the sink only when one is attached. See dashboard.md#notifications.
+        self.notifier = notifications.Notifier(self.db.root / "notifications.json",
+                                               enabled=lambda: self.settings().get("notifications", True) is not False,
+                                               clock=clock)
         # Guided setup and VPS setup over SSH. See docs/specs/guided-setup.md.
         self.vps = vps_setup.VpsSetup(self.instances, self.settings, self.db.log,
                                       Path(__file__).resolve().parent, open_terminal=agents.open_in_terminal,
                                       on_done=self.remember_server)
-        self.gh_login_cache = (0.0, None)
+        self.gh_login_cache = (float("-inf"), None)  # monotonic() can be under 120 s just after boot
         with self.db.atomic():
             settings = self.db.get("config", "settings")
             if not settings:
@@ -168,7 +173,8 @@ class Engine:
                     except (OSError, worker.WorkerError) as exc:
                         self.db.log("Worktree kept", str(exc), t["project"], t["id"])
                         continue
-                    t.update(status="queued", due=0, result="", worktree="", changes=[], partial_changes=False)
+                    t.update(status="queued", due=0, result="", worktree="", changes=[], partial_changes=False,
+                             changes_base=None, base_moved=None)
                     self.save(t, "Reopened: edits for this open issue were never proposed")
             for e in self.db.rows("events"):
                 if e["state"] == "working":
@@ -641,6 +647,7 @@ class Engine:
         can_run = role == "task" and initial and initial["status"] == "working" and "available_paths" in payload
         results = []
         setups = 0
+        wrap_up = False  # set once the command or setup budget is spent
         tools = self.db.root / "toolchains"
         cache = self.db.root / "toolcache" / ("task-" + task) if task else None
         # Task agents get an app MCP session scoped to their task, revoked when the agent returns.
@@ -654,6 +661,9 @@ class Engine:
                 if can_run:
                     request = dict(request, local_commands_remaining=4 - commands, setup_steps_remaining=4 - setups,
                                    command_results=list(results))
+                if wrap_up:
+                    request = dict(request, local_commands_remaining=0, setup_steps_remaining=0,
+                                   command_budget_exhausted=True)
                 answer = worker.run_agent(role, request, provider, directory, **deadline, **({"mcp": mcp} if mcp else {}))
                 if initial:
                     self.require_current_task(initial)
@@ -669,17 +679,24 @@ class Engine:
                             for r in ran
                         ])
                     return answer
+                spent = setups >= 4 if answer["outcome"] == "setup" else commands >= 4
+                if wrap_up or not can_run or spent:
+                    # Out of budget: one more turn to finish with the evidence it has, rather than
+                    # failing the task and leaving the user to say "retry".
+                    if wrap_up:
+                        kind = "setup steps" if answer["outcome"] == "setup" else "local commands"
+                        raise worker.WorkerError(f"No further {kind} are available for this request.")
+                    wrap_up = True
+                    self.db.log("Command budget spent", "Asked the agent to finish with the results it has.",
+                                project, task)
+                    continue
                 if answer.get("outcome") == "setup":
-                    if not can_run or setups >= 4:
-                        raise worker.WorkerError("No further setup steps are available for this request.")
                     setups += 1
                     result = self.setup_step(directory, answer["text"], tools, cache)
                     self.db.log("Setup step", json.dumps(result, ensure_ascii=False), project, task)
                     self.require_current_task(initial)
                     results.append(result)
                     continue
-                if not can_run or commands >= 4:
-                    raise worker.WorkerError("No further local commands are available for this request.")
                 command = answer["text"]
                 result = dict(command=command, **worker.run_command(directory, command, tools=tools, cache=cache))
                 self.db.log("Local command", json.dumps(result, ensure_ascii=False), project, task)
@@ -915,6 +932,7 @@ class Engine:
     PLATFORMS = {"macos": "darwin", "linux": "linux"}
     PLATFORM_NAMES = {"darwin": "Mac", "linux": "Linux"}
     PLATFORM_WAIT = 1800
+    REFRESH_INTERVAL = 600  # seconds between default branch checks for an unpublished fix
 
     @staticmethod
     def platform_fits(t, info):
@@ -1378,6 +1396,10 @@ class Engine:
                 submit("discover:" + e["id"], self.discover, e["id"], self.pool)
         if self.legacy_questions and "format-question" not in self.jobs:
             submit("format-question", self.format_existing_question, self.legacy_questions.pop(), self.pool)
+        try:
+            self.notifier.check(tasks)
+        except Exception as exc:
+            self.db.log("Notifications", f"Could not post a notification: {exc}")
 
     def close_finished_sources(self, events=None):
         """Close open tasks whose GitHub issue or PR was closed after they began. See task-workflow.md."""
@@ -1888,6 +1910,10 @@ class Engine:
                     if isinstance(exc, bugflow.CheckoutAccessError):
                         latest.update(status="question", question=str(exc), repository_question=True,
                                       checkout_inaccessible=True, reason="Waiting for access to the registered checkout")
+                    elif isinstance(exc, bugflow.BaseMoved) and not latest.get("base_stale"):
+                        # One automatic pass to move the edits onto the new head; then it waits for a retry.
+                        latest.update(status="queued", due=0, base_stale=True, result=str(exc),
+                                      reason="The default branch moved; preparing a replacement fix on its new head")
                     elif isinstance(exc, worker.CheckoutTimeout) and attempts < 2:
                         delay = (30, 120)[attempts]
                         latest.update(status="scheduled", due=self.now() + delay, checkout_retries=attempts + 1,
@@ -1985,10 +2011,18 @@ class Engine:
             saved = list(changes.values())
             worker._validate_files(saved, saved=True)
             paths = [edit["path"] for edit in applied]
-            latest.update(changes=saved, partial_changes=partial)
+            recorded = dict(changes=saved, partial_changes=partial)
+            if not latest.get("changes"):
+                recorded["changes_base"] = worker.worktree_head(task["worktree"])
+            moved = latest.get("base_moved")
+            if moved and moved.get("conflicts"):
+                left = [p for p in moved["conflicts"] if p not in paths
+                        or bugflow.CONFLICT_MARKER.search(changes[p]["content"])]
+                recorded["base_moved"] = dict(moved, conflicts=left)
+            latest.update(recorded)
             self.db.put("tasks", latest)
             self.db.log("Files edited", "\n".join(paths), task["project"], task["id"])
-            task.update(changes=saved, partial_changes=partial)
+            task.update(recorded)
 
     def prepare(self, t):
         e = self.db.get("events", t.get("event", ""))
@@ -2030,8 +2064,13 @@ class Engine:
         repo_source = self.step_source(t) if parent else conn
         github_issue = (conn and conn["kind"] == "github"
                         and e["raw"].get("context", {}).get("is_pull_request") is False)
+        # A pull request also gets its repository's checkout, starting at the PR's head, so a review can
+        # run the PR's tests. See "Global work and project repositories" in task-execution.md.
+        github_pull = (conn and conn["kind"] == "github"
+                       and e["raw"].get("context", {}).get("is_pull_request") is True)
+        github_item = github_issue or github_pull
         candidates = None
-        if (github_issue or parent) and not location:
+        if (github_item or parent) and not location:
             candidates = self.repository_candidates(t, repo_source)
             if parent and not repository:
                 repository = parent.get("repository", "")
@@ -2041,7 +2080,7 @@ class Engine:
         available = []
         hints = "\n".join((t.get("question", ""), t.get("result", ""), t["title"], t["body"],
                            parent["body"] if parent else "", e["raw"]["body"] if e else ""))
-        if coding or location or ((github_issue or parent) and repository):
+        if coding or location or ((github_item or parent) and repository):
             if self.scope.checkout(repository or location):
                 raise ValueError("This checkout belongs to an ignored repository.")
             if location and not repository:
@@ -2094,6 +2133,43 @@ class Engine:
                 latest = self.require_current_task(t)
                 latest.update(repository=repository, worktree=location, github_repository=t["github_repository"])
                 self.db.put("tasks", latest)
+            if t.get("changes") and not t.get("changes_base"):
+                # Edits saved by an earlier build: record the base they sit on before anything moves.
+                with self.db.atomic():
+                    latest = self.require_current_task(t)
+                    latest["changes_base"] = worker.worktree_head(location)
+                    self.db.put("tasks", latest)
+                t = dict(t, changes_base=latest["changes_base"])
+            if (repository and t.get("changes") and not (t.get("milestones") or {}).get("branch")
+                    and (github_issue or t["kind"].lower() in {"bug", "bugfix"})
+                    and not self.pull_request_number(t)):
+                # An unpublished fix follows the default branch. See "Resuming after the default branch
+                # advances" in task-execution.md. The fetch waits while overlaps are unresolved and runs at
+                # most every REFRESH_INTERVAL unless approval found the base moved; an interrupted refresh
+                # is redone from the saved edits and their recorded base either way.
+                unresolved = list((t.get("base_moved") or {}).get("conflicts") or [])
+                fetch = not unresolved and (t.get("base_stale")
+                                            or self.now() - t.get("base_checked", 0) >= self.REFRESH_INTERVAL)
+                moved = worker.refresh_worktree(location, repository, t["changes"], base=t.get("changes_base"),
+                                                token=self.github_token(self.origin_of(repository)), fetch=fetch)
+                refreshed = dict(base_checked=self.now()) if fetch else {}
+                if moved:
+                    conflicts = sorted(set(unresolved) | set(moved["conflicts"]))
+                    refreshed.update(changes=moved["changes"], changes_base=moved["start"], base_stale=False,
+                                     partial_changes=bool(conflicts), verification=[],
+                                     base_moved=dict(start=moved["start"], previous=moved["previous"],
+                                                     conflicts=conflicts))
+                if refreshed:
+                    with self.db.atomic():
+                        latest = self.require_current_task(t)
+                        latest.update(refreshed)
+                        self.db.put("tasks", latest)
+                    t = dict(t, **refreshed)
+                if moved:
+                    self.db.log("Moved to the new default branch",
+                                f"{moved['previous'][:12]} -> {moved['start'][:12]}"
+                                + ("; overlapping edits to resolve: " + ", ".join(conflicts) if conflicts else ""),
+                                t["project"], t["id"])
             files = worker.worktree_context(location, hints, omissions, available)
         family = [row for row in self.db.rows("tasks") if row["project"] == t["project"]]
         children = [row for row in family if row.get("parent") == t["id"]]
@@ -2194,7 +2270,18 @@ class Engine:
         if fixes:
             context["issue_fixes"] = fixes
         bug = t["kind"].lower() in {"bug", "bugfix"}
-        if bug and t.get("changes") and t.get("milestones") and not t.get("partial_changes"):
+        if t.get("base_moved"):
+            moved = t["base_moved"]
+            context["base_moved"] = dict(
+                moved,
+                instruction="The default branch moved on after this fix was prepared, so the app moved the task's "
+                "edits onto its new head. " + (
+                    "These files hold Git conflict markers where your earlier edit overlaps newer commits: "
+                    + ", ".join(moved["conflicts"]) + ". Return each one's full resolved content without markers. "
+                    if moved["conflicts"] else "")
+                + "Re-run the relevant checks on the new base before finishing.")
+        if (bug and t.get("changes") and t.get("milestones") and not t.get("partial_changes")
+                and not t.get("base_moved")):
             out = dict(outcome="done", text=t["result"], kind="bug")
         else:
             asked = context
@@ -2306,6 +2393,12 @@ class Engine:
                     **self.decision(t, "Which local Git repository should be linked to this project?"),
                 }
             self.save_prepared_files(t, out["files"], files, partial=False)
+        moved = t.get("base_moved")
+        if moved and moved.get("conflicts"):
+            raise ValueError("The default branch moved and these files still overlap the fix: "
+                             + ", ".join(moved["conflicts"]) + ". Retry so the agent resolves them.")
+        if moved:
+            update["base_moved"] = None
         update["partial_changes"] = False
         if not bug and outcome == "done" and github_issue and coding and t.get("changes"):
             # Finished edits for an open issue ship as a fix branch and PR, never as a silent "done".
@@ -2744,6 +2837,10 @@ class Engine:
                 with self.db.atomic():
                     t["status"] = "failed" if isinstance(exc, connectors.Rejected) else "uncertain"
                     t["result"] = str(exc)
+                    if isinstance(exc, bugflow.BaseMoved):
+                        # Nothing was written. Prepare a replacement on the new head for fresh approval.
+                        t.update(status="queued", due=0, draft="", base_stale=True,
+                                 reason="The default branch moved; preparing a replacement fix on its new head")
                     self.save(t, str(exc))
                 raise ValueError(f"{t['status']}: {exc}") from exc
             with self.db.atomic():
@@ -2983,6 +3080,10 @@ class Engine:
                     if type(d["slots"]) is not int or not 0 <= d["slots"] <= 64:
                         raise ValueError("Enter between 0 and 64 agent slots, or 0 for the default.")
                     s["slots"] = d["slots"]
+                if "notifications" in d:
+                    if type(d["notifications"]) is not bool:
+                        raise ValueError("Invalid notification setting.")
+                    s["notifications"] = d["notifications"]
                 if "preference" in d:
                     if d["preference"] not in {"first", "overflow", "never"}:
                         raise ValueError("Choose where tasks should run.")

@@ -325,6 +325,13 @@ function chatActions(ids) {
       '<div class="chat-action-buttons">'+(primary?button(primary[1],primary[0],primary[2],"primary",id):"")+button("Open","chat-open-task",null,"quiet",id)+'</div></li>';
   }).join("")+'</ul>';
 }
+// The desktop app calls this when a notification is clicked. A task not loaded yet opens after the next refresh.
+// See docs/specs/dashboard.md#notifications.
+let notifiedTask="";
+window.openTaskFromNotification=id=>{
+  if (loaded && findTask(id)) { notifiedTask=""; openTaskFromChat(id); return; }
+  notifiedTask=String(id); void refresh();
+};
 function openTaskFromChat(id) {
   const t=findTask(id); if (!t) return;
   if (!inboxKind(t)) { showDialog("detail",t.title,detailTask(t),{task:t,signature:JSON.stringify(t)}); return; }
@@ -654,7 +661,7 @@ const settingsIntro={
   delivery:"Decide what may leave without you.",
   agents:"The command-line agents that prepare tasks and the orchestrator that dispatches them, on this instance.",
   instances:"Machines that share this workspace and its work.",
-  workspace:"Folder permissions, ignored work and sample data."
+  workspace:"Notifications, folder permissions, ignored work and sample data."
 };
 function settingsTab() {
   const tab=new URLSearchParams(location.hash.split("?")[1]).get("tab");
@@ -700,7 +707,9 @@ function instancesTab() {
 }
 function workspaceTab() {
   const ignored=[(state.ignorelist?.projects||[]).length+" projects",(state.ignorelist?.repositories||[]).length+" repositories"].join(" · ");
-  return entry("projects","Folder access","Check a repository folder or update its macOS permission.",button("Manage folder access","folder-access",null))+
+  const notify='<label class="switch"><input type="checkbox" name="set-notifications" '+(state.settings.notifications!==false?"checked":"")+'><span aria-hidden="true"></span>Notify me</label>';
+  return entry("inbox","Notifications","A macOS notification when a task newly needs you, and when a task the orchestrator started finishes. Click one to open its task.",notify)+
+    entry("projects","Folder access","Check a repository folder or update its macOS permission.",button("Manage folder access","folder-access",null))+
     entry("projects","Ignore list",ignored+" ignored",button("Edit ignore list","ignorelist",null))+
     entry("stack","Sample workspace","Add fixture tasks and activity to explore the app.",button("Load sample","demo",null));
 }
@@ -1177,6 +1186,7 @@ async function refresh() {
     const result=await request("/api/state");
     if (!Array.isArray(result.tasks)) throw new Error("The local service returned an incomplete workspace.");
     Object.assign(state,result); loaded=true; $("#network").hidden=true; render();
+    if (notifiedTask && findTask(notifiedTask)) { const id=notifiedTask; notifiedTask=""; openTaskFromChat(id); }
     if (vpsActive() || !setupOpened) void loadSetup();
     if (dialogState?.type==="detail" || dialogState?.type==="review_proposal") {
       const fresh=state.tasks.find(t=>String(t.id)===String(dialogState.task.id));
@@ -1322,9 +1332,26 @@ function structuredDraft(t) {
 function branchPreview(t,data) {
   const files=data.files, count=files.length+" changed file"+(files.length===1?"":"s");
   const lines=text=>{ const n=plain(text).split("\n").length; return n+" line"+(n===1?"":"s"); };
+  const diffs=new Map((Array.isArray(data.diffs)?data.diffs:[]).map(d=>[d.path,d]));
+  const mode=f=>f.mode==="100755"?"executable (100755)":"regular file ("+esc(f.mode||"100644")+")";
+  const content=f=>'<details><summary>Full proposed content · '+lines(f.content)+' · '+mode(f)+'</summary>'+quote(f.content)+'</details>';
+  const file=f=>{
+    const d=diffs.get(f.path);
+    if (!d) return '<details><summary>'+esc(f.path)+' · '+lines(f.content)+'</summary>'+quote(f.content)+'</details>';
+    const label={added:"new file",modified:"modified",unchanged:"unchanged",binary:"current file is not text"}[d.status]||d.status;
+    const stats=d.status==="binary"?"":' · <span class="diff-add">+'+Number(d.additions)+'</span> <span class="diff-del">−'+Number(d.deletions)+'</span>';
+    const rows=Array.isArray(d.diff)?d.diff:[];
+    const note=d.truncated?'<p class="policy-note">Showing the first '+(rows.length-2)+' diff lines. The full proposed content is below.</p>':"";
+    return '<details class="diff-file"'+(rows.length-2<=80?" open":"")+'><summary>'+esc(f.path)+' · '+esc(label)+stats+(f.mode==="100755"?" · executable":"")+'</summary>'+
+      (rows.length?diffView(rows):"")+note+content(f)+'</details>';
+  };
   return '<p class="policy-note">Publishing writes to GitHub as '+esc(t.account||"your account")+', so it waits for your approval.</p>'+
-    facts([["Branch",data.branch],["Based on",data.base+(data.sha?" at "+String(data.sha).slice(0,7):"")],["Fixes issue",data.issue?"#"+data.issue:""],["Commit message",data.message]])+
-    group(count,files.map(f=>'<details><summary>'+esc(f.path)+' · '+lines(f.content)+'</summary>'+quote(f.content)+'</details>').join(""));
+    facts([["Repository",data.repository],["Branch",data.branch],["Based on",data.base+(data.sha?" at "+String(data.sha).slice(0,7):"")],["Fixes issue",data.issue?"#"+data.issue:""],["Commit message",data.message]])+
+    group(count,files.map(file).join(""));
+}
+function diffView(rows) {
+  const kind=(line,i)=>i<2?"diff-head":line.startsWith("@@")?"diff-hunk":line.startsWith("+")?"diff-add":line.startsWith("-")?"diff-del":line.startsWith("\\")?"diff-note":"diff-ctx";
+  return '<pre class="diff" aria-label="Unified diff">'+rows.map((line,i)=>'<span class="'+kind(line,i)+'">'+esc(line)+'</span>').join("")+'</pre>';
 }
 const present=v=>v!=null && v!=="" && (!Array.isArray(v)||v.length>0);
 function proposalPreview(t) {
@@ -1835,7 +1862,8 @@ function settingChanged(el) {
   if (key==="subscription") payload.orchestrator_subscription=value;
   if (key==="preference") payload.preference=value;
   if (key==="slots") payload.slots=Number(value||0);
-  const said={dry:"Dry mode on. Every external write waits for your approval.",provider:providerNames[value]+" now prepares tasks.",subscription:"Hermes now uses your "+subscriptionNames[value]+".",preference:"Saved: "+preferenceNames[value]+".",slots:"Agent slots saved."}[key];
+  if (key==="notifications") payload.notifications=el.checked;
+  const said={notifications:el.checked?"Notifications on.":"Notifications off.",dry:"Dry mode on. Every external write waits for your approval.",provider:providerNames[value]+" now prepares tasks.",subscription:"Hermes now uses your "+subscriptionNames[value]+".",preference:"Saved: "+preferenceNames[value]+".",slots:"Agent slots saved."}[key];
   void mutate(payload,said).then(()=>{
     $("#main").rendered=null; render(); // Puts a control back to the saved value if the save failed.
     if (key==="provider"||key==="subscription") { agentsChecked=0; void loadAgents(true); }

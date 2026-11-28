@@ -1,5 +1,6 @@
 """Provider-backed milestones for a reported bug. Every logical write has a preview."""
 
+import difflib
 import hashlib
 import json
 import os
@@ -60,6 +61,14 @@ def _issue(conn, number, account, api):
 
 class CheckoutAccessError(ValueError):
     pass
+
+
+class BaseMoved(Rejected):
+    """The default branch moved between preparation and approval. Nothing was written; the task prepares a
+    replacement proposal on the new head. See "Resuming after the default branch advances" in task-execution.md."""
+
+
+CONFLICT_MARKER = re.compile(r"(?m)^(?:<{7}|>{7})(?: |$)")
 
 
 def _git(worktree, *args):
@@ -145,18 +154,78 @@ def _remote_base(conn, api):
     return base, sha
 
 
+def _check_moved_base(conn, api, head, sha, files):
+    """Allow a fix prepared on an older default branch revision only when the
+    newer commits leave every edited path untouched, since edits carry full contents."""
+    try:
+        diff = api(conn, "GET", f"compare/{head}...{sha}")
+        status, changed = diff["status"], diff.get("files") or []
+        touched = {f["filename"] for f in changed} | {f["previous_filename"] for f in changed if f.get("previous_filename")}
+    except Exception:
+        raise Rejected("The worktree does not start at a published revision of the default branch.") from None
+    if status != "ahead" or len(changed) >= 300:
+        raise Rejected("The worktree does not start at a published revision of the default branch.")
+    edited = {f["path"] for f in files}
+    clash = sorted(p for p in touched if p in edited or any(p.startswith(e + "/") or e.startswith(p + "/") for e in edited))
+    if clash:
+        raise BaseMoved("The default branch changed files this fix edits since the task started: "
+                       + ", ".join(clash[:5]) + ". Retry once the folder has fetched the new default branch, "
+                       "so the task can move its edits onto it.")
+
+
+DIFF_LINES = 400  # per file; the full proposed content stays in the preview beside it
+
+
+def _file_diff(worktree, head, item, tracked):
+    """A unified diff of one proposed replacement against the file at the base revision."""
+    path = item["path"]
+    entry = dict(path=path, mode=item["mode"], status="modified" if tracked else "added",
+                 additions=0, deletions=0, diff=[], truncated=False)
+    before = ""
+    if tracked:
+        try:
+            before = _git(worktree, "cat-file", "blob", f"{head}:{path}").decode()
+        except UnicodeDecodeError:
+            return dict(entry, status="binary")
+    lines = []
+    split = lambda text: re.findall(r"[^\n]*\n|[^\n]+", text)  # Git's lines end only at \n
+    for line in difflib.unified_diff(split(before), split(item["content"]),
+                                     "a/" + path if tracked else "/dev/null", "b/" + path):
+        lines += [line[:-1]] if line.endswith("\n") else [line, "\\ No newline at end of file"]
+    body = lines[2:]
+    entry["additions"] = sum(line.startswith("+") for line in body)
+    entry["deletions"] = sum(line.startswith("-") for line in body)
+    if not lines:
+        entry["status"] = "unchanged"
+    entry["truncated"] = len(body) > DIFF_LINES
+    entry["diff"] = lines[:2 + DIFF_LINES]
+    return entry
+
+
 def _branch_data(t, conn, api, number):
     repo = repo_name(conn)
     origin = _git(t["worktree"], "remote", "get-url", "origin").decode().strip()
     if _github_repository(origin) != repo.casefold():
         raise Rejected("The worktree origin differs from the configured GitHub repository.")
     base, sha = _remote_base(conn, api)
-    if _git(t["worktree"], "rev-parse", "HEAD").decode().strip() != sha:
-        raise Rejected("The worktree does not start at the current default branch revision.")
+    head = _git(t["worktree"], "rev-parse", "HEAD").decode().strip()
     files = t.get("changes", [])
+    if files and not t.get("changes_base"):
+        raise Rejected("The saved edits do not record the revision they were written against. Retry so the task "
+                       "records it.")
+    if files and t["changes_base"] != head:
+        raise Rejected("The saved edits were written against " + t["changes_base"][:12] + ", not the task clone's "
+                       + head[:12] + ". Retry so the task moves them onto its current revision.")
+    if head != sha:
+        _check_moved_base(conn, api, head, sha, files)
     if not files:
         raise ValueError("A proposed fix is required before publishing a branch.")
-    tracked = _git(t["worktree"], "ls-tree", "-rz", sha, "--", *(f["path"] for f in files))
+    marked = [f["path"] for f in files if CONFLICT_MARKER.search(f["content"])]
+    if marked:
+        raise Rejected("Unresolved merge conflict markers remain in " + ", ".join(marked[:5]) + ".")
+    # The worktree's own HEAD: the newer base may be absent locally, and the
+    # edited paths are identical in both when the base moved.
+    tracked = _git(t["worktree"], "ls-tree", "-rz", head, "--", *(f["path"] for f in files))
     modes = {}
     for entry in tracked.split(b"\0"):
         if entry:
@@ -169,7 +238,9 @@ def _branch_data(t, conn, api, number):
         if mode not in {"100644", "100755"} or any(k.startswith(path + "/") for k in modes):
             raise Rejected("A proposed edit replaces a directory or a non-regular Git entry.")
         prepared.append(dict(path=path, mode=mode, content=edit["content"]))
-    return dict(
+    # Diffed against the worktree's HEAD: when the base moved, the edited paths are identical at both.
+    diffs = [_file_diff(t["worktree"], head, item, item["path"] in modes) for item in prepared]
+    return diffs, dict(
         files=prepared,
         sha=sha,
         branch="memyselfai/fix-" + t["id"][:12],
@@ -292,8 +363,8 @@ def prepare(t, event, conn, api, identity):
     if not _issue(conn, number, account, api):
         return dict(status="skipped", reason="Another person is assigned to this issue.")
     if not m.get("branch"):
-        data = _branch_data(t, conn, api, number)
-        preview = json.dumps(data, indent=2, ensure_ascii=False)
+        diffs, data = _branch_data(t, conn, api, number)
+        preview = json.dumps(dict(data, repository=repo, diffs=diffs), indent=2, ensure_ascii=False)
         return action("publish branch", account, repo + "/" + data["branch"], data, preview)
     if not m.get("pr"):
         data = dict(
@@ -367,7 +438,7 @@ def send(t, conn, api, identity):
             raise Rejected("Another person is assigned to this issue.")
         if op == "publish branch":
             if _remote_base(conn, api) != (p["base"], p["sha"]):
-                raise Rejected("The default branch changed after preparation.")
+                raise BaseMoved("The default branch changed after preparation.")
             commit = api(conn, "GET", f"git/commits/{p['sha']}")
         if op == "create pull request":
             ref = api(conn, "GET", "git/ref/heads/" + p["head"])

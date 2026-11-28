@@ -147,6 +147,9 @@ The command already receives a clean environment without account credentials. Ke
 TMPDIR and Git settings when running fixtures. Network connections are disabled. Report observed
 test failures and exit codes as results when the request is to run tests. Use files for deliverable edits.
 A prior request for the user to run a command can be resolved by running it yourself.
+When command_budget_exhausted is set, no more run or setup outcomes are accepted: finish now with
+done, draft or question from command_results, listing any check you could not complete in unverified.
+Do not rerun a command whose result is already in command_results; change it or move on.
 When setup_steps_remaining is positive and a command needs a missing toolchain or dependencies, use
 outcome setup with text "install go", "install rust", "install c" (a C/C++ compiler and linker, also
 needed when Rust reports linker `cc` not found), "fetch go <folder>", "fetch rust <folder>" or
@@ -1111,6 +1114,142 @@ def prepare_worktree(repo, root, task_id, *, base=None, pull=None, token=None) -
     return path
 
 
+def _succeeds(repo, *args):
+    try:
+        _git(repo, *args)
+    except WorkerError:
+        return False
+    return True
+
+
+def worktree_head(path):
+    return os.fsdecode(_git(_check_worktree(path), "rev-parse", "HEAD")).strip()
+
+
+def _blob(path, rev, name):
+    """The UTF-8 text of a regular file at a revision, or None when the revision has no such file."""
+    entry = _git(path, "ls-tree", "-z", rev, "--", name).rstrip(b"\0")
+    if not entry:
+        return None
+    if entry.split()[0] not in (b"100644", b"100755"):
+        raise WorkerError(f"{name} is not a regular file at {rev[:12]}.")
+    try:
+        return _git(path, "cat-file", "blob", f"{rev}:{name}").decode("utf-8")
+    except UnicodeError:
+        raise WorkerError(f"{name} is not UTF-8 text at {rev[:12]}.") from None
+
+
+def _merge_text(ours, base, theirs):
+    """Three-way merge of one file's full text. Returns the text and whether it conflicts."""
+    if theirs == base or ours == theirs:
+        return ours, False
+    if ours == base:
+        return theirs, False
+    if theirs is None:  # removed by the newer commits while the task edited it
+        return ours, True
+    with tempfile.TemporaryDirectory() as folder:
+        names = []
+        for label, text in (("ours", ours), ("base", base or ""), ("theirs", theirs)):
+            Path(folder, label).write_text(text, encoding="utf-8")
+            names.append(str(Path(folder, label)))
+        try:
+            proc = subprocess.run(["git", "merge-file", "-p", "-L", "task edits", "-L", "previous base",
+                                   "-L", "default branch", *names], capture_output=True, timeout=60,
+                                  stdin=subprocess.DEVNULL, env={"PATH": os.defpath, "GIT_CONFIG_NOSYSTEM": "1",
+                                                                 "GIT_CONFIG_GLOBAL": os.devnull})
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise WorkerError("Git could not merge the task's edits onto the new default branch.") from exc
+    if not 0 <= proc.returncode < 128:
+        raise WorkerError("Git could not merge the task's edits onto the new default branch.")
+    try:
+        return proc.stdout.decode("utf-8"), proc.returncode > 0
+    except UnicodeError:
+        raise WorkerError("The merged text is not UTF-8.") from None
+
+
+def _replace_file(parent, name, content, mode):
+    tmp = ".memyselfai-" + uuid.uuid4().hex
+    fd = os.open(tmp, os.O_EXCL | os.O_CREAT | os.O_WRONLY, 0o600, dir_fd=parent)
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(content.encode("utf-8"))
+            os.fchmod(fd, mode if mode is not None else 0o644)
+        os.replace(tmp, name, src_dir_fd=parent, dst_dir_fd=parent)
+    finally:
+        try:
+            os.unlink(tmp, dir_fd=parent)
+        except FileNotFoundError:
+            pass
+
+
+def _snapshot(path, base, changes):
+    """Keep the saved edits as a commit on their base, one ref per base, for recovery."""
+    with tempfile.TemporaryDirectory() as folder:
+        env = {"GIT_INDEX_FILE": str(Path(folder, "index"))}
+        _git(path, "read-tree", base, env=env)
+        for index, edit in enumerate(changes):
+            blob_file = Path(folder, str(index))
+            blob_file.write_text(edit["content"], encoding="utf-8")
+            blob = os.fsdecode(_git(path, "hash-object", "-w", str(blob_file))).strip()
+            _git(path, "update-index", "--add", "--cacheinfo", f"100644,{blob},{edit['path']}", env=env)
+        tree = os.fsdecode(_git(path, "write-tree", env=env)).strip()
+    commit = os.fsdecode(_git(path, "commit-tree", tree, "-p", base, "-m", "MeMyselfAI task edits")).strip()
+    _git(path, "update-ref", "refs/memyselfai/before-refresh/" + base, commit)
+
+
+def refresh_worktree(path, source, changes, base=None, token=None, fetch=True):
+    """Move a task clone's saved edits onto the default branch's current head. See "Resuming after the default
+    branch advances" in task-execution.md.
+
+    The saved full-text changes and the base they were written against are the source of truth, so an interrupted
+    refresh is simply redone: a clone whose HEAD left the recorded base is moved again, even without a fetch.
+    Returns None when nothing changes, else the new start, the previous base, every saved change merged onto the
+    new start (overlapping ones with Git conflict markers) and the overlapping paths."""
+    path = _check_worktree(path)
+    head = os.fsdecode(_git(path, "rev-parse", "HEAD")).strip()
+    base = base or head
+    new, described = head, ""
+    if fetch:
+        target, described = _start_point(path, check_checkout_root(source), None, token)
+        if target != "HEAD":
+            try:
+                fetched = os.fsdecode(_git(path, "rev-parse", target + "^{commit}")).strip()
+            finally:
+                _git(path, "update-ref", "-d", target)
+            # An older copy, as a folder that has not fetched yet, never moves the clone back.
+            if not _succeeds(path, "merge-base", "--is-ancestor", fetched, head):
+                new = fetched
+            else:
+                described = ""
+        else:
+            described = ""
+    if new != base and _succeeds(path, "merge-base", "--is-ancestor", new, base):
+        new = base
+    if new == base == head:
+        return None
+    _snapshot(path, base, changes)
+    merged, conflicts = [], []
+    for edit in changes:
+        text, conflicted = _merge_text(edit["content"], _blob(path, base, edit["path"]),
+                                       _blob(path, new, edit["path"]))
+        merged.append(dict(path=edit["path"], content=text))
+        if conflicted:
+            conflicts.append(edit["path"])
+    branch = os.fsdecode(_git(path, "branch", "--show-current")).strip()
+    # Only the saved changes are carried over; untracked scratch files stay where they are.
+    _git(path, "checkout", "-q", "-f", "-B", branch, new)
+    for edit in merged:
+        parts = _parts(edit["path"])
+        try:
+            with _parent_fd(path, parts, create=True) as parent:
+                _replace_file(parent, parts[-1], edit["content"], _regular_mode(parent, parts[-1], MAX_EDIT_FILE))
+        except OSError as exc:
+            raise WorkerError(f"Could not write {edit['path']} on the new default branch.") from exc
+    if described:
+        _git(path, "config", "memyselfai.start", described)
+    return dict(start=new, previous=base, changes=merged, conflicts=conflicts)
+
+
 # Moving a task's worktree between instances. See "Worktree handoff" in docs/specs/instances-and-sync.md.
 
 MAX_BUNDLE = 4 * 1024 * 1024
@@ -1454,18 +1593,7 @@ def apply_worktree_edits(worktree, files, original_context=None) -> list:
                     mode = _regular_mode(parent, parts[-1], MAX_EDIT_FILE)
                 else:
                     mode = check_original(parent, path, parts[-1])
-                tmp = ".memyselfai-" + uuid.uuid4().hex
-                fd = os.open(tmp, os.O_EXCL | os.O_CREAT | os.O_WRONLY, 0o600, dir_fd=parent)
-                try:
-                    with os.fdopen(fd, "wb") as out:
-                        out.write(content.encode("utf-8"))
-                        os.fchmod(fd, mode if mode is not None else 0o644)
-                    os.replace(tmp, parts[-1], src_dir_fd=parent, dst_dir_fd=parent)
-                finally:
-                    try:
-                        os.unlink(tmp, dir_fd=parent)
-                    except FileNotFoundError:
-                        pass
+                _replace_file(parent, parts[-1], content, mode)
     except OSError as exc:
         raise WorkerError("Could not apply the edit inside the isolated checkout.") from exc
     return [dict(path=path, content=content) for path, content in results.items()]

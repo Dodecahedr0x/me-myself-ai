@@ -13,6 +13,8 @@ flowchart LR
     GitHub["GitHub CLI"] -->|Repository activity and my open issues| Connectors
     Tasks -->|Rows needing you, grouped failures, shortcut answers| Inbox[Inbox: list and open task]
     Inbox -->|Approve, answer, retry, instruct| Tasks
+    Tasks -->|Newly needs you, or dispatched task done| Notify[macOS notification]
+    Notify -->|Click opens the task| Inbox
     Tasks -->|Stats, activity report and open tasks| Home[Overview dashboard]
     Home <-->|Chat and report requests| HermesCurator
     Suggestions --> Home
@@ -62,6 +64,7 @@ flowchart LR
     Checks[MeMyselfAI fixture tests or maintainer report] --> Findings[Self-improvement findings]
     Findings --> Tasks
     Tasks -->|Issue, fix branch, linked PR and code review| Executor
+    Executor -->|Published PR| PRChecks[PR fixture checks on macOS and Linux runners]
     CLI -->|Check needs another kind of machine| Handoff[Handoff to a Mac or Linux instance]
     Handoff -->|Runs the check there| CLI
     Lookup[Linked PRs and fix tasks on every instance] -->|Answers where a fix is, instead of asking| CLI
@@ -109,6 +112,7 @@ The first project for this workflow is MeMyselfAI itself. Tasks can test the app
 - [Decision rules, writing style, and trust](specs/delegation-and-style.md) defines when agents may act, how they learn the user's voice, and how the user decides to leave dry mode.
 - [Reviewing activity and learning from missed work](specs/activity-and-improvement.md) shows how an in-app report triggers recovery and improves future discovery using Markdown skills.
 - [Updating the app from GitHub releases](specs/app-updates.md) keeps a copy installed in Applications current without reinstalling it.
+- [Fixture checks on pull requests](specs/ci-fixture-checks.md) runs the Python and Node fixture suites on every pull request and push to main.
 - [Guided setup and VPS setup over SSH](specs/guided-setup.md) walks a new user through setup and installs and pairs a VPS from one of their SSH hosts.
 - [Shared context and schedules](specs/context-and-schedules.md) shows how the Hermes agent maintains context agents share, cleans stale context and creates or cancels schedules. It also lists planned transcript and collaborator support.
 - [Repository rules](../AGENTS.md) describe how to take a change from spec to verification.

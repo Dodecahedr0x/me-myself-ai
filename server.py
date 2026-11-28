@@ -32,6 +32,8 @@ DEFAULT_DATA = default_data()
 
 
 _folder_picker_lock = threading.Lock()
+# Serializes the lines the desktop host reads from standard output.
+STDOUT = threading.RLock()
 
 
 def choose_repository():
@@ -249,11 +251,21 @@ def main():
             # With a link file, keep the one-time link out of service logs.
             if args.launch_file:
                 write_private(args.launch_file, server.launch_url + "\n")
-                print(f"Dashboard link written to {args.launch_file}", flush=True)
+                with STDOUT:
+                    print(f"Dashboard link written to {args.launch_file}", flush=True)
             else:
-                print(server.launch_url, flush=True)
+                with STDOUT:
+                    print(server.launch_url, flush=True)
 
         announce()
+        if os.environ.get("MEMYSELFAI_HOST_PID", "").isdigit():
+            # After the launch link, the desktop host reads these lines and posts each one. See dashboard.md#notifications.
+            def post(item):
+                with STDOUT:  # One whole line at a time, never interleaved with a launch link.
+                    sys.stdout.write("notify " + json.dumps(item) + "\n")
+                    sys.stdout.flush()
+
+            engine.notifier.sink = post
 
         def new_link(*_):
             # SIGUSR1 replaces the one-time link, for example to open the dashboard in another browser.

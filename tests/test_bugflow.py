@@ -2,7 +2,11 @@
 
 import copy
 import hashlib
+import json
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import bugflow as b
@@ -69,6 +73,7 @@ class BugFlow(unittest.TestCase):
             changes=[{"path": "script", "content": "fixed", "mode": "120000"}],
             result="Fixed.",
             milestones={},
+            changes_base=self.api.base,
         )
         self.who = Mock(return_value="coder")
 
@@ -80,6 +85,7 @@ class BugFlow(unittest.TestCase):
                 b"git@github.com:sample/project.git\n",
                 self.api.base.encode(),
                 b"100755 blob old\tscript\0",
+                b"broken",
             ],
         ):
             return b.prepare(self.t, self.event, self.conn, self.api, self.who)
@@ -165,6 +171,147 @@ class BugFlow(unittest.TestCase):
         with self.assertRaises(c.Rejected):
             b.send(self.t, self.conn, self.api, lambda _: "other")
         self.assertTrue(all(row[0] == "GET" for row in self.api.calls))
+
+    def test_moved_default_branch_publishes_on_the_new_base_unless_it_touched_the_fix(self):
+        start = "c" * 40
+        self.t["changes_base"] = start
+        compare = ("GET", f"compare/{start}...{self.api.base}")
+        fake = self.api
+
+        def call(conn, method, path, data=None):
+            if (method, path) == compare:
+                fake.calls.append((method, path, data))
+                return self.diff
+            return Github.__call__(fake, conn, method, path, data)
+
+        def prepare():
+            git = Mock(side_effect=[
+                b"git@github.com:sample/project.git\n",
+                start.encode(),
+                b"100755 blob old\tscript\0",
+                b"broken",
+            ])
+            with patch.object(b, "_git", git):
+                result = b.prepare(self.t, self.event, self.conn, call, self.who)
+            return result, git
+
+        self.diff = dict(status="ahead", files=[dict(filename="README.md")])
+        prepared, git = prepare()
+        self.assertEqual(prepared["payload"]["sha"], self.api.base)
+        self.assertEqual(git.call_args_list[2].args[3], start)
+        self.assertEqual(prepared["payload"]["files"][0]["mode"], "100755")
+        self.assertTrue(all(row[0] == "GET" for row in self.api.calls))
+        for diff in [
+            dict(status="ahead", files=[dict(filename="script")]),
+            dict(status="ahead", files=[dict(filename="moved", previous_filename="script")]),
+            dict(status="diverged", files=[]),
+            dict(status="behind", files=[]),
+            dict(status="ahead", files=[dict(filename=f"f{i}") for i in range(300)]),
+        ]:
+            self.diff = diff
+            with self.subTest(diff=diff), self.assertRaises(c.Rejected) as caught:
+                prepare()
+            if diff["status"] == "ahead" and len(diff["files"]) == 1:
+                self.assertIn("script", str(caught.exception))
+
+    def test_branch_preview_shows_a_diff_against_the_recorded_base(self):
+        """A one-line replacement and a new file in a fixture repository."""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        repo = Path(directory.name)
+
+        def git(*args):
+            return subprocess.check_output(
+                ["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+                 "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", *args], text=True).strip()
+
+        git("init", "-q", "-b", "master")
+        lines = [f"line {i}\n" for i in range(1, 21)]
+        (repo / "report.py").write_text("".join(lines))
+        (repo / "run.sh").write_text("echo old\n")
+        (repo / "big.txt").write_text("".join(f"old {i}\n" for i in range(2000)))
+        form = "".join(f"row {i}\n" for i in range(8)) + "page\x0cbreak\nline sep\nlast\r\nend\n"
+        (repo / "form.txt").write_bytes(form.encode())
+        git("add", ".")
+        git("update-index", "--chmod=+x", "run.sh")
+        git("commit", "-qm", "Initial fixture")
+        git("remote", "add", "origin", "https://github.com/sample/project.git")
+        self.api.base = self.t["changes_base"] = git("rev-parse", "HEAD")
+        changed = list(lines)
+        changed[9] = "line ten\n"
+        self.t.update(worktree=str(repo), changes=[
+            dict(path="report.py", content="".join(changed)),
+            dict(path="docs/new.md", content="# New\n\nAdded."),
+            dict(path="run.sh", content="echo new\n"),
+            dict(path="big.txt", content="".join(f"new {i}\n" for i in range(2000))),
+            dict(path="form.txt", content=form.replace("end\n", "END\n")),
+        ])
+        prepared = b.prepare(self.t, self.event, self.conn, self.api, self.who)
+        self.assertEqual(prepared["operation"], "publish branch")
+        self.assertTrue(all(set(f) == {"path", "mode", "content"} for f in prepared["payload"]["files"]))
+        preview = json.loads(prepared["draft"])
+        self.assertEqual(preview["repository"], "sample/project")
+        self.assertEqual(preview["sha"], self.api.base)
+        self.assertEqual(preview["files"], prepared["payload"]["files"])
+        diffs = {d["path"]: d for d in preview["diffs"]}
+        self.assertEqual(list(diffs), ["report.py", "docs/new.md", "run.sh", "big.txt", "form.txt"])
+
+        # Lines end only at \n, as in Git, so form feeds and U+2028 stay inside a line.
+        (repo / "form.txt").write_bytes(form.replace("end\n", "END\n").encode())
+        expected = subprocess.check_output(["git", "-C", str(repo), "diff", "--no-color", "-U3", "--", "form.txt"])
+        expected = expected.decode().split("\n")
+        hunk = next(i for i, l in enumerate(expected) if l.startswith("@@"))
+        expected = [expected[hunk].rsplit("@@", 1)[0] + "@@"] + expected[hunk + 1:-1]  # drop Git's function context
+        self.assertEqual(diffs["form.txt"]["diff"][2:], expected)
+        self.assertEqual((diffs["form.txt"]["additions"], diffs["form.txt"]["deletions"]), (1, 1))
+
+        report = diffs["report.py"]
+        self.assertEqual((report["status"], report["additions"], report["deletions"]), ("modified", 1, 1))
+        self.assertEqual(report["diff"][:3], ["--- a/report.py", "+++ b/report.py", "@@ -7,7 +7,7 @@"])
+        self.assertEqual(report["diff"][3:], [" line 7", " line 8", " line 9", "-line 10", "+line ten",
+                                              " line 11", " line 12", " line 13"])
+        self.assertFalse(report["truncated"])
+
+        new = diffs["docs/new.md"]
+        self.assertEqual((new["status"], new["additions"], new["deletions"]), ("added", 3, 0))
+        self.assertEqual(new["diff"][:2], ["--- /dev/null", "+++ b/docs/new.md"])
+        self.assertEqual(new["diff"][-4:], ["+# New", "+", "+Added.", "\\ No newline at end of file"])
+
+        script = diffs["run.sh"]
+        self.assertEqual(script["mode"], "100755")
+        self.assertEqual(script["diff"][-2:], ["-echo old", "+echo new"])
+
+        big = diffs["big.txt"]
+        self.assertTrue(big["truncated"])
+        self.assertEqual((big["additions"], big["deletions"]), (2000, 2000))
+        self.assertLessEqual(len(big["diff"]), b.DIFF_LINES + 2)
+        self.assertTrue(all(row[0] == "GET" for row in self.api.calls))
+
+    def test_a_moved_base_at_approval_is_reported_as_such_without_a_write(self):
+        self.t.update(self.prepared_branch())
+        self.api.base = "advanced"
+        with self.assertRaises(b.BaseMoved):
+            b.send(self.t, self.conn, self.api, self.who)
+        self.assertTrue(all(row[0] == "GET" for row in self.api.calls))
+
+    def test_edits_written_against_another_revision_are_never_proposed(self):
+        self.t["changes_base"] = "c" * 40
+        with self.assertRaises(c.Rejected) as caught:
+            self.prepared_branch()
+        self.assertIn("written against cccccccccccc", str(caught.exception))
+        del self.t["changes_base"]
+        with self.assertRaises(c.Rejected) as caught:
+            self.prepared_branch()
+        self.assertIn("do not record the revision", str(caught.exception))
+        self.t["changes_base"] = self.api.base
+        self.assertEqual(self.prepared_branch()["operation"], "publish branch")
+
+    def test_unresolved_conflict_markers_are_never_proposed(self):
+        self.t["changes"] = [dict(path="script", content="<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> edits\n")]
+        with self.assertRaises(c.Rejected) as caught:
+            self.prepared_branch()
+        self.assertIn("script", str(caught.exception))
+        self.assertIn("conflict", str(caught.exception))
 
     def test_reconcile_confirms_only_the_approved_tree(self):
         self.t.update(self.prepared_branch())

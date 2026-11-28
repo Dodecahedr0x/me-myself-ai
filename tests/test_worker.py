@@ -538,6 +538,116 @@ class TaskStartPointTests(unittest.TestCase):
         self.assertEqual(self.head(tree), self.head(self.checkout))
 
 
+class BaseRefreshTests(unittest.TestCase):
+    """A fix whose default branch moved on is replayed onto the new head. See "Resuming after the default
+    branch advances" in docs/specs/task-execution.md."""
+
+    git = staticmethod(TaskStartPointTests.git)
+    commit = TaskStartPointTests.commit
+    head = TaskStartPointTests.head
+
+    def setUp(self):
+        TaskStartPointTests.setUp(self)
+        self.seed = Path(self.tmp.name) / "seed"
+        self.git(self.seed, "checkout", "-q", "main")
+        (self.seed / "app.txt").write_text("one\ntwo\nthree\nfour\nfive\n")
+        (self.seed / "other.txt").write_text("other\n")
+        self.git(self.seed, "add", "-A")
+        self.git(self.seed, "commit", "-qm", "five lines")
+        self.git(self.seed, "push", "-q", "origin", "main")
+        (self.checkout / "app.txt").write_text("the user's uncommitted work\n")
+        self.tree = worker.prepare_worktree(self.checkout, self.storage, "r", base="remote")
+        self.old = self.head(self.tree)
+        self.fix = "one\ntwo\nthree\nfour\nFIVE\n"
+        (self.tree / "app.txt").write_text(self.fix)
+        (self.tree / "new.txt").write_text("added by the fix\n")
+        self.changes = [dict(path="app.txt", content=self.fix), dict(path="new.txt", content="added by the fix\n")]
+
+    def tearDown(self):
+        TaskStartPointTests.tearDown(self)
+        self.assertEqual((self.checkout / "app.txt").read_text(), "the user's uncommitted work\n")
+
+    def advance(self, content, name="app.txt"):
+        (self.seed / name).write_text(content)
+        self.git(self.seed, "commit", "-qam", "advance")
+        self.git(self.seed, "push", "-q", "origin", "main")
+        return self.head(self.seed)
+
+    def test_current_clone_is_left_alone(self):
+        self.assertIsNone(worker.refresh_worktree(self.tree, self.checkout, self.changes))
+        self.assertEqual(self.head(self.tree), self.old)
+        self.assertEqual((self.tree / "app.txt").read_text(), self.fix)
+
+    def test_non_overlapping_edits_move_onto_the_new_head(self):
+        new = self.advance("ONE\ntwo\nthree\nfour\nfive\n")
+        moved = worker.refresh_worktree(self.tree, self.checkout, self.changes)
+        self.assertEqual((moved["start"], moved["previous"], moved["conflicts"]), (new, self.old, []))
+        self.assertEqual(self.head(self.tree), new)
+        self.assertEqual(self.git(self.tree, "branch", "--show-current").strip(), "memyselfai/task-r")
+        merged = "ONE\ntwo\nthree\nfour\nFIVE\n"
+        self.assertEqual(moved["changes"], [dict(path="app.txt", content=merged),
+                                            dict(path="new.txt", content="added by the fix\n")])
+        self.assertEqual((self.tree / "app.txt").read_text(), merged)
+        self.assertEqual(self.git(self.tree, "status", "--porcelain").split(), ["M", "app.txt", "??", "new.txt"])
+        self.assertIsNone(worker.refresh_worktree(self.tree, self.checkout, moved["changes"]))
+
+    def test_overlapping_edits_are_named_and_the_earlier_edits_kept(self):
+        new = self.advance("one\ntwo\nthree\nfour\nfive!\n")
+        (self.tree / "scratch.log").write_text("build output\n")
+        moved = worker.refresh_worktree(self.tree, self.checkout, self.changes)
+        self.assertEqual((moved["start"], moved["conflicts"]), (new, ["app.txt"]))
+        self.assertEqual(self.head(self.tree), new)
+        text = (self.tree / "app.txt").read_text()
+        # The overlapping file stays among the saved changes, markers included, so it cannot be proposed as is.
+        self.assertEqual(moved["changes"], [dict(path="app.txt", content=text),
+                                            dict(path="new.txt", content="added by the fix\n")])
+        self.assertIn("<<<<<<<", text)
+        self.assertIn("FIVE", text)
+        self.assertIn("five!", text)
+        self.assertEqual(self.git(self.tree, "status", "--porcelain").split(),
+                         ["M", "app.txt", "??", "new.txt", "??", "scratch.log"])
+        snapshot = "refs/memyselfai/before-refresh/" + self.old
+        self.assertEqual(self.git(self.tree, "show", snapshot + ":app.txt"), self.fix)
+        self.assertNotIn("scratch.log", self.git(self.tree, "ls-tree", "--name-only", snapshot),
+                         "untracked scratch output is not part of the task's edits")
+
+        # Main moves again before the overlap is resolved: the earlier snapshot is kept, not overwritten.
+        newer = self.advance("one\ntwo\nthree\nfour\nfive!\nsix\n", name="app.txt")
+        again = worker.refresh_worktree(self.tree, self.checkout, moved["changes"], base=new)
+        self.assertEqual(again["start"], newer)
+        self.assertEqual(self.git(self.tree, "show", snapshot + ":app.txt"), self.fix)
+        self.assertIn("<<<<<<<", self.git(self.tree, "show", "refs/memyselfai/before-refresh/" + new + ":app.txt"))
+
+    def test_an_interrupted_refresh_is_redone_from_the_saved_edits(self):
+        new = self.advance("ONE\ntwo\nthree\nfour\nfive\n")
+        with patch.object(worker, "_replace_file", side_effect=OSError("disk full")), \
+                self.assertRaises(worker.WorkerError):
+            worker.refresh_worktree(self.tree, self.checkout, self.changes, base=self.old)
+        self.assertEqual(self.head(self.tree), new, "the branch moved before the failure")
+        # The task still records its A-based edits. Even offline, the clone is moved again from them.
+        with patch.object(worker, "_fetch_remote", return_value=False):
+            moved = worker.refresh_worktree(self.tree, self.checkout, self.changes, base=self.old)
+        self.assertEqual((moved["start"], moved["previous"], moved["conflicts"]), (new, self.old, []))
+        self.assertEqual((self.tree / "app.txt").read_text(), "ONE\ntwo\nthree\nfour\nFIVE\n")
+
+    def test_a_merge_failure_raises_before_the_clone_moves(self):
+        self.advance("one\ntwo\nthree\nfour\nfive!\n")
+        with patch.object(worker, "_merge_text", side_effect=worker.WorkerError("merge failed")), \
+                self.assertRaises(worker.WorkerError):
+            worker.refresh_worktree(self.tree, self.checkout, self.changes, base=self.old)
+        self.assertEqual(self.head(self.tree), self.old)
+        self.assertEqual((self.tree / "app.txt").read_text(), self.fix)
+
+    def test_offline_uses_the_folders_fetched_default_branch(self):
+        new = self.advance("ONE\ntwo\nthree\nfour\nfive\n")
+        with patch.object(worker, "_fetch_remote", return_value=False):
+            self.assertIsNone(worker.refresh_worktree(self.tree, self.checkout, self.changes))
+            self.git(self.checkout, "fetch", "-q", "origin")
+            self.user_refs = self.git(self.checkout, "for-each-ref")
+            moved = worker.refresh_worktree(self.tree, self.checkout, self.changes)
+        self.assertEqual(moved["start"], new)
+
+
 class CloneCheckoutTests(unittest.TestCase):
     """A clone appears at its target only once complete, so a concurrent caller never takes a half-made one."""
 
