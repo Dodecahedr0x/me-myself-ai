@@ -1236,6 +1236,112 @@ class Engine:
                                     for entry in parent["feedback"][-3:]] if parent else [],
                     parent_result=parent["result"][:3000] if parent and parent["status"] == "done" else "")
 
+    @staticmethod
+    def event_work_key(e):
+        """The piece of work an activity item belongs to. See "Overlapping and dependent tasks" in task-workflow.md."""
+        raw = (e or {}).get("raw") or {}
+        context = raw.get("context") or {}
+        if "is_pull_request" in context and raw.get("destination"):
+            return "github:" + raw["destination"].casefold()  # the same issue or PR, whichever connection saw it
+        thread = context.get("thread") or context.get("message_id")
+        return digest(e.get("connection", ""), thread) if thread else ""
+
+    def work_key(self, t, events):
+        if t.get("parent") or t.get("depth") or not t.get("event"):
+            return ""
+        return self.event_work_key(events.get(t["event"]))
+
+    def settling(self, t, children=()):
+        """A task that must not be replaced yet: an agent or a send is in flight, or an approved version is due to go."""
+        return (t["status"] in BUSY | {"working"} or "task:" + t["id"] in self.jobs or "send:" + t["id"] in self.jobs
+                or (t["status"] == "review" and t.get("approved_version") == t["version"])
+                or any(self.settling(c) for c in children))
+
+    def replace(self, old, newer):
+        """Close an idle older task in favour of a newer one on the same work."""
+        same = old["id"] not in (newer.get("replaces") or [])
+        reason = f"Replaced by a newer task{' on the same thread' if same else ''}: {newer['title']}"
+        with self.db.atomic():
+            current = self.db.get("tasks", old["id"])
+            if not current or current["version"] != old["version"] or current["status"] in TERMINAL:
+                return False
+            current.update(status="closed", superseded_by=newer["id"], draft="", question="", decision_id="",
+                           replaced_draft=current.get("draft") or current.get("retired_draft", ""), reason=reason)
+            self.save(current, reason)
+            for step in self.db.rows("tasks"):
+                if step.get("parent") == old["id"] and step.get("depth") and step["status"] not in TERMINAL:
+                    step.update(status="closed", draft="", question="", decision_id="",
+                                reason="Its parent task was replaced by a newer one")
+                    self.save(step, step["reason"])
+        return True
+
+    def resolve_conflicts(self, tasks, events):
+        """Replace older tasks on the same work and hold back tasks that must wait.
+
+        Returns the ids closed this pass and, for each task that must not start yet, why it waits.
+        See "Overlapping and dependent tasks" in task-workflow.md."""
+        by_id = {t["id"]: t for t in tasks}
+        events = {e["id"]: e for e in events}
+        live = [t for t in tasks if t["status"] not in TERMINAL]
+        children = {}
+        for t in live:
+            if t.get("depth") and t.get("parent"):
+                children.setdefault(t["parent"], []).append(t)
+
+        def evidence_time(t):
+            raw = (events.get(t.get("event")) or {}).get("raw") or {}
+            return raw.get("timestamp", 0), t.get("created", 0)
+
+        groups = {}
+        for t in live:
+            key = self.work_key(t, events)
+            if key:
+                groups.setdefault(key, []).append(t)
+        older = {}
+        for group in groups.values():
+            if len(group) > 1:
+                group.sort(key=evidence_time)
+                older.setdefault(group[-1]["id"], []).extend(group[:-1])
+        for t in live:
+            for ident in t.get("replaces") or []:
+                old = by_id.get(ident)
+                if old and ident != t["id"] and old["status"] not in TERMINAL and old not in older.get(t["id"], []):
+                    older.setdefault(t["id"], []).append(old)
+
+        closed, waiting = set(), {}
+        for newer_id, olds in older.items():
+            newer = by_id[newer_id]
+            for old in olds:
+                if old["id"] in closed:
+                    continue
+                if (self.settling(old, children.get(old["id"], ())) or not self.owns("task:" + old["id"])
+                        or not self.replace(old, newer)):
+                    waiting.setdefault(newer_id, (old["id"], f"Waiting for {old['title']} to finish first"))
+                else:
+                    closed.add(old["id"])
+        for t in live:
+            if t["id"] in closed or t["id"] in waiting:
+                continue
+            for ident in t.get("after") or []:
+                dep = by_id.get(ident)
+                if dep and dep["status"] not in TERMINAL and dep["id"] not in closed:
+                    waiting[t["id"]] = (ident, f"Waiting for {dep['title']} to finish first")
+                    break
+        # A newer message on the thread is still being read: it may bring a task that replaces this one.
+        pending = {}
+        readable = {c["id"] for c in self.db.rows("connections") if not c.get("unavailable")}
+        for e in events.values():
+            if (e.get("state") in {"new", "working"} and not (e.get("raw") or {}).get("authored")
+                    and e.get("connection") in readable and not self.scope.matches(e)):
+                key = self.event_work_key(e)
+                if key:
+                    pending[key] = max(pending.get(key, 0), e["raw"].get("timestamp", 0))
+        for t in live:
+            key = self.work_key(t, events) if pending else ""
+            if key in pending and pending[key] > evidence_time(t)[0] and t["id"] not in closed:
+                waiting.setdefault(t["id"], ("", "Waiting for new activity on this thread to be read"))
+        return closed, waiting
+
     def tick(self):
         for key, job in list(self.jobs.items()):
             if job.done():
@@ -1282,6 +1388,17 @@ class Engine:
             if self.instances.peers() or any(p.get("removed") for p in self.db.rows("peers")):
                 submit("takeover", lambda _: self.auto_takeover(), None, self.sync_pool)
         running, slots, absent = self.running_tasks(), self.slots(), self.absent()
+        closed, waiting = self.resolve_conflicts(tasks, events)
+        for ident, (blocker, reason) in waiting.items():
+            t = next(x for x in tasks if x["id"] == ident)
+            if (t["status"] in {"queued", "scheduled"} and self.owns("task:" + ident)
+                    and (t.get("waiting_for"), t["reason"]) != (blocker, reason)):
+                with self.db.atomic():
+                    current = self.db.get("tasks", ident)
+                    if current and current["version"] == t["version"]:
+                        current.update(waiting_for=blocker, reason=reason)
+                        self.save(current, reason)
+        tasks = [t for t in tasks if t["id"] not in closed]
         by_id = {t["id"]: t for t in tasks}
         steps = {}
         for row in tasks:
@@ -1304,7 +1421,7 @@ class Engine:
             if t["status"] in {"queued", "scheduled"} and t.get("due", 0) <= now:
                 # At most the slot count at once; nothing new while preparing for sleep or stop.
                 if ("task:" + t["id"] not in self.jobs and not absent and running < slots
-                        and not self.waiting_for_platform(t)):
+                        and t["id"] not in waiting and not self.waiting_for_platform(t)):
                     submit("task:" + t["id"], self.process, t["id"], self.pool)
                     running += 1
             if t["status"] == "review" and t.get("approved_version") == t["version"]:
@@ -1401,7 +1518,8 @@ class Engine:
                         and other["status"] in {"working", "review", "queued"}
                         and not other.get("milestones")
                     ):
-                        other.update(status="queued", draft="", reason="New activity in the source thread")
+                        other.update(status="queued", draft="", reason="New activity in the source thread",
+                                     retired_draft=other["draft"] or other.get("retired_draft", ""))
                         self.save(other, "Rechecking ownership and remaining work")
             self.db.log(
                 "Activity read",
@@ -1776,6 +1894,9 @@ class Engine:
                 t.update(verification_unavailable=t["needs_platform"], needs_platform="")
             t.update(status="working", local_commands_available=True)
             t.pop("related_snapshot", None)
+            if "waiting_for" in t:
+                t.pop("waiting_for")
+                t["reason"] = t.get("surfaced_reason", "")
             self.save(t, "Agent picked up task")
             version = t["version"]
         try:
@@ -2054,6 +2175,18 @@ class Engine:
                 for x in children
             ],
         )
+        # Overlapping and dependent tasks: see task-workflow.md.
+        everything = {row["id"]: row for row in self.db.rows("tasks")}
+        replaced = [row for row in everything.values() if row.get("superseded_by") == t["id"]]
+        if replaced:
+            context["replaced_tasks"] = [
+                dict(title=x["title"], draft=str(x.get("replaced_draft", ""))[:3000], result=str(x["result"])[:3000],
+                     answers=[{k: str(v)[:1500] for k, v in entry.items()} for entry in x["feedback"][-3:]])
+                for x in replaced]
+        prerequisites = [everything[i] for i in t.get("after") or [] if i in everything]
+        if prerequisites:
+            context["prerequisites"] = [dict(title=x["title"], status=x["status"], result=str(x["result"])[:3000])
+                                        for x in prerequisites]
         if t.get("verification_unavailable"):
             context["verification_unavailable"] = (
                 f"No {self.PLATFORM_NAMES.get(t['verification_unavailable'], t['verification_unavailable'])} "

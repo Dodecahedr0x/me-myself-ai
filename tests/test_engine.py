@@ -523,3 +523,154 @@ class FinishedSourceTests(unittest.TestCase):
         self.addCleanup(restarted.close)
         self.assertEqual(restarted.db.get("tasks", lost["id"])["status"], "queued")
         self.assertEqual(restarted.db.get("tasks", other["id"])["status"], "failed")
+
+
+class ConflictTests(unittest.TestCase):
+    """Overlapping and dependent tasks. See "Overlapping and dependent tasks" in docs/specs/task-workflow.md."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.now = 1_800_000_000
+        self.engine = Engine(self.directory.name, lambda: self.now)
+        self.addCleanup(self.engine.close)
+        self.db = self.engine.db
+        self.engine.add_project("A", "")
+        self.engine.suggestions.next_scan = self.now + 3600
+
+    def event(self, key, when, destination="org/repo#7", connection="gh", state="handled", **context):
+        if not context:
+            context = dict(repository="org/repo", number=7, state="open", is_pull_request=True)
+        self.db.put("events", dict(id=key, connection=connection, project="A", state=state, raw=dict(
+            key=key, timestamp=when, title="Comment", body="", destination=destination, account="me",
+            authored=False, owned=False, context=context)))
+        return key
+
+    def task(self, key, title, status="queued", **fields):
+        return self.engine.new_task(title, "A", id=key, event=key, source="github", status=status, **fields)
+
+    def resolve(self):
+        return self.engine.resolve_conflicts(self.db.rows("tasks"), self.db.rows("events"))
+
+    def started(self):
+        with patch.object(self.engine, "process"):
+            self.engine.tick()
+        return {key.removeprefix("task:") for key in self.engine.jobs if key.startswith("task:")}
+
+    def test_newer_task_on_the_same_thread_replaces_an_idle_one_and_inherits_its_work(self):
+        self.db.put("connections", dict(id="chat", kind="slack", label="team", config={}, status="Connected"))
+        thread = dict(destination="C1 / thread 1.0", connection="chat", thread="1.0", channel="C1")
+        old = self.task(self.event("e1", self.now - 60, **thread), "Reply to the first review", status="review",
+                        draft="Thanks, fixing it.", feedback=[{"question": "Tone?", "answer": "Short"}])
+        new = self.task(self.event("e2", self.now, **thread), "Reply to the second review")
+        self.assertEqual(self.started(), {new["id"]})
+        row = self.db.get("tasks", old["id"])
+        self.assertEqual((row["status"], row["draft"], row["superseded_by"]), ("closed", "", new["id"]))
+        self.assertIn("Replaced by a newer task on the same thread: Reply to the second review", row["reason"])
+        with self.assertRaises(Exception):
+            self.engine.approve(old["id"], row["version"])  # a replaced draft can no longer be sent
+        with patch("worker.run_agent", return_value=dict(outcome="done", text="Done", summary="Done")) as agent:
+            try:
+                self.engine.prepare(self.db.get("tasks", new["id"]))
+            except Exception:
+                pass
+        payload = agent.call_args.args[1]
+        self.assertEqual(payload["replaced_tasks"][0]["draft"], "Thanks, fixing it.")
+        self.assertEqual(payload["replaced_tasks"][0]["answers"], [{"question": "Tone?", "answer": "Short"}])
+
+    def test_newer_task_waits_while_the_older_one_is_preparing(self):
+        old = self.task(self.event("e1", self.now - 60), "First", status="working")
+        new = self.task(self.event("e2", self.now), "Second")
+        self.assertEqual(self.started(), set())
+        waiting = self.db.get("tasks", new["id"])
+        self.assertEqual((waiting["status"], waiting["reason"]), ("queued", "Waiting for First to finish first"))
+        self.assertEqual(self.db.get("tasks", old["id"])["status"], "working")
+        row = self.db.get("tasks", old["id"])
+        row.update(status="review", draft="Draft")
+        self.engine.save(row, "Prepared")
+        self.engine.jobs.clear()
+        self.assertEqual(self.started(), {new["id"]})
+        self.assertEqual(self.db.get("tasks", old["id"])["status"], "closed")
+
+    def test_approved_or_sending_versions_are_left_to_finish(self):
+        old = self.task(self.event("e1", self.now - 60), "First", status="review", draft="x")
+        row = self.db.get("tasks", old["id"])
+        row["approved_version"] = row["version"] + 1
+        self.engine.save(row, "Approved")
+        new = self.task(self.event("e2", self.now), "Second")
+        closed, waiting = self.resolve()
+        self.assertEqual(closed, set())
+        self.assertIn(new["id"], waiting)
+
+    def test_the_task_with_older_evidence_is_replaced_even_when_created_later(self):
+        new = self.task(self.event("e2", self.now), "Newest comment")
+        old = self.task(self.event("e1", self.now - 60), "Older comment")
+        closed, waiting = self.resolve()
+        self.assertEqual((closed, waiting), ({old["id"]}, {}))
+
+    def test_different_threads_steps_and_local_tasks_never_conflict(self):
+        self.task(self.event("e1", self.now - 60), "On #7")
+        self.task(self.event("e2", self.now, destination="org/repo#8",
+                             **dict(repository="org/repo", number=8, state="open", is_pull_request=True)), "On #8")
+        mail = dict(subject="Invoice", thread="<a@x>", message_id="<b@x>")
+        self.task(self.event("m1", self.now, destination="a@x", connection="mail", **mail), "Mail")
+        self.task(self.event("m2", self.now, destination="a@x", connection="mail",
+                             **dict(mail, thread="<other@x>")), "Other mail thread")
+        parent = self.task(self.event("e3", self.now - 30, destination="org/repo#9",
+                                      **dict(repository="org/repo", number=9, state="open", is_pull_request=False)),
+                           "Fix #9")
+        self.engine.new_task("Step one", "A", parent=parent["id"], depth=1, event="e3")
+        self.engine.new_task("Step two", "A", parent=parent["id"], depth=1, event="e3")
+        self.engine.new_task("Local", "A")
+        self.engine.new_task("Local", "A")
+        self.assertEqual(self.resolve(), (set(), {}))
+
+    def test_email_replies_join_the_thread_of_the_first_message(self):
+        first = self.task(self.event("m1", self.now - 60, destination="a@x", connection="mail",
+                                     subject="Invoice", thread="", message_id="<root@x>"), "Invoice")
+        self.task(self.event("m2", self.now, destination="a@x", connection="mail",
+                             subject="Re: Invoice", thread="<root@x>", message_id="<reply@x>"), "Invoice follow-up")
+        self.assertEqual(self.resolve()[0], {first["id"]})
+
+    def test_a_newer_message_still_being_read_holds_the_thread_back(self):
+        old = self.task(self.event("e1", self.now - 60), "First")
+        self.event("e2", self.now, state="new")
+        self.assertEqual(self.resolve(), (set(), {}))  # its connection is gone, so it will never be read
+        self.db.put("connections", dict(id="gh", kind="github", label="gh", config={}, status="Connected"))
+        closed, waiting = self.resolve()
+        self.assertEqual(waiting[old["id"]][1], "Waiting for new activity on this thread to be read")
+
+    def test_after_waits_for_prerequisites_and_passes_their_result(self):
+        fix = self.engine.new_task("Fix the bug", "A", status="working")
+        reply = self.engine.new_task("Tell the reporter", "A", after=[fix["id"]])
+        self.assertNotIn(reply["id"], self.started())
+        self.assertEqual(self.db.get("tasks", reply["id"])["reason"], "Waiting for Fix the bug to finish first")
+        row = self.db.get("tasks", fix["id"])
+        row.update(status="failed")
+        self.engine.save(row, "Failed")
+        self.engine.jobs.clear()
+        self.assertNotIn(reply["id"], self.started())
+        row = self.db.get("tasks", fix["id"])
+        row.update(status="done", result="Fixed in PR #12")
+        self.engine.save(row, "Done")
+        self.engine.jobs.clear()
+        self.assertIn(reply["id"], self.started())
+        with patch("worker.run_agent", return_value=dict(outcome="done", text="Done", summary="Done")) as agent:
+            try:
+                self.engine.prepare(self.db.get("tasks", reply["id"]))
+            except Exception:
+                pass
+        self.assertEqual(agent.call_args.args[1]["prerequisites"],
+                         [dict(title="Fix the bug", status="done", result="Fixed in PR #12")])
+
+    def test_explicit_replaces_closes_the_named_task_and_its_open_steps(self):
+        old = self.engine.new_task("Build the Contest tab", "A", status="question", question="Which layout?")
+        step = self.engine.new_task("Contest tab: API", "A", parent=old["id"], depth=1)
+        new = self.engine.new_task("Drop contests, build leaderboard", "A", replaces=[old["id"]])
+        closed, _ = self.resolve()
+        self.assertEqual(closed, {old["id"]})
+        row = self.db.get("tasks", old["id"])
+        self.assertEqual((row["status"], row["question"]), ("closed", ""))
+        self.assertEqual(row["reason"], "Replaced by a newer task: Drop contests, build leaderboard")
+        self.assertEqual(self.db.get("tasks", step["id"])["status"], "closed")
+        self.assertEqual(self.db.get("tasks", new["id"])["status"], "queued")

@@ -91,6 +91,8 @@ When Hermes decides that an item needs action, it calls `dispatch_task` with a t
 
 This is the same for every task type: email replies, chat replies, calendar responses, bug fixes and follow-ups. Each type's details live in its [declaration](agents-and-app-mcp.md#task-types).
 
+Before dispatching, Hermes checks `list_tasks` for work that overlaps the new item. Each summary shows the task's destination, its `after` and `replaces` lists and, once replaced, `superseded_by`. Hermes sequences dependent work with `after`, for example a reply that should wait for the fix it announces. It retires an older task that a newer request changes or cancels with `replaces`. The app replaces older tasks on the same thread by itself. See [overlapping and dependent tasks](task-workflow.md#overlapping-and-dependent-tasks).
+
 ## Talking to the orchestrator
 
 - The orchestrator has one permanent thread, pinned at the top of the inbox list as **Orchestrator**. It counts as Needs you only when Hermes raises something.

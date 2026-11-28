@@ -117,9 +117,11 @@ TOOLS = {
     "read_rules": ({ORCHESTRATOR}, "Read the decision rules of a project.", _schema(["project"], project=_S)),
     "dispatch_task": ({ORCHESTRATOR},
                       "Start a fresh task agent on one activity item. The agent investigates, does the work "
-                      "or skips it if nothing is needed. Types: " + ", ".join(TASK_TYPES) + ".",
+                      "or skips it if nothing is needed. Types: " + ", ".join(TASK_TYPES) + ". "
+                      "after: ids of tasks that must finish before this one starts. replaces: ids of older "
+                      "tasks this one makes obsolete; they close once idle.",
                       _schema(["type", "title", "evidence"], type={"type": "string", "enum": list(TASK_TYPES)},
-                              title=_S, body=_S, project=_S, evidence=_S)),
+                              title=_S, body=_S, project=_S, evidence=_S, after=_IDS, replaces=_IDS)),
     "post_update": ({ORCHESTRATOR}, "Post an update for the user in the activity log.", _schema(["text"], text=_S)),
     "record_progress": ({TASK}, "Record a progress note on this task.", _schema(["note"], note=_S)),
     "ask_user": ({TASK}, "Ask the user one specific question. The task waits for the answer.",
@@ -153,7 +155,10 @@ def _limit(args):
 
 
 def _task_summary(t):
-    return {k: t.get(k, "") for k in ("id", "title", "project", "status", "source", "kind", "reason", "created")}
+    summary = {k: t.get(k, "") for k in ("id", "title", "project", "status", "source", "kind", "reason", "created",
+                                         "destination")}
+    summary.update({k: t[k] for k in ("after", "replaces", "superseded_by") if t.get(k)})
+    return summary
 
 
 def _item(e, connection):
@@ -299,6 +304,7 @@ class Tools:
         title = _text(args, "title", 300)
         body = _text(args, "body", empty=True)
         project = self._project(args) if args.get("project") else e.get("project") or self.engine.global_project
+        links = {name: self._task_ids(args, name) for name in ("after", "replaces")}
         with self.engine.dispatch_lock, self.db.atomic():
             existing = self.db.get("tasks", e["id"])
             if existing:
@@ -310,20 +316,31 @@ class Tools:
                 self.spend(session)
                 self.db.put("dispatch_requests", dict(
                     id=e["id"], connection=c["id"], type=kind, title=title, body=body, project=project,
-                    role=session.role, done=False))
+                    role=session.role, done=False, **links))
                 return {"status": "forwarded", "task": e["id"],
                         "owner": self.engine.instances.owner_name("connection:" + c["id"])}
             self.spend(session)
-            self._create(e, c, kind, title, body, project, session.role)
+            self._create(e, c, kind, title, body, project, session.role, links)
         self.engine.wake.set()
         return {"status": "queued", "task": e["id"]}
 
-    def _create(self, e, c, kind, title, body, project, role):
+    def _task_ids(self, args, name):
+        """Existing tasks a dispatch waits for or replaces. See "Overlapping and dependent tasks" in task-workflow.md."""
+        ids = args.get(name) or []
+        if not isinstance(ids, list) or len(ids) > 12 or not all(isinstance(i, str) for i in ids):
+            raise Refused(f"{name} must be a list of at most 12 task ids.")
+        unknown = [i for i in ids if not self.db.get("tasks", i)]
+        if unknown:
+            raise Refused(f"Unknown task in {name}: {', '.join(unknown)}. Use ids from list_tasks.")
+        return list(dict.fromkeys(ids))
+
+    def _create(self, e, c, kind, title, body, project, role, links=None):
         raw = e["raw"]
         self.engine.new_task(
             title, project, body, id=e["id"], event=e["id"], source=c["kind"],
             kind=TASK_TYPES[kind]["kind"], task_type=kind, reason="Dispatched by the orchestrator",
             origin=role, account=raw["account"], destination=raw["destination"], url=raw.get("url", ""),
+            **{k: v for k, v in (links or {}).items() if v},
         )
 
     def fulfil(self, request_id):
@@ -337,7 +354,8 @@ class Tools:
             if e and c and not self.db.get("tasks", request_id):
                 known = any(p["name"] == request["project"] for p in self.db.rows("projects"))
                 project = request["project"] if known else e.get("project") or self.engine.global_project
-                self._create(e, c, request["type"], request["title"], request["body"], project, request["role"])
+                links = {k: [i for i in request.get(k, []) if self.db.get("tasks", i)] for k in ("after", "replaces")}
+                self._create(e, c, request["type"], request["title"], request["body"], project, request["role"], links)
             self.db.put("dispatch_requests", {**request, "done": True})
         self.engine.wake.set()
 

@@ -145,6 +145,28 @@ class OrchestratorTests(Fixture):
         task = app_mcp.Session(app_mcp.TASK, "t1")
         self.assertTrue(app_mcp.handle(self.tools, task, call)["result"]["isError"])
 
+    def test_dispatch_sequences_and_replaces_existing_tasks(self):
+        """See "Overlapping and dependent tasks" in docs/specs/task-workflow.md."""
+        session = self.orchestrator()
+        first = self.dispatch()
+        out, error = self.call(session, "dispatch_task", type="email_reply", title="Lunch", evidence=self.other,
+                               after=["missing"])
+        self.assertTrue(error)
+        self.assertIn("Unknown task in after", out["refused"])
+        self.assertIsNone(self.db.get("tasks", self.other))
+        out, error = self.call(session, "dispatch_task", type="email_reply", title="Lunch", evidence=self.other,
+                               after=[first], replaces=[first, first])
+        self.assertFalse(error, out)
+        t = self.db.get("tasks", out["task"])
+        self.assertEqual((t["after"], t["replaces"]), ([first], [first]))
+        listed, _ = self.call(session, "list_tasks")
+        summary = next(x for x in listed if x["id"] == out["task"])
+        self.assertEqual((summary["after"], summary["replaces"], summary["destination"]),
+                         ([first], [first], "friend@example.com"))
+        out, error = self.call(session, "dispatch_task", type="chat_reply", title="x", evidence=self.ping,
+                               replaces="not a list")
+        self.assertTrue(error)
+
     def test_orchestrator_cannot_send(self):
         out, error = self.call(self.orchestrator(), "send_email", text="hi")
         self.assertTrue(error)

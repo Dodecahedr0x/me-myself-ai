@@ -64,6 +64,46 @@ Pause existing open tasks in an excluded scope and invalidate pending approvals.
 
 When a GitHub issue or PR is closed or merged, open tasks with that destination close on their own. This includes tasks that are waiting for an answer, failed, queued, paused or awaiting approval. A step without its own destination belongs to its parent's item, so it closes with that item. The newest GitHub activity for the item decides its state, so a reopened item stays open. A closure only counts if it happened after the task was created, so a task made on purpose for an already closed item stays open. A running task or an uncertain delivery is left until it settles, and the next check closes it. The task's reason says the PR was merged, or the issue or PR was closed, on GitHub. Its draft and question are cleared, and the user is not asked anything.
 
+## Overlapping and dependent tasks
+
+Covers [US-40](../user-stories.md). Implemented in `engine.py` (`resolve_conflicts`, `work_key`) and `app_mcp.py` (`dispatch_task`). Tested in `tests/test_engine.py` (`ConflictTests`) and `tests/test_app_mcp.py`.
+
+Tasks are keyed by the activity item that surfaced them. A pull request that gets three new comments, or an email thread that gets a second message, can therefore surface several tasks for one piece of work. Without coordination, two agents would draft replies to the same thread or push fixes for the same PR at the same time. The scheduler resolves these conflicts on every pass, before it starts any task.
+
+**One piece of work, one task.** The work key of a top-level task comes from its evidence:
+
+| Source | Same work when |
+| --- | --- |
+| GitHub | Same issue or pull request (`owner/repo#number`), across every connection that sees it |
+| Slack | Same connection and thread |
+| Email | Same connection and thread (the first message's ID, which later replies reference) |
+| Other sources, local tasks, steps, commitments and calendar tasks | No work key; never treated as conflicting |
+
+Among the open tasks that share a work key, the one with the newest evidence wins, with creation time breaking ties. Each older one is replaced:
+
+- It closes with the reason "Replaced by a newer task on the same thread: _title_" and records which task replaced it. Its draft, question and pending decision are cleared, so an approval for it can no longer send anything.
+- The newer task's agent receives each replaced task's title, last draft, result and the user's answers on it, so earlier work and instructions are not lost.
+- A replaced task is closed only while it is idle. While it is preparing, sending, awaiting an uncertain delivery, or approved and about to send, the newer task waits with the reason "Waiting for _title_ to finish first". Once the older task settles, it is replaced and the newer task starts. Two agents never work on one thread at once.
+- Only the instance that owns a task closes it. A newer task owned elsewhere waits until the older task is closed.
+
+**Dependencies and explicit replacement.** The orchestrator sees overlaps that share no thread, such as an issue and the PR that fixes it, or a newer message that cancels an older request. When it dispatches a task it can pass:
+
+- `after`: task IDs that must finish first. The task waits, queued, with the reason "Waiting for _title_ to finish first", until each is done, skipped, dismissed or closed. A failed prerequisite keeps it waiting until that task is retried or closed. When it runs, its agent receives each prerequisite's title, status and result.
+- `replaces`: task IDs that the new task makes obsolete. Each is replaced exactly as above.
+
+Unknown IDs are refused. A dispatch can name only tasks that already exist, so dependencies can never form a cycle.
+
+Acceptance criteria:
+
+- Two open tasks on the same GitHub PR, one waiting for review: the newer one starts only after the older one closes as replaced. The older one's draft is cleared and its approval cannot send. The newer agent's input lists the older draft and answers.
+- The older task is still preparing: the newer task stays queued with a waiting reason and starts on the first pass after the older one settles, which then closes as replaced.
+- An older-evidence task created after a newer one, for example from discovery running out of order, is the one replaced.
+- Tasks on different threads, steps of one parent, and tasks without evidence are never replaced by this rule.
+- A task dispatched with `after` waits until its prerequisite is done and then receives its result. With a failed prerequisite it keeps waiting. An unknown ID in `after` or `replaces` is refused and creates no task.
+- A task dispatched with `replaces` closes the named idle task as replaced.
+
+Not handled yet: a replaced coding task's prepared branch stays in its own task copy. The newer task gets a summary of it, not the edits themselves.
+
 ## Related contracts
 
 [Source connectors](connectors.md) defines authentication and delivery guarantees. The [desktop runtime](desktop-runtime.md) defines polling and proactive review. The [local agent contract](local-agent.md) defines how Claude Code and Codex CLI prepare work. [Task agents and completion](task-execution.md) defines what each worker must verify. [Decision rules, writing style, and trust](delegation-and-style.md) defines clarification, readiness, and authorization beyond dry mode.

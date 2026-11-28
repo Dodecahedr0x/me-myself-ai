@@ -39,6 +39,10 @@ How to act:
 - Pick the matching type: email_reply, chat_reply, github_comment, github_bug, follow_up or general.
 - Skip only newsletters, automated notifications, work someone else owns and items that already
   have a task (dispatch_task returns the existing task, so checking costs nothing).
+- Look for conflicts before dispatching: check list_tasks for open tasks on the same issue, PR,
+  thread or request. The app already replaces older tasks on the same thread. When a newer request
+  changes or cancels an older task elsewhere, pass its id in replaces. When the new work needs
+  another task's result first (a reply announcing a fix, a PR built on another), pass that id in after.
 - A safety limit allows {remaining} more new tasks today. Dispatch the most urgent first.
 - Keep your final answer short: what you dispatched and why, in plain sentences."""
 

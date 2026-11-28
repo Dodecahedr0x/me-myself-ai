@@ -103,7 +103,7 @@ flowchart LR
 The first project for this workflow is MeMyselfAI itself. Tasks can test the app, track findings and prepare fixes and reviews in its own repository. [Self-improvement workflow](specs/self-improvement.md)
 
 - [User stories](user-stories.md) describe what the user can delegate and when they might intervene.
-- [Task discovery, preparation, and approval](specs/task-workflow.md) is the draft behavioral spec for the first workflow.
+- [Task discovery, preparation, and approval](specs/task-workflow.md) is the draft behavioral spec for the first workflow. It also covers how overlapping tasks are replaced and dependent ones sequenced.
 - [Task agents and completion](specs/task-execution.md) defines isolation, follow-ups, and the evidence needed to close bugs and emails.
 - [Decision rules, writing style, and trust](specs/delegation-and-style.md) defines when agents may act, how they learn the user's voice, and how the user decides to leave dry mode.
 - [Reviewing activity and learning from missed work](specs/activity-and-improvement.md) shows how an in-app report triggers recovery and improves future discovery using Markdown skills.
