@@ -126,7 +126,7 @@ class Engine:
         self.vps = vps_setup.VpsSetup(self.instances, self.settings, self.db.log,
                                       Path(__file__).resolve().parent, open_terminal=agents.open_in_terminal,
                                       on_done=self.remember_server)
-        self.gh_login_cache = (0.0, None)
+        self.gh_login_cache = (float("-inf"), None)  # monotonic() can be under 120 s just after boot
         with self.db.atomic():
             settings = self.db.get("config", "settings")
             if not settings:
