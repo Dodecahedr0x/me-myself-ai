@@ -383,6 +383,7 @@ body[data-view=inbox] #main {padding:0}
 .chip span {min-width:22px;padding:0 6px;border-radius:999px;background:var(--soft);font-size:12px;text-align:center;font-variant-numeric:tabular-nums}
 .chip[aria-pressed=true] {background:var(--green-dark);border-color:var(--green-dark);color:#fff}
 .chip[aria-pressed=true] span {background:#ffffff2e}
+.inbox-filters {display:flex;align-items:center;gap:14px;flex-wrap:wrap}
 .sort {display:flex;align-items:center;gap:4px;font-size:13px;color:var(--muted)}
 .sort select {border:0;background:transparent;font-weight:600;color:var(--ink);padding:4px}
 #inbox-rows {display:grid;gap:12px}

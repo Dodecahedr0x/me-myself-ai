@@ -160,6 +160,16 @@ class Engine:
                 elif t["status"] == "failed" and MISSING_APP_FILE.search(t.get("result") or ""):
                     t.update(status="queued", due=0, result="")
                     self.save(t, "Retried after the app's files moved")
+                elif self.unpublished_issue_work(t):
+                    # Earlier builds closed these as done without proposing a branch. The old
+                    # clone's base is stale, so redo the work from the current default branch.
+                    try:
+                        worker.set_aside_worktree(self.db.root / "worktrees", t["id"])
+                    except (OSError, worker.WorkerError) as exc:
+                        self.db.log("Worktree kept", str(exc), t["project"], t["id"])
+                        continue
+                    t.update(status="queued", due=0, result="", worktree="", changes=[], partial_changes=False)
+                    self.save(t, "Reopened: edits for this open issue were never proposed")
             for e in self.db.rows("events"):
                 if e["state"] == "working":
                     e["state"] = "new"
@@ -171,6 +181,15 @@ class Engine:
             if t["status"] == "question" and t.get("decision_id") and "answer_choices" not in t
             and not t.get("checkout_inaccessible")
         ]
+
+    def unpublished_issue_work(self, t):
+        """A coding task closed as done while its edits for a still-open GitHub issue went nowhere."""
+        if (t["status"] != "done" or t.get("kind", "").lower() not in {"coding", "code"}
+                or not t.get("changes") or t.get("milestones") or t.get("receipts")):
+            return False
+        e = self.db.get("events", t.get("event", ""))
+        context = (e or {}).get("raw", {}).get("context", {})
+        return context.get("is_pull_request") is False and context.get("state") == "open"
 
     def initialize_projects(self):
         projects = self.db.rows("projects")
@@ -2141,6 +2160,10 @@ class Engine:
                 }
             self.save_prepared_files(t, out["files"], files, partial=False)
         update["partial_changes"] = False
+        if not bug and outcome == "done" and github_issue and coding and t.get("changes"):
+            # Finished edits for an open issue ship as a fix branch and PR, never as a silent "done".
+            bug = True
+            update["kind"] = "bug"
         if bug:
             github = self.github_for({**t, **update}, conn)
             if not github or not (update.get("changes") or t.get("changes")):
@@ -2164,6 +2187,9 @@ class Engine:
                     ),
                 }
             url = t["milestones"]["url"]
+            if e["raw"].get("authored"):
+                # The user reported it, so the verified PR is the whole outcome; no notice to themselves.
+                return dict(update, status="done", kind="bug", result=result.rstrip() + "\n\nPull request: " + url)
             canonical = bugflow.reporter_message(e, url)
             notice = self.infer(
                 "task",
@@ -3283,7 +3309,32 @@ class Engine:
                 self.db.log("Repository sync", f"{len(repos)} repositories", connection=account["id"])
                 current.update(status="Connected", next=self.now() + 900)
                 self.db.put("connections", current)
+            self.backfill_open_issues(account)
             self.wake.set()
+
+    def backfill_open_issues(self, account):
+        """Record open issues the account wrote or is assigned to that polling never saw.
+
+        Polling reads only recent activity, so an issue untouched since before its repository
+        was connected would otherwise never surface. See docs/specs/connectors.md."""
+        try:
+            issues = connectors.github_own_open_issues(account)
+        except Exception as exc:
+            self.db.log("Open issues unavailable", str(exc), connection=account["id"])
+            return
+        sources = {
+            c["config"]["repository"].casefold(): c
+            for c in self.db.rows("connections")
+            if c.get("github_parent") == account["id"] and not c.get("unavailable")
+        }
+        added = 0
+        for raw in issues:
+            source = sources.get(raw["context"]["repository"].casefold())
+            if source and not self.db.get("events", digest(source["id"], raw["key"])):
+                self.ingest(source, raw)
+                added += 1
+        if added:
+            self.db.log("Open issues recorded", f"{added} open issues", connection=account["id"])
 
     def release_shared_credential(self, conn):
         key = conn["credential_key"]

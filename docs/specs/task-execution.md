@@ -65,6 +65,8 @@ If macOS blocks reading the registered repository's identity, the scheduler chec
 
 Completing one external action advances the task. The agent checks the remaining criteria before marking the whole task complete. In dry mode, a prepared issue, PR, notification, or email can await confirmation while the dashboard shows which criteria are still outstanding.
 
+Coding work on an open GitHub issue follows the same workflow. When the agent reports it finished and has saved edits, the task becomes a bug fix: it proposes the fix branch and then the PR for approval, instead of closing as done. The edits never stay unpublished in a private clone. When the user wrote the issue, the verified PR completes the task without a notification to themselves. Earlier builds closed such tasks as done. On start the app reopens each one whose issue is still open and has no branch, PR or receipt. It sets the old clone aside under app storage, keeping its files, and redoes the work from the current default branch, because publishing needs that base.
+
 The desktop bug workflow verifies the worktree's origin and HEAD against the configured GitHub repository and its default branch before publishing a fix. The branch preview names the base revision, commit message, paths, file modes and full contents. A moved base or a newly assigned issue pauses delivery. The PR must target the recorded base from the published fix branch and revision and link the original open issue. The reporter receives the PR URL by email, in the original Slack thread, or in the GitHub conversation with the reporter mentioned. An uncertain notification remains open until reconciled.
 
 ## Promises become work
@@ -77,4 +79,5 @@ When drafting a commitment such as “I'll send the figures on Friday,” show t
 - Given an existing issue and linked PR after a restart, the agent resumes from the missing evidence. A conflicting PR or an undelivered reporter notification keeps the bug task open.
 - Given an email requesting a price and delivery date, sending only the price leaves the task incomplete. A delivered answer covering both satisfies the task.
 - A sent email promising a Friday update can complete the email task and leave a separate Friday follow-up open. Replaying the delivery event or rediscovering the same sent message produces one follow-up for that promise.
+- A coding task on an open GitHub issue that finishes with edits proposes a fix branch, then a PR. On the user's own issue, the verified PR completes it with no notification write. After an upgrade, a task closed as done with unpublished edits for a still-open issue is queued again once, with its clone set aside.
 - A mismatched repository, branch revision, file type, PR head, or issue link prevents completion. An executable script keeps its tracked mode in the published branch. If the final reporter message fails, receipt of a branch or PR alone cannot close the task.

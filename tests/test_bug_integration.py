@@ -329,6 +329,52 @@ class BugIntegrationTests(unittest.TestCase):
         self.engine.db.put("connections", dict(self.github, id="other-account"))
         self.assertIsNone(self.engine.github_for(task, self.slack))
 
+    def own_issue(self):
+        raw = dict(key="issue:fixture/report:7", title="Empty report fails", body="Sum the values.",
+                   account="fixture-coder", destination="fixture/report#7", timestamp=self.now,
+                   authored=True, owned=False, url="https://github.com/fixture/report/issues/7",
+                   context=dict(repository="fixture/report", number=7, is_pull_request=False,
+                                state="open", author="fixture-coder", assignees=[]))
+        self.engine.ingest(self.github, raw)
+        event = digest(self.github["id"], raw["key"])
+        return self.engine.new_task("Empty report fails", "Reporting", event=event, kind="coding", id=event)
+
+    def test_finished_issue_edits_become_a_fix_branch_and_pr(self):
+        task = self.own_issue()
+        self.key = task["id"]
+        coded = dict(outcome="done", kind="coding", text="Sum the values.",
+                     files=[dict(path="report.py", content=self.fixed)])
+        with patch("engine.worker.run_agent", return_value=coded):
+            branch = self.prepare("publish branch")
+        self.assertEqual(self.row()["kind"], "bug")
+        self.approve(branch)
+        self.approve(self.prepare("create pull request"))
+        self.engine.process(self.key)
+        done = self.row()
+        # The user wrote the issue, so the verified PR finishes it without a notice to themselves.
+        self.assertEqual(done["status"], "done", done["result"])
+        self.assertIn(self.pr_url, done["result"])
+        self.assertEqual([p.rsplit("/", 1)[-1] for p, _ in self.writes], ["trees", "commits", "refs", "pulls"])
+
+    def test_restart_reopens_issue_work_closed_without_a_branch(self):
+        task = self.own_issue()
+        with patch("engine.worker.run_agent", return_value=dict(outcome="question", text="Which output?")):
+            self.engine.process(task["id"])
+        stale = self.engine.db.get("tasks", task["id"])
+        old = Path(stale["worktree"])
+        self.assertTrue(old.is_dir())
+        stale.update(status="done", changes=[dict(path="report.py", content=self.fixed)], result="Edited")
+        self.engine.db.put("tasks", stale)
+        self.engine.close()
+        self.engine = Engine(self.state_dir, lambda: self.now)
+        reopened = self.engine.db.get("tasks", task["id"])
+        self.assertEqual((reopened["status"], reopened["changes"], reopened["worktree"]), ("queued", [], ""))
+        self.assertFalse(old.exists())
+        self.assertTrue(any(p.name.startswith(old.name + ".set-aside-") for p in old.parent.iterdir()))
+        self.engine.close()
+        self.engine = Engine(self.state_dir, lambda: self.now)
+        self.assertEqual(self.engine.db.get("tasks", task["id"])["version"], reopened["version"], "Recovery runs once")
+
     def test_issue_agents_receive_selected_checkout_on_first_attempt(self):
         raw = dict(key="issue:17", title="Inspect report", body="Inspect the calculation",
                    account="me", destination="fixture/report#17", timestamp=self.now,

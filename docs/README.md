@@ -10,7 +10,7 @@ For example, a teammate asks for a status update in Slack. The agent finds the l
 flowchart LR
     Slack["Slack access token, refresh token or OAuth"] -->|All accessible channels| Connectors[Connectors]
     Mail["Google Workspace or other IMAP mailboxes"] -->|Account activity| Connectors
-    GitHub["GitHub CLI"] -->|Repository activity| Connectors
+    GitHub["GitHub CLI"] -->|Repository activity and my open issues| Connectors
     Tasks -->|Rows needing you, grouped failures, shortcut answers| Inbox[Inbox: list and open task]
     Inbox -->|Approve, answer, retry, instruct| Tasks
     Tasks -->|Stats, activity report and open tasks| Home[Overview dashboard]

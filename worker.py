@@ -926,6 +926,14 @@ def _task_paths(root, task_id):
     return root.resolve() / name, managed.resolve() / name
 
 
+def set_aside_worktree(root, task_id):
+    """Rename a task's clone, keeping its files, so the next preparation starts a fresh one."""
+    for path in _task_paths(root, task_id):
+        if path.exists() or path.is_symlink():
+            target = path.with_name(path.name + ".set-aside-" + str(int(time.time())))
+            path.rename(target)
+
+
 def resume_worktree(path, root, task_id, repository=None):
     legacy, owned = _task_paths(root, task_id)
     if Path(path) not in (legacy, owned):
