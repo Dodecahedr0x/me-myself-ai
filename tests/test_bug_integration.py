@@ -1,5 +1,6 @@
 """Run the desktop bug workflow with local Git and fixture provider transports."""
 
+import json
 import subprocess
 import tempfile
 import unittest
@@ -212,6 +213,14 @@ class BugIntegrationTests(unittest.TestCase):
                 self.assertEqual((Path(task["worktree"]) / "report.py").read_text(), self.fixed)
                 self.assertEqual(self.file.read_text(), "# User's outstanding changes\n")
                 self.assertEqual(self.writes, [])
+            if expected == "publish branch":
+                diff = json.loads(task["draft"])["diffs"]
+                self.assertEqual([d["path"] for d in diff], ["report.py"])
+                self.assertEqual(diff[0]["diff"][2:], ["@@ -1,2 +1,2 @@", " def total(values):",
+                                                       "-    return values[0]", "+    return sum(values)"])
+                with self.assertRaisesRegex(ValueError, "preview changed"):
+                    self.engine.action(dict(op="approve", id=self.key, version=task["version"] - 1))
+                self.assertEqual(len(self.writes), count - 3)
             self.approve(task)
             self.assertEqual(len(self.writes), count)
             self.assertEqual(self.row()["status"], "queued")
