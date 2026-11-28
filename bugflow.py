@@ -1,5 +1,6 @@
 """Provider-backed milestones for a reported bug. Every logical write has a preview."""
 
+import difflib
 import hashlib
 import json
 import os
@@ -163,6 +164,34 @@ def _check_moved_base(conn, api, head, sha, files):
                        + ", ".join(clash[:5]) + ". Ask the agent to update the worktree to the current default branch and redo those edits.")
 
 
+DIFF_LINES = 400  # per file; the full proposed content stays in the preview beside it
+
+
+def _file_diff(worktree, head, item, tracked):
+    """A unified diff of one proposed replacement against the file at the base revision."""
+    path = item["path"]
+    entry = dict(path=path, mode=item["mode"], status="modified" if tracked else "added",
+                 additions=0, deletions=0, diff=[], truncated=False)
+    before = ""
+    if tracked:
+        try:
+            before = _git(worktree, "cat-file", "blob", f"{head}:{path}").decode()
+        except UnicodeDecodeError:
+            return dict(entry, status="binary")
+    lines = []
+    for line in difflib.unified_diff(before.splitlines(keepends=True), item["content"].splitlines(keepends=True),
+                                     "a/" + path if tracked else "/dev/null", "b/" + path):
+        lines += [line[:-1]] if line.endswith("\n") else [line, "\\ No newline at end of file"]
+    body = lines[2:]
+    entry["additions"] = sum(line.startswith("+") for line in body)
+    entry["deletions"] = sum(line.startswith("-") for line in body)
+    if not lines:
+        entry["status"] = "unchanged"
+    entry["truncated"] = len(body) > DIFF_LINES
+    entry["diff"] = lines[:2 + DIFF_LINES]
+    return entry
+
+
 def _branch_data(t, conn, api, number):
     repo = repo_name(conn)
     origin = _git(t["worktree"], "remote", "get-url", "origin").decode().strip()
@@ -190,7 +219,9 @@ def _branch_data(t, conn, api, number):
         if mode not in {"100644", "100755"} or any(k.startswith(path + "/") for k in modes):
             raise Rejected("A proposed edit replaces a directory or a non-regular Git entry.")
         prepared.append(dict(path=path, mode=mode, content=edit["content"]))
-    return dict(
+    # Diffed against the worktree's HEAD: when the base moved, the edited paths are identical at both.
+    diffs = [_file_diff(t["worktree"], head, item, item["path"] in modes) for item in prepared]
+    return diffs, dict(
         files=prepared,
         sha=sha,
         branch="memyselfai/fix-" + t["id"][:12],
@@ -313,8 +344,8 @@ def prepare(t, event, conn, api, identity):
     if not _issue(conn, number, account, api):
         return dict(status="skipped", reason="Another person is assigned to this issue.")
     if not m.get("branch"):
-        data = _branch_data(t, conn, api, number)
-        preview = json.dumps(data, indent=2, ensure_ascii=False)
+        diffs, data = _branch_data(t, conn, api, number)
+        preview = json.dumps(dict(data, repository=repo, diffs=diffs), indent=2, ensure_ascii=False)
         return action("publish branch", account, repo + "/" + data["branch"], data, preview)
     if not m.get("pr"):
         data = dict(

@@ -1322,9 +1322,26 @@ function structuredDraft(t) {
 function branchPreview(t,data) {
   const files=data.files, count=files.length+" changed file"+(files.length===1?"":"s");
   const lines=text=>{ const n=plain(text).split("\n").length; return n+" line"+(n===1?"":"s"); };
+  const diffs=new Map((Array.isArray(data.diffs)?data.diffs:[]).map(d=>[d.path,d]));
+  const mode=f=>f.mode==="100755"?"executable (100755)":"regular file ("+(f.mode||"100644")+")";
+  const content=f=>'<details><summary>Full proposed content · '+lines(f.content)+' · '+mode(f)+'</summary>'+quote(f.content)+'</details>';
+  const file=f=>{
+    const d=diffs.get(f.path);
+    if (!d) return '<details><summary>'+esc(f.path)+' · '+lines(f.content)+'</summary>'+quote(f.content)+'</details>';
+    const label={added:"new file",modified:"modified",unchanged:"unchanged",binary:"current file is not text"}[d.status]||d.status;
+    const stats=d.status==="binary"?"":' · <span class="diff-add">+'+Number(d.additions)+'</span> <span class="diff-del">−'+Number(d.deletions)+'</span>';
+    const rows=Array.isArray(d.diff)?d.diff:[];
+    const note=d.truncated?'<p class="policy-note">Showing the first '+(rows.length-2)+' diff lines. The full proposed content is below.</p>':"";
+    return '<details class="diff-file"'+(rows.length<=80?" open":"")+'><summary>'+esc(f.path)+' · '+esc(label)+stats+(f.mode==="100755"?" · executable":"")+'</summary>'+
+      (rows.length?diffView(rows):"")+note+content(f)+'</details>';
+  };
   return '<p class="policy-note">Publishing writes to GitHub as '+esc(t.account||"your account")+', so it waits for your approval.</p>'+
-    facts([["Branch",data.branch],["Based on",data.base+(data.sha?" at "+String(data.sha).slice(0,7):"")],["Fixes issue",data.issue?"#"+data.issue:""],["Commit message",data.message]])+
-    group(count,files.map(f=>'<details><summary>'+esc(f.path)+' · '+lines(f.content)+'</summary>'+quote(f.content)+'</details>').join(""));
+    facts([["Repository",data.repository],["Branch",data.branch],["Based on",data.base+(data.sha?" at "+String(data.sha).slice(0,7):"")],["Fixes issue",data.issue?"#"+data.issue:""],["Commit message",data.message]])+
+    group(count,files.map(file).join(""));
+}
+function diffView(rows) {
+  const kind=(line,i)=>i<2?"diff-head":line.startsWith("@@")?"diff-hunk":line.startsWith("+")?"diff-add":line.startsWith("-")?"diff-del":line.startsWith("\\")?"diff-note":"diff-ctx";
+  return '<pre class="diff" aria-label="Unified diff">'+rows.map((line,i)=>'<span class="'+kind(line,i)+'">'+esc(line)+'</span>').join("")+'</pre>';
 }
 const present=v=>v!=null && v!=="" && (!Array.isArray(v)||v.length>0);
 function proposalPreview(t) {

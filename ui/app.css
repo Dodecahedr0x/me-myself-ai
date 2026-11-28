@@ -189,6 +189,12 @@ textarea {resize:vertical;min-height:90px}
 .facts dt {color:var(--muted)}.facts dd {margin:0;overflow-wrap:anywhere;white-space:pre-wrap}
 .detail-group {margin:10px 0 0}
 .detail-group h3 {margin-bottom:6px}
+.diff {margin:6px 0;padding:8px 0;border:1px solid var(--line);border-radius:5px;background:var(--surface);font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre;overflow-x:auto;tab-size:4;max-height:420px;overflow-y:auto}
+.diff span {display:block;padding:0 12px;min-width:max-content;min-height:1.45em}
+.diff .diff-head,.diff .diff-hunk,.diff .diff-note {color:var(--muted)}
+.diff .diff-add {background:var(--mint);color:var(--green-dark)}
+.diff .diff-del {background:var(--red-bg);color:var(--red)}
+summary .diff-add {color:var(--green-dark)} summary .diff-del {color:var(--red)}
 .quote {padding:11px 13px;border:1px solid var(--line);border-radius:5px;background:var(--surface);margin:6px 0;font:inherit;font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4}
 .detail-actions {display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:4px 0 8px}
 .task-tabs button[aria-selected=true] {border-color:var(--green);color:var(--green-dark);font-weight:600}
