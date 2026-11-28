@@ -340,22 +340,18 @@ function overview() {
   return '<div class="dashboard dash-grid"><div class="dash-main"><div id="ov-top"></div><div id="ov-main"></div></div>'+
     '<aside class="dash-chat" id="ov-chat" aria-label="Chat with Hermes"><div id="ov-chat-head"></div><div class="chat-thread" id="ov-thread" aria-live="polite"></div><div id="ov-composer"></div></aside></div>';
 }
+// Overview is a pure dashboard: no task rows and no suggestions. See docs/specs/dashboard.md#overview-dashboard.
 function overviewMain() {
-  const ordered = recent(state.tasks.filter(t=>!["closed","paused"].includes(t.status)),"created");
-  const attention = ordered.filter(t=>groups.attention.includes(t.status));
-  const active = ordered.filter(t=>groups.progress.includes(t.status));
-  const queue = attention.length+active.length ? taskTable([...attention,...active].slice(0,8)) : empty(ordered.length?"Nothing open. Completed work is in Tasks.":"No tasks yet.");
+  const open = state.tasks.filter(t=>[...groups.attention,...groups.progress].includes(t.status));
   const events = recent(state.activity,"at").slice(0,8);
   const projects = state.projects.map(p=>{
-    const count = [...attention,...active].filter(t=>inProject(p.name,t.project)).length;
+    const count = open.filter(t=>inProject(p.name,t.project)).length;
     return entry("projects",p.name,[count+" open",p.repos?.length?p.repos.length+(p.repos.length===1?" repository":" repositories"):""].filter(Boolean).join(" · "),projectControls(p));
   }).join("");
   const styleReviews = state.skills.filter(s=>s.kind==="style" && !s.active && s.status==="pending")
     .map(s=>'<button class="skill-row" data-action="skill" data-id="'+esc(s.id)+'"><span class="row-title"><strong>'+esc(s.body)+'</strong></span>'+icon("chevron",14)+'</button>').join("");
   const manage = '<a class="btn secondary" href="#connections">Manage connections</a>';
   return activityReport()+
-    '<section class="home-queue block"><div class="queue-heading"><h2>Open tasks</h2>'+button("Manage ignore list","ignorelist",null,"quiet")+link("All tasks","tasks")+'</div>'+queue+'</section>'+
-    taskSuggestions(false)+
     '<div class="overview-grid">'+section("Recent activity",link("View log","activity"),events.length?timeline(events):empty("No activity yet."))+
     '<div>'+section("Connections",manage,"")+
     (projects?section("Projects",link("View all","projects"),projects):"")+

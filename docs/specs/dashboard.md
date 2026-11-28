@@ -2,7 +2,7 @@
 
 **Status** — Implementation contract. Covers [US-01 through US-16](../user-stories.md) at the dashboard boundary. The draft [inbox, focus card and board](inbox-experience.md) will replace the Home and Tasks layout described here. Until it ships, this spec describes the implemented app.
 
-Home summarizes the task queue, pending suggestions, recent activity, projects and style reviews. Tasks needing attention appear first. The status counts open the corresponding filtered queue. Home offers task creation and shows the current agent provider and delivery mode. Its Connections section contains a single **Manage connections** button that opens the Connections page, where the user can choose providers and inspect accounts. Tasks also offers suggestions and the full searchable queue. Activity contains the full timeline.
+Home is the [Overview dashboard](#overview-dashboard): counts, the activity report, recent activity, projects and style reviews, with no task list. The status counts open the corresponding filtered queue. The toolbar offers task creation and the sidebar footer shows the current agent provider and delivery mode. Its Connections section contains a single **Manage connections** button that opens the Connections page, where the user can choose providers and inspect accounts. Tasks also offers suggestions and the full searchable queue. Activity contains the full timeline.
 
 Use warm white surfaces, graphite text and green actions throughout the workspace. Task status is written out, with an amber margin marker on rows that need a decision. Keep the task title and preview together. In activity logs, align local event times in a column next to the event description and show the date for earlier days. At narrow widths, filters and actions can wrap. Keyboard focus stays visible on rows, links and controls.
 
@@ -27,7 +27,7 @@ The sidebar links to [Settings](#settings), which lets the user select Claude Co
   - New tasks, Completed, Failed and Waiting for you. Completed and Failed count tasks whose last recorded event falls in the period. Waiting for you is the current Inbox count. Each number opens the matching list;
   - the five busiest sources (connection), projects and event kinds in the period.
   The report is computed in the browser from the activity log and tasks the app already sends. **Ask Hermes for a report** sends Hermes a plain prompt for the same period ("Report on my activity over the last 7 days: what came in, what you dispatched, what finished, what failed and what is waiting for me."). Its answer arrives in the chat.
-- **Open tasks, suggestions, recent activity, connections, projects and style reviews** follow the report, as before. Open tasks lists up to eight tasks that need attention or are in progress, attention first.
+- **Recent activity, connections, projects and style reviews** follow the report. Overview is a pure dashboard: it lists no tasks and no task suggestions. Tasks live in Inbox and Tasks, suggestions in Tasks, and every count on Overview opens the list it counts. The Hermes chat's action cards for tasks a message links are part of the chat, not a task list. A project shows its open-task count.
 - **Chat with Hermes.** The header shows Hermes' status (Idle, Answering…, Paused or Needs attention), when it last swept, **Sweep now** and **Pause**/**Resume**. A recorded error shows in a red strip. The thread shows the last 30 messages: yours on the right, Hermes' replies and digests rendered as Markdown with their task links and an action card per linked task ([message format and actions](hermes-orchestrator.md#message-format-and-actions)), and the app's own notices (such as "Hermes is not installed.") in amber. While Hermes is answering, a typing indicator shows and sending is disabled, because the service accepts one prompt at a time. Two quick prompts ("What's on my plate?", "What's stuck?") send a ready-made question. The message box sends with the button or **⌘↵**. Typed text survives the five-second refresh. The thread stays scrolled to the newest message unless you scrolled up to read.
 - Hermes still has no tool to send anything. A request for work in the chat becomes a dispatched task, and its writes go through review in dry mode.
 
@@ -37,6 +37,7 @@ The sidebar links to [Settings](#settings), which lets the user select Claude Co
 - Switch the report period. The chart, numbers and lists change to that period, and the choice survives a reload. Hovering a bar shows its count.
 - Type in the chat, wait for a refresh, and the text is still there. Send with **⌘↵**. Your message appears, sending is disabled while Hermes answers, and the reply appears in the thread. With Hermes not installed, the reply is the app's notice and sending is available again.
 - **Ask Hermes for a report** sends the prompt for the selected period.
+- With open tasks and pending suggestions in the workspace, Overview shows no task rows and no suggestions. Need you, In progress and Done in 7 days still count them and open their lists.
 - At 900 pixels wide every section is readable and the chat follows the dashboard.
 
 ## Settings

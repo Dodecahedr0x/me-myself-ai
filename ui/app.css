@@ -73,7 +73,7 @@ svg {display:inline-block;vertical-align:middle;flex-shrink:0}
 .counter {gap:4px;border:0;border-left:1px solid var(--line);background:transparent;color:var(--muted);font-size:12px;padding:2px 8px}
 .counter:hover {background:var(--soft);color:var(--ink)}
 .counter strong {font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
-.home-queue+.block,#task-list+.block {margin-top:16px}
+#task-list+.block {margin-top:16px}
 .overview-grid {display:grid;grid-template-columns:minmax(0,1.65fr) minmax(232px,1fr);gap:24px;margin-top:20px}
 .task-row,.task-columns {display:grid;grid-template-columns:minmax(0,1fr) minmax(112px,15%) 60px;gap:8px;align-items:center;text-align:left;width:100%;padding:4px 8px}
 .task-entry,.task-heading {display:grid;grid-template-columns:minmax(0,1fr) 132px;align-items:center}
