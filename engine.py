@@ -125,7 +125,8 @@ class Engine:
         self.orchestrator = orchestrator.Orchestrator(self)
         # Posted by the desktop host. The service sets the sink only when one is attached. See dashboard.md#notifications.
         self.notifier = notifications.Notifier(self.db.root / "notifications.json",
-                                               enabled=lambda: self.settings().get("notifications", True) is not False)
+                                               enabled=lambda: self.settings().get("notifications", True) is not False,
+                                               clock=clock)
         # Guided setup and VPS setup over SSH. See docs/specs/guided-setup.md.
         self.vps = vps_setup.VpsSetup(self.instances, self.settings, self.db.log,
                                       Path(__file__).resolve().parent, open_terminal=agents.open_in_terminal,

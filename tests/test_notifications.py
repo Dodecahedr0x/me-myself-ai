@@ -9,8 +9,11 @@ from engine import Engine
 from notifications import Notifier
 
 
+NOW = 1_000_000.0
+
+
 def task(ident, status, version=1, **fields):
-    return dict(id=ident, title="Task " + ident, status=status, version=version, created=1, **fields)
+    return dict(id=ident, title="Task " + ident, status=status, version=version, **{"created": NOW, **fields})
 
 
 class NotifierTests(unittest.TestCase):
@@ -20,15 +23,48 @@ class NotifierTests(unittest.TestCase):
         self.path = Path(temp.name) / "notifications.json"
         self.posted = []
         self.enabled = True
+        self.now = NOW
 
     def notifier(self):
-        return Notifier(self.path, self.posted.append, lambda: self.enabled)
+        return Notifier(self.path, self.posted.append, lambda: self.enabled, clock=lambda: self.now)
 
     def test_first_run_records_current_states_without_notifying(self):
         n = self.notifier()
         self.assertEqual(n.check([task("a", "review"), task("b", "failed")]), [])
         self.assertEqual(self.posted, [])
-        self.assertEqual(json.loads(self.path.read_text()), {"a": "review", "b": "failed"})
+        self.assertEqual(json.loads(self.path.read_text()), {"since": NOW, "tasks": {"a": "review", "b": "failed"}})
+
+    def test_history_arriving_by_sync_stays_silent_and_new_synced_work_notifies(self):
+        n = self.notifier()
+        n.check([])
+        self.now = NOW + 86400
+        n.check([])
+        # A newly paired instance brings 40 older tasks, some waiting and some finished by the orchestrator.
+        history = [task(f"old{i}", "review" if i % 2 else "done", created=NOW + 3600, origin="orchestrator")
+                   for i in range(40)]
+        # One created on the peer a few seconds ago, just before sync delivered it.
+        fresh = task("new", "failed", created=self.now - 5)
+        self.now += 10
+        self.assertEqual([i["task"] for i in n.check(history + [fresh])], ["new"])
+        self.assertEqual(n.check(history + [fresh]), [])
+        # A synced old task that later changes state does notify.
+        moved = [dict(t, status="question") if t["id"] == "old0" else t for t in history]
+        self.assertEqual([i["task"] for i in n.check(moved + [fresh])], ["old0"])
+
+    def test_tasks_created_while_the_app_was_closed_notify_on_the_next_start(self):
+        self.notifier().check([])
+        self.now = NOW + 7 * 86400  # Closed for a week.
+        out = self.notifier().check([task("a", "review", created=NOW + 3 * 86400)])
+        self.assertEqual([i["task"] for i in out], ["a"])
+
+    def test_sample_tasks_never_notify(self):
+        n = self.notifier()
+        n.check([])
+        self.assertEqual(n.check([task("s", "review", sample=True)]), [])
+
+    def test_an_unreadable_record_is_a_fresh_start(self):
+        self.path.write_text("not json")
+        self.assertEqual(self.notifier().check([task("a", "review")]), [])
 
     def test_each_state_that_needs_the_user_notifies_once(self):
         n = self.notifier()

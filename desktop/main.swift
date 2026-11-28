@@ -30,6 +30,9 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
     private var sleepAck: DispatchSourceSignal?
     // A task to open once the dashboard has loaded, from a clicked notification. See dashboard.md#notifications.
     private var pendingTask: String?
+    // Permission is asked once per launch, at the first notification.
+    private var notificationsAllowed: Bool?
+    private var waitingNotifications: [UNNotificationRequest] = []
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         // Set before launch finishes, so a click that launched the app is delivered.
@@ -361,16 +364,28 @@ final class Desktop: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUI
               let item = try? JSONSerialization.jsonObject(with: line.dropFirst(prefix.count)) as? [String: Any],
               let task = item["task"] as? String, let key = item["key"] as? String,
               let title = item["title"] as? String, let body = item["body"] as? String else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        content.userInfo = ["task": task]
+        // The service sends each task state once; the identifier also stops the system showing a version twice.
+        let request = UNNotificationRequest(identifier: key, content: content, trigger: nil)
         let center = UNUserNotificationCenter.current()
-        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
-            guard granted else { return }
-            let content = UNMutableNotificationContent()
-            content.title = title
-            content.body = body
-            content.sound = .default
-            content.userInfo = ["task": task]
-            // The service sends each task state once; the identifier also stops the system showing a version twice.
-            center.add(UNNotificationRequest(identifier: key, content: content, trigger: nil))
+        switch notificationsAllowed {
+        case true?: center.add(request)
+        case false?: return
+        case nil:
+            // Ask once, at the first notification; hold the ones that arrive meanwhile.
+            waitingNotifications.append(request)
+            guard waitingNotifications.count == 1 else { return }
+            center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                DispatchQueue.main.async {
+                    self.notificationsAllowed = granted
+                    if granted { self.waitingNotifications.forEach { center.add($0) } }
+                    self.waitingNotifications.removeAll()
+                }
+            }
         }
     }
 
